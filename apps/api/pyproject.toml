@@ -15,6 +15,7 @@ dependencies = [
     "python-multipart",
     "structlog",
     "pyjwt[crypto]>=2.13.0",
+    "boto3",
 ]
 
 [dependency-groups]
@@ -43,3 +44,10 @@ python_version = "3.12"
 strict = true
 mypy_path = "src"
 packages = ["edutoon"]
+
+# boto3/botocore ship no inline types and no stub package is installed;
+# confined to providers/storage.py (rule 3), so untyped Any there can't leak
+# strict-mode violations into the rest of the codebase.
+[[tool.mypy.overrides]]
+module = ["boto3.*", "botocore.*"]
+ignore_missing_imports = true

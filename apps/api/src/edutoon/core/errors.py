@@ -65,6 +65,13 @@ class IdempotencyInProgressError(AppError):
     code = "idempotency_in_progress"
 
 
+class PayloadTooLargeError(AppError):
+    """The request body exceeds a configured size limit (e.g. max upload size)."""
+
+    status_code = status.HTTP_413_CONTENT_TOO_LARGE
+    code = "payload_too_large"
+
+
 class InvalidCursorError(AppError):
     """A pagination cursor could not be decoded."""
 

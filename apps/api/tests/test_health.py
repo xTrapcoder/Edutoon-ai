@@ -10,5 +10,5 @@ def test_health_returns_expected_shape() -> None:
 
     assert response.status_code == 200
     body = response.json()
-    for key in ("status", "environment", "version", "database", "redis"):
+    for key in ("status", "environment", "version", "database", "redis", "storage"):
         assert key in body
