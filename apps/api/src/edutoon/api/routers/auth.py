@@ -13,7 +13,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends
 
 from edutoon.api.dependencies import get_current_user
-from edutoon.repositories.users import UserRecord
+from edutoon.services.users import UserRecord
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 

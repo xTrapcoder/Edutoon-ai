@@ -12,8 +12,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from edutoon.core.errors import UnauthorizedError
 from edutoon.db.session import get_session
 from edutoon.providers.clerk import ClerkTokenError, verify_token
-from edutoon.repositories.users import UserRecord
 from edutoon.services.auth import get_or_provision_user
+from edutoon.services.users import UserRecord
 
 
 def _extract_bearer_token(authorization: str | None) -> str:

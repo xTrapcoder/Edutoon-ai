@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from edutoon.core.errors import NotFoundError
 from edutoon.core.pagination import Page
 from edutoon.repositories import users as users_repo
-from edutoon.repositories.users import UserRecord
+from edutoon.repositories.users import UserRecord as UserRecord
 
 
 async def create_user(
