@@ -142,6 +142,47 @@ async def list_missing_embedding_by_source(
     return [_from_row(row) for row in rows]
 
 
+DEFAULT_SIMILARITY_LIMIT = 8
+
+
+async def search_by_similarity(
+    session: AsyncSession,
+    *,
+    project_id: UUID,
+    query_embedding: list[float],
+    limit: int = DEFAULT_SIMILARITY_LIMIT,
+) -> list[tuple[SourceChunkRecord, float]]:
+    """The top ``limit`` chunks by cosine similarity to ``query_embedding``,
+    highest first, as ``(chunk, similarity)`` pairs.
+
+    ``project_id`` is a hard filter in the ``WHERE`` clause here, not
+    something a caller is trusted to have already scoped - this is the
+    actual security boundary that keeps one project's claim verification
+    from ever retrieving (and therefore citing) another project's material,
+    even under the same owner. Chunks without an embedding yet are excluded
+    rather than erroring, since a partially-indexed source is a normal,
+    expected state.
+
+    ``pgvector``'s cosine *distance* (``<=>``) is `0` for identical
+    direction and `2` for opposite; similarity here is `1 - distance`, so
+    it reads the conventional way (`1` = identical, `-1` = opposite) and
+    matches ``ck_claim_citations_similarity_range``'s stored range.
+    """
+    distance = source_chunks.c.embedding.cosine_distance(query_embedding)
+    similarity = (1 - distance).label("similarity")
+    stmt = (
+        select(source_chunks, similarity)
+        .where(
+            source_chunks.c.project_id == project_id,
+            source_chunks.c.embedding.is_not(None),
+        )
+        .order_by(distance.asc())
+        .limit(limit)
+    )
+    rows = (await session.execute(stmt)).mappings().all()
+    return [(_from_row(row), row["similarity"]) for row in rows]
+
+
 async def list_by_source_in_order(
     session: AsyncSession, source_id: UUID
 ) -> list[SourceChunkRecord]:
