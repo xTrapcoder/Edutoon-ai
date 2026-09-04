@@ -14,6 +14,7 @@ dependencies = [
     "redis",
     "python-multipart",
     "structlog",
+    "pyjwt[crypto]>=2.13.0",
 ]
 
 [dependency-groups]

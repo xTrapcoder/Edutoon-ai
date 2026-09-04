@@ -20,6 +20,8 @@ _TEST_ENV = {
     "BUCKET_ASSETS": "edutoon-assets",
     "BUCKET_SEGMENTS": "edutoon-segments",
     "BUCKET_OUTPUTS": "edutoon-outputs",
+    "CLERK_JWKS_URL": "https://test.clerk.accounts.dev/.well-known/jwks.json",
+    "CLERK_ISSUER": "https://test.clerk.accounts.dev",
 }
 
 for key, value in _TEST_ENV.items():

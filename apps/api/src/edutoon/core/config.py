@@ -34,6 +34,8 @@ class Settings(BaseSettings):
     BUCKET_ASSETS: str
     BUCKET_SEGMENTS: str
     BUCKET_OUTPUTS: str
+    CLERK_JWKS_URL: str
+    CLERK_ISSUER: str
 
     # --- Optional (with defaults) -------------------------------------------------
     LOG_LEVEL: str = "INFO"

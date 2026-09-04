@@ -29,6 +29,17 @@ class AppError(Exception):
         self.message = message or self.code
 
 
+class UnauthorizedError(AppError):
+    """The caller's identity is missing, unverifiable, or expired.
+
+    Distinct from :class:`NotFoundError` (rule 9): this is "we don't know
+    who you are", not "you aren't allowed to see this resource".
+    """
+
+    status_code = status.HTTP_401_UNAUTHORIZED
+    code = "unauthorized"
+
+
 class NotFoundError(AppError):
     """A resource does not exist, or the caller does not own it (rule 9: never 403)."""
 
