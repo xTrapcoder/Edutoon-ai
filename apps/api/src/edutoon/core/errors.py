@@ -54,6 +54,17 @@ class ConflictError(AppError):
     code = "conflict"
 
 
+class IdempotencyInProgressError(AppError):
+    """Another request with this ``Idempotency-Key`` is still being handled.
+
+    Distinct from :class:`ConflictError`: this isn't a data conflict, it's a
+    concurrent duplicate of the same in-flight request (rule 8).
+    """
+
+    status_code = status.HTTP_409_CONFLICT
+    code = "idempotency_in_progress"
+
+
 class InvalidCursorError(AppError):
     """A pagination cursor could not be decoded."""
 

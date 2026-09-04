@@ -8,7 +8,6 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Any
 
-import redis.asyncio as redis
 import structlog
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -21,6 +20,7 @@ from edutoon.core.config import Settings, get_settings
 from edutoon.core.context import bind_request_id
 from edutoon.core.errors import register_exception_handlers
 from edutoon.db import dispose_engine, get_engine
+from edutoon.providers.cache import Redis, get_redis_client
 
 REQUEST_ID_HEADER = "X-Request-Id"
 
@@ -47,7 +47,7 @@ def configure_logging(log_level: str) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
-    redis_client: redis.Redis = redis.from_url(settings.REDIS_URL)
+    redis_client: Redis = get_redis_client(settings.REDIS_URL)
     app.state.engine = get_engine()
     app.state.redis = redis_client
     try:
@@ -121,7 +121,7 @@ async def _check_database(engine: AsyncEngine) -> str:
     return "ok"
 
 
-async def _check_redis(redis_client: redis.Redis) -> str:
+async def _check_redis(redis_client: Redis) -> str:
     try:
         await redis_client.ping()
     except Exception:  # noqa: BLE001 - health check must never raise

@@ -6,14 +6,26 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import Depends, Header
+from fastapi import Depends, Header, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from edutoon.core.errors import UnauthorizedError
 from edutoon.db.session import get_session
+from edutoon.providers.cache import Redis
 from edutoon.providers.clerk import ClerkTokenError, verify_token
 from edutoon.services.auth import get_or_provision_user
 from edutoon.services.users import UserRecord
+
+
+def get_redis(request: Request) -> Redis:
+    # Starlette's `State` has untyped attribute access - `.redis` is `Any`.
+    return request.app.state.redis  # type: ignore[no-any-return]
+
+
+# Routers depend on this alias rather than importing `Redis` from
+# `providers.cache` themselves (rule 2: providers are only ever reached
+# through this dependency-injection seam, same as `get_current_user` below).
+RedisDep = Annotated[Redis, Depends(get_redis)]
 
 
 def _extract_bearer_token(authorization: str | None) -> str:
