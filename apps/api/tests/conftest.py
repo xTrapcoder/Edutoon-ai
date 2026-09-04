@@ -22,6 +22,10 @@ _TEST_ENV = {
     "BUCKET_OUTPUTS": "edutoon-outputs",
     "CLERK_JWKS_URL": "https://test.clerk.accounts.dev/.well-known/jwks.json",
     "CLERK_ISSUER": "https://test.clerk.accounts.dev",
+    # Never a real key - every test that touches the OpenAI client
+    # monkeypatches its network call, so this only needs to satisfy
+    # Settings/AsyncOpenAI's constructor, never actually authenticate.
+    "OPENAI_API_KEY": "sk-test-not-a-real-key",
 }
 
 for key, value in _TEST_ENV.items():

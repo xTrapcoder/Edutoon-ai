@@ -15,7 +15,10 @@ remain the source of truth for the schema.
 from __future__ import annotations
 
 import sqlalchemy as sa
+from pgvector.sqlalchemy import Vector
 from sqlalchemy.dialects.postgresql import INET, JSONB, UUID
+
+EMBEDDING_DIMENSIONS = 1536
 
 metadata = sa.MetaData()
 
@@ -100,9 +103,6 @@ uploaded_sources = sa.Table(
     sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
 )
 
-# ``embedding`` (pgvector) is deliberately omitted: no embedding provider is
-# wired up yet (Phase 2 has no business logic), and the ``pgvector`` Python
-# package isn't a dependency. Add both together when that work starts.
 source_chunks = sa.Table(
     "source_chunks",
     metadata,
@@ -114,6 +114,7 @@ source_chunks = sa.Table(
     sa.Column("page_to", sa.Integer),
     sa.Column("content", sa.Text, nullable=False),
     sa.Column("token_count", sa.Integer),
+    sa.Column("embedding", Vector(EMBEDDING_DIMENSIONS)),
     sa.Column("embedding_model", sa.Text),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),

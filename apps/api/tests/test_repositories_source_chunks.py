@@ -59,3 +59,49 @@ async def test_list_by_source(db_session):
     page = await source_chunks_repo.list_by_source(db_session, source.id)
 
     assert [item.id for item in page.items] == [chunk.id]
+
+
+async def test_update_embedding_sets_both_columns_together(db_session):
+    project, source = await _make_source(db_session)
+    [chunk] = await source_chunks_repo.create_many(
+        db_session,
+        [NewSourceChunk(source_id=source.id, project_id=project.id, chunk_index=0, content="X")],
+    )
+    assert chunk.embedding_model is None
+
+    updated = await source_chunks_repo.update_embedding(
+        db_session,
+        chunk_id=chunk.id,
+        embedding=[0.1] * 1536,
+        embedding_model="text-embedding-3-small",
+    )
+
+    assert updated is not None
+    assert updated.embedding_model == "text-embedding-3-small"
+
+
+async def test_update_embedding_returns_none_when_missing(db_session):
+    assert (
+        await source_chunks_repo.update_embedding(
+            db_session, chunk_id=uuid4(), embedding=[0.1] * 1536, embedding_model="m"
+        )
+        is None
+    )
+
+
+async def test_list_missing_embedding_by_source_only_returns_unembedded_chunks(db_session):
+    project, source = await _make_source(db_session)
+    embedded, unembedded = await source_chunks_repo.create_many(
+        db_session,
+        [
+            NewSourceChunk(source_id=source.id, project_id=project.id, chunk_index=0, content="A"),
+            NewSourceChunk(source_id=source.id, project_id=project.id, chunk_index=1, content="B"),
+        ],
+    )
+    await source_chunks_repo.update_embedding(
+        db_session, chunk_id=embedded.id, embedding=[0.1] * 1536, embedding_model="m"
+    )
+
+    remaining = await source_chunks_repo.list_missing_embedding_by_source(db_session, source.id)
+
+    assert [chunk.id for chunk in remaining] == [unembedded.id]

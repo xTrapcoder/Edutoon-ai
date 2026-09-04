@@ -55,3 +55,27 @@ async def test_list_by_project(db_session):
     page = await jobs_repo.list_by_project(db_session, project.id)
 
     assert [item.id for item in page.items] == [job.id]
+
+
+async def test_update_applies_a_status_transition(db_session):
+    project = await _make_project(db_session)
+    job = await jobs_repo.create(db_session, project_id=project.id, kind="build_evidence")
+
+    updated = await jobs_repo.update(
+        db_session, job_id=job.id, status="succeeded", result={"chunks_embedded": 3}
+    )
+
+    assert updated is not None
+    assert updated.status == "succeeded"
+    assert updated.result == {"chunks_embedded": 3}
+
+
+async def test_update_with_no_fields_is_a_read(db_session):
+    project = await _make_project(db_session)
+    job = await jobs_repo.create(db_session, project_id=project.id, kind="build_evidence")
+
+    assert await jobs_repo.update(db_session, job_id=job.id) == job
+
+
+async def test_update_returns_none_when_missing(db_session):
+    assert await jobs_repo.update(db_session, job_id=uuid4(), status="failed") is None

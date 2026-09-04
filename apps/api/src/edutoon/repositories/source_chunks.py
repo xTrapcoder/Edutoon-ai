@@ -61,8 +61,8 @@ async def create_many(
 ) -> list[SourceChunkRecord]:
     """Bulk-insert chunks (e.g. one PDF's worth) in a single round trip.
 
-    Embeddings are set later, in a dedicated UPDATE, once an embedding
-    provider exists — that's business logic this step deliberately excludes.
+    Embeddings are set later, via :func:`update_embedding`, once the
+    Evidence Engine's indexing step runs against the source.
     """
     if not chunks:
         return []
@@ -105,6 +105,41 @@ async def list_by_source(
         session, stmt, table=source_chunks, limit=limit, cursor=cursor
     )
     return Page(items=[_from_row(row) for row in rows], next_cursor=next_cursor)
+
+
+async def update_embedding(
+    session: AsyncSession, *, chunk_id: UUID, embedding: list[float], embedding_model: str
+) -> SourceChunkRecord | None:
+    """Set a chunk's embedding vector. Always writes both columns together -
+    ``ck_source_chunks_embedding_has_model`` requires ``embedding_model`` to
+    be set whenever ``embedding`` is, so there is no partial-write path here.
+    Returns ``None`` if the chunk doesn't exist.
+    """
+    stmt = (
+        source_chunks.update()
+        .where(source_chunks.c.id == chunk_id)
+        .values(embedding=embedding, embedding_model=embedding_model)
+        .returning(*source_chunks.c)
+    )
+    result = await session.execute(stmt)
+    row = result.mappings().one_or_none()
+    return _from_row(row) if row is not None else None
+
+
+async def list_missing_embedding_by_source(
+    session: AsyncSession, source_id: UUID
+) -> list[SourceChunkRecord]:
+    """A source's chunks that don't have an embedding yet, in document
+    order. Indexing calls this rather than fetching every chunk, so a
+    re-run after a partial failure only touches what's still missing.
+    """
+    stmt = (
+        select(source_chunks)
+        .where(source_chunks.c.source_id == source_id, source_chunks.c.embedding.is_(None))
+        .order_by(source_chunks.c.chunk_index.asc())
+    )
+    rows = (await session.execute(stmt)).mappings().all()
+    return [_from_row(row) for row in rows]
 
 
 async def list_by_source_in_order(

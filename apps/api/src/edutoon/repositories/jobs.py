@@ -85,6 +85,23 @@ async def create(
     return _from_row(result.mappings().one())
 
 
+async def update(session: AsyncSession, *, job_id: UUID, **fields: Any) -> JobRecord | None:
+    """Partial update for status-transition writes (queued -> running ->
+    succeeded/failed). Returns ``None`` if the job doesn't exist. An empty
+    ``fields`` is a no-op read, mirroring ``projects.update``.
+    """
+    if not fields:
+        return await get_by_id(session, job_id)
+
+    stmt = jobs.update().where(jobs.c.id == job_id).values(**fields).returning(*jobs.c)
+    try:
+        result = await session.execute(stmt)
+    except IntegrityError as exc:
+        raise_conflict_from_integrity_error(exc)
+    row = result.mappings().one_or_none()
+    return _from_row(row) if row is not None else None
+
+
 async def get_by_id(session: AsyncSession, job_id: UUID) -> JobRecord | None:
     stmt = select(jobs).where(jobs.c.id == job_id)
     row = (await session.execute(stmt)).mappings().one_or_none()

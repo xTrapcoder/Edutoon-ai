@@ -17,6 +17,8 @@ dependencies = [
     "pyjwt[crypto]>=2.13.0",
     "boto3",
     "pypdf",
+    "openai",
+    "pgvector",
 ]
 
 [dependency-groups]

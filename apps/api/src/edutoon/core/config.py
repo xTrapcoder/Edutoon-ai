@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     BUCKET_OUTPUTS: str
     CLERK_JWKS_URL: str
     CLERK_ISSUER: str
+    OPENAI_API_KEY: str
 
     # --- Optional (with defaults) -------------------------------------------------
     LOG_LEVEL: str = "INFO"
@@ -43,6 +44,7 @@ class Settings(BaseSettings):
     API_BASE_URL: str = "http://localhost:8000"
     MAX_UPLOAD_BYTES: int = 104_857_600
     MAX_PDF_PAGES: int = 300
+    EMBEDDING_MODEL: str = "text-embedding-3-small"
 
 
 class MissingSettingsError(RuntimeError):
