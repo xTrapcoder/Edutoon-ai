@@ -113,6 +113,9 @@ _UNIQUE_CONSTRAINT_MESSAGES: dict[str, str] = {
     "uq_source_chunks_source_id_chunk_index": (
         "A chunk with this index already exists for this source."
     ),
+    "uq_claim_citations_claim_verification_id_source_chunk_id": (
+        "This source chunk is already cited by this verification."
+    ),
 }
 
 

@@ -119,6 +119,33 @@ source_chunks = sa.Table(
     sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
 )
 
+claim_verifications = sa.Table(
+    "claim_verifications",
+    metadata,
+    sa.Column("id", UUID(as_uuid=True), primary_key=True, server_default=sa.FetchedValue()),
+    sa.Column("project_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("claim_text", sa.Text, nullable=False),
+    sa.Column("status", sa.Text, nullable=False),
+    sa.Column("rationale", sa.Text),
+    sa.Column("embedding_model", sa.Text, nullable=False),
+    sa.Column("llm_model", sa.Text, nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+)
+
+# Append-only in practice (a re-verification is a new row, never an update) -
+# no DB-level guard trigger, unlike audit_logs: these rows carry real FKs to
+# live, owned resources, so the application-level guarantee (repositories
+# never issue UPDATE/DELETE) is what enforces it.
+claim_citations = sa.Table(
+    "claim_citations",
+    metadata,
+    sa.Column("id", UUID(as_uuid=True), primary_key=True, server_default=sa.FetchedValue()),
+    sa.Column("claim_verification_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("source_chunk_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("similarity", sa.REAL, nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+)
+
 # Append-only (rule 4 / trg_audit_logs_append_only): repositories must only
 # ever INSERT or SELECT this table, never UPDATE/DELETE.
 audit_logs = sa.Table(
