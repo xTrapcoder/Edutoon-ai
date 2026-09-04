@@ -18,6 +18,8 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from edutoon import __version__
 from edutoon.api import v1_router
 from edutoon.core.config import Settings, get_settings
+from edutoon.core.context import bind_request_id
+from edutoon.core.errors import register_exception_handlers
 from edutoon.db import dispose_engine, get_engine
 
 REQUEST_ID_HEADER = "X-Request-Id"
@@ -74,6 +76,8 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    register_exception_handlers(app)
+
     @app.middleware("http")
     async def request_id_middleware(
         request: Request,
@@ -83,10 +87,11 @@ def create_app() -> FastAPI:
         structlog.contextvars.clear_contextvars()
         structlog.contextvars.bind_contextvars(request_id=request_id)
         request.state.request_id = request_id
-        log.info("request.start", method=request.method, path=request.url.path)
-        response = await call_next(request)
+        with bind_request_id(request_id):
+            log.info("request.start", method=request.method, path=request.url.path)
+            response = await call_next(request)
+            log.info("request.end", status_code=response.status_code)
         response.headers[REQUEST_ID_HEADER] = request_id
-        log.info("request.end", status_code=response.status_code)
         return response
 
     @app.get("/health")

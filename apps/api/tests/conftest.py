@@ -24,3 +24,37 @@ _TEST_ENV = {
 
 for key, value in _TEST_ENV.items():
     os.environ.setdefault(key, value)
+
+from collections.abc import AsyncIterator  # noqa: E402
+
+import pytest  # noqa: E402
+from sqlalchemy.ext.asyncio import (  # noqa: E402
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
+
+from edutoon.core.config import get_settings  # noqa: E402
+
+
+@pytest.fixture
+async def db_session() -> AsyncIterator[AsyncSession]:
+    """A session bound to a transaction that is always rolled back.
+
+    Repositories/services may call ``session.commit()`` freely — with
+    ``join_transaction_mode="create_savepoint"`` that becomes a SAVEPOINT
+    release rather than an outer commit, so nothing written by a test
+    persists past it.
+    """
+    engine = create_async_engine(get_settings().DATABASE_DIRECT_URL)
+    async with engine.connect() as conn:
+        trans = await conn.begin()
+        sessionmaker = async_sessionmaker(
+            bind=conn,
+            join_transaction_mode="create_savepoint",
+            expire_on_commit=False,
+        )
+        async with sessionmaker() as session:
+            yield session
+        await trans.rollback()
+    await engine.dispose()
