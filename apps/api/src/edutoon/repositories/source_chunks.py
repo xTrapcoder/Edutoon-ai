@@ -105,3 +105,25 @@ async def list_by_source(
         session, stmt, table=source_chunks, limit=limit, cursor=cursor
     )
     return Page(items=[_from_row(row) for row in rows], next_cursor=next_cursor)
+
+
+async def list_by_source_in_order(
+    session: AsyncSession, source_id: UUID
+) -> list[SourceChunkRecord]:
+    """All of a source's chunks, in document order (``chunk_index`` ASC).
+
+    Unlike :func:`list_by_source`, this deliberately isn't keyset-paginated
+    by ``(created_at, id)`` - that ordering suits "most recent first" lists
+    (projects, audit logs), not a single document's reading order, and a
+    bulk insert can even give several chunks the same ``created_at``,
+    making that order unstable. A source's chunk count is bounded by
+    ``MAX_PDF_PAGES`` (a few hundred at most), so returning them all
+    unpaginated is safe.
+    """
+    stmt = (
+        select(source_chunks)
+        .where(source_chunks.c.source_id == source_id)
+        .order_by(source_chunks.c.chunk_index.asc())
+    )
+    rows = (await session.execute(stmt)).mappings().all()
+    return [_from_row(row) for row in rows]

@@ -21,6 +21,7 @@ from fastapi.exceptions import RequestValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from edutoon.api.dependencies import RedisDep, StorageDep, get_current_user
+from edutoon.api.schemas.source_chunks import SourceChunkListResponse, SourceChunkResponse
 from edutoon.api.schemas.uploaded_sources import (
     UploadedSourceListResponse,
     UploadedSourceResponse,
@@ -31,6 +32,7 @@ from edutoon.core.pagination import DEFAULT_PAGE_SIZE
 from edutoon.db.session import get_session
 from edutoon.services import idempotency as idempotency_service
 from edutoon.services import projects as projects_service
+from edutoon.services import source_chunks as source_chunks_service
 from edutoon.services import uploaded_sources as uploaded_sources_service
 from edutoon.services.users import UserRecord
 
@@ -121,6 +123,7 @@ async def upload_source(
             content_type=content_type,
             content=content,
             bucket=settings.BUCKET_UPLOADS,
+            max_pages=settings.MAX_PDF_PAGES,
         )
         return status.HTTP_201_CREATED, UploadedSourceResponse.from_record(source).model_dump(
             mode="json"
@@ -153,4 +156,29 @@ async def list_sources(
     return UploadedSourceListResponse(
         items=[UploadedSourceResponse.from_record(source) for source in page.items],
         next_cursor=page.next_cursor,
+    )
+
+
+@router.get("/{source_id}/chunks")
+async def list_source_chunks(
+    project_id: UUID,
+    source_id: UUID,
+    current_user: CurrentUser,
+    session: Session,
+) -> SourceChunkListResponse:
+    """The parsed result of a source, in document order - read-only, for
+    verifying the pipeline actually produced the chunks it claims to
+    (``uploaded_sources.status`` and ``page_count``). Two-level ownership
+    check (rule 9): the project must belong to the caller, and the source
+    must belong to that project - either mismatch looks like a 404, never
+    a 403.
+    """
+    await projects_service.get_project(session, project_id=project_id, owner_id=current_user.id)
+    await uploaded_sources_service.get_uploaded_source_for_project(
+        session, source_id=source_id, project_id=project_id
+    )
+
+    chunks = await source_chunks_service.list_source_chunks_in_order(session, source_id)
+    return SourceChunkListResponse(
+        items=[SourceChunkResponse.from_record(chunk) for chunk in chunks]
     )

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
@@ -89,6 +90,44 @@ async def create(
 async def get_by_id(session: AsyncSession, source_id: UUID) -> UploadedSourceRecord | None:
     stmt = select(uploaded_sources).where(uploaded_sources.c.id == source_id)
     row = (await session.execute(stmt)).mappings().one_or_none()
+    return _from_row(row) if row is not None else None
+
+
+async def get_by_id_for_project(
+    session: AsyncSession, source_id: UUID, project_id: UUID
+) -> UploadedSourceRecord | None:
+    """Scoped fetch mirroring ``projects.get_by_id_for_owner`` (rule 9): a
+    source that exists but belongs to a different project looks identical
+    to one that doesn't exist at all.
+    """
+    stmt = select(uploaded_sources).where(
+        uploaded_sources.c.id == source_id, uploaded_sources.c.project_id == project_id
+    )
+    row = (await session.execute(stmt)).mappings().one_or_none()
+    return _from_row(row) if row is not None else None
+
+
+async def update(
+    session: AsyncSession, *, source_id: UUID, project_id: UUID, **fields: Any
+) -> UploadedSourceRecord | None:
+    """Scoped partial update (e.g. ``status``/``page_count`` after parsing).
+    Returns ``None`` if the source doesn't exist or belongs to a different
+    project - same rule-9 shape as :func:`get_by_id_for_project`.
+    """
+    if not fields:
+        return await get_by_id_for_project(session, source_id, project_id)
+
+    stmt = (
+        uploaded_sources.update()
+        .where(uploaded_sources.c.id == source_id, uploaded_sources.c.project_id == project_id)
+        .values(**fields)
+        .returning(*uploaded_sources.c)
+    )
+    try:
+        result = await session.execute(stmt)
+    except IntegrityError as exc:
+        raise_conflict_from_integrity_error(exc)
+    row = result.mappings().one_or_none()
     return _from_row(row) if row is not None else None
 
 

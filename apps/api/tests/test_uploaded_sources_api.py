@@ -12,6 +12,7 @@ runs simply overwrite the same handful of objects rather than accumulating.
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from collections.abc import AsyncIterator, Callable
 from uuid import uuid4
@@ -22,6 +23,7 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey, RSAPublicKey
+from fpdf import FPDF
 
 from edutoon.api.dependencies import get_current_user
 from edutoon.core.config import get_settings
@@ -35,16 +37,28 @@ from edutoon.repositories import users as users_repo
 TEST_ISSUER = "https://test.clerk.accounts.dev"
 IDEMPOTENCY_HEADERS = {"Idempotency-Key": "test-key-1"}
 
-# A minimal well-formed PDF (header, one empty page, xref, trailer) - real
-# enough to pass the `%PDF` magic-byte check without pulling in a PDF
-# library, which is parser-phase territory, not this one's.
-_MINIMAL_PDF = (
-    b"%PDF-1.4\n"
-    b"1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
-    b"2 0 obj<</Type/Pages/Kids[]/Count 0>>endobj\n"
-    b"trailer<</Root 1 0 R>>\n"
-    b"%%EOF"
-)
+
+def _make_pdf(pages: list[str] | None = None) -> bytes:
+    """A real, pypdf-parseable PDF with one page per string in ``pages``
+    (default: a single page of sample text). An empty string produces a
+    genuinely blank page (no extractable text) - used to test that the
+    parsing pipeline skips blank pages when chunking.
+    """
+    texts = pages if pages is not None else ["Test content for parsing."]
+    doc = FPDF()
+    for text in texts:
+        doc.add_page()
+        if text:
+            doc.set_font("Helvetica", size=12)
+            doc.cell(text=text)
+    return bytes(doc.output())
+
+
+_DEFAULT_PDF = _make_pdf()
+
+# Starts with the `%PDF` magic bytes (so it passes that check) but is
+# otherwise garbage - pypdf can't parse it, unlike `_DEFAULT_PDF` above.
+_CORRUPT_PDF = b"%PDF-1.4\n" + os.urandom(200)
 
 
 def _generate_rsa_keypair() -> tuple[bytes, RSAPublicKey]:
@@ -130,7 +144,7 @@ async def _create_project(client: httpx.AsyncClient, headers: dict[str, str]) ->
     return response.json()["id"]  # type: ignore[no-any-return]
 
 
-def _pdf_file(content: bytes = _MINIMAL_PDF, filename: str = "paper.pdf") -> dict[str, object]:
+def _pdf_file(content: bytes = _DEFAULT_PDF, filename: str = "paper.pdf") -> dict[str, object]:
     return {"file": (filename, content, "application/pdf")}
 
 
@@ -153,8 +167,9 @@ async def test_upload_and_list_round_trip(client_factory, auth_headers):
         assert uploaded["original_filename"] == "paper.pdf"
         assert uploaded["content_type"] == "application/pdf"
         assert uploaded["kind"] == "pdf"
-        assert uploaded["status"] == "pending"
-        assert uploaded["byte_size"] == len(_MINIMAL_PDF)
+        assert uploaded["status"] == "parsed"
+        assert uploaded["page_count"] == 1
+        assert uploaded["byte_size"] == len(_DEFAULT_PDF)
         assert len(uploaded["checksum_sha256"]) == 64
         assert "storage_bucket" not in uploaded  # internal storage layout is not public
 
@@ -428,3 +443,184 @@ async def test_concurrent_duplicate_upload_returns_409(db_session):
     conflict = response_a if response_a.status_code == 409 else response_b
     assert conflict.json()["error"]["code"] == "idempotency_in_progress"
     assert len(list_resp.json()["items"]) == 1
+
+
+# --- PDF parsing pipeline (inline, synchronous - one chunk per non-blank page) ------
+
+
+async def test_multi_page_pdf_is_parsed_into_one_chunk_per_page(client_factory, auth_headers):
+    headers = auth_headers()
+    pdf = _make_pdf(["First page.", "Second page.", "Third page."])
+
+    async with client_factory() as client:
+        project_id = await _create_project(client, headers)
+
+        upload_resp = await client.post(
+            f"/v1/projects/{project_id}/sources",
+            files=_pdf_file(pdf),
+            headers={**headers, **IDEMPOTENCY_HEADERS},
+        )
+        assert upload_resp.status_code == 201
+        uploaded = upload_resp.json()
+        assert uploaded["status"] == "parsed"
+        assert uploaded["page_count"] == 3
+        source_id = uploaded["id"]
+
+        chunks_resp = await client.get(
+            f"/v1/projects/{project_id}/sources/{source_id}/chunks", headers=headers
+        )
+
+    assert chunks_resp.status_code == 200
+    items = chunks_resp.json()["items"]
+    assert [item["content"] for item in items] == ["First page.", "Second page.", "Third page."]
+    assert [item["chunk_index"] for item in items] == [0, 1, 2]
+    assert [(item["page_from"], item["page_to"]) for item in items] == [(1, 1), (2, 2), (3, 3)]
+    for item in items:
+        assert item["source_id"] == source_id
+        assert item["project_id"] == project_id
+
+
+async def test_blank_pages_are_skipped_when_chunking(client_factory, auth_headers):
+    headers = auth_headers()
+    pdf = _make_pdf(["Has text.", "", "Also has text."])
+
+    async with client_factory() as client:
+        project_id = await _create_project(client, headers)
+
+        upload_resp = await client.post(
+            f"/v1/projects/{project_id}/sources",
+            files=_pdf_file(pdf),
+            headers={**headers, **IDEMPOTENCY_HEADERS},
+        )
+        source_id = upload_resp.json()["id"]
+        assert upload_resp.json()["page_count"] == 3
+
+        chunks_resp = await client.get(
+            f"/v1/projects/{project_id}/sources/{source_id}/chunks", headers=headers
+        )
+
+    items = chunks_resp.json()["items"]
+    assert len(items) == 2  # the blank middle page produced no chunk
+    assert [item["content"] for item in items] == ["Has text.", "Also has text."]
+    assert [item["page_from"] for item in items] == [1, 3]
+
+
+async def test_unparseable_pdf_is_marked_failed_not_rejected(client_factory, auth_headers):
+    """Passes the `%PDF` magic-byte gate (a client-side shape check) but is
+    genuinely corrupt - the upload still succeeds (the bytes are stored,
+    traceable), just with ``status="failed"`` and no chunks, rather than a
+    4xx that would suggest the *request* was malformed.
+    """
+    headers = auth_headers()
+
+    async with client_factory() as client:
+        project_id = await _create_project(client, headers)
+
+        upload_resp = await client.post(
+            f"/v1/projects/{project_id}/sources",
+            files=_pdf_file(_CORRUPT_PDF),
+            headers={**headers, **IDEMPOTENCY_HEADERS},
+        )
+        source_id = upload_resp.json()["id"]
+
+        chunks_resp = await client.get(
+            f"/v1/projects/{project_id}/sources/{source_id}/chunks", headers=headers
+        )
+
+    assert upload_resp.status_code == 201
+    assert upload_resp.json()["status"] == "failed"
+    assert upload_resp.json()["page_count"] is None
+    assert chunks_resp.json()["items"] == []
+
+
+async def test_pdf_exceeding_max_pages_is_marked_failed(client_factory, auth_headers, monkeypatch):
+    headers = auth_headers()
+    monkeypatch.setenv("MAX_PDF_PAGES", "1")
+    get_settings.cache_clear()
+    pdf = _make_pdf(["Page one.", "Page two."])
+
+    try:
+        async with client_factory() as client:
+            project_id = await _create_project(client, headers)
+
+            upload_resp = await client.post(
+                f"/v1/projects/{project_id}/sources",
+                files=_pdf_file(pdf),
+                headers={**headers, **IDEMPOTENCY_HEADERS},
+            )
+            source_id = upload_resp.json()["id"]
+
+            chunks_resp = await client.get(
+                f"/v1/projects/{project_id}/sources/{source_id}/chunks", headers=headers
+            )
+    finally:
+        get_settings.cache_clear()
+
+    assert upload_resp.status_code == 201
+    assert upload_resp.json()["status"] == "failed"
+    assert upload_resp.json()["page_count"] == 2  # recorded even though it's over the limit
+    assert chunks_resp.json()["items"] == []
+
+
+# --- chunks endpoint ownership (rule 9: not-owned -> 404, never 403) ----------------
+
+
+async def test_chunks_for_another_users_project_returns_404_not_403(client_factory, auth_headers):
+    owner_headers = auth_headers()
+    other_headers = auth_headers()
+
+    async with client_factory() as client:
+        project_id = await _create_project(client, owner_headers)
+        upload_resp = await client.post(
+            f"/v1/projects/{project_id}/sources",
+            files=_pdf_file(),
+            headers={**owner_headers, **IDEMPOTENCY_HEADERS},
+        )
+        source_id = upload_resp.json()["id"]
+
+        response = await client.get(
+            f"/v1/projects/{project_id}/sources/{source_id}/chunks", headers=other_headers
+        )
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "not_found"
+
+
+async def test_chunks_for_a_source_in_a_different_project_returns_404(
+    client_factory, auth_headers
+):
+    """The source exists and the caller owns *a* project - just not the one
+    named in the URL - so this must 404 exactly like a nonexistent source
+    would (rule 9), not leak the source's existence via some other status.
+    """
+    headers = auth_headers()
+
+    async with client_factory() as client:
+        project_a = await _create_project(client, headers)
+        project_b = await _create_project(client, headers)
+
+        upload_resp = await client.post(
+            f"/v1/projects/{project_a}/sources",
+            files=_pdf_file(),
+            headers={**headers, **IDEMPOTENCY_HEADERS},
+        )
+        source_id = upload_resp.json()["id"]
+
+        response = await client.get(
+            f"/v1/projects/{project_b}/sources/{source_id}/chunks", headers=headers
+        )
+
+    assert response.status_code == 404
+
+
+async def test_chunks_for_nonexistent_source_returns_404(client_factory, auth_headers):
+    headers = auth_headers()
+
+    async with client_factory() as client:
+        project_id = await _create_project(client, headers)
+
+        response = await client.get(
+            f"/v1/projects/{project_id}/sources/{uuid4()}/chunks", headers=headers
+        )
+
+    assert response.status_code == 404

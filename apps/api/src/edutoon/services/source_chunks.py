@@ -7,7 +7,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from edutoon.core.errors import NotFoundError
 from edutoon.core.pagination import Page
 from edutoon.repositories import source_chunks as source_chunks_repo
-from edutoon.repositories.source_chunks import NewSourceChunk, SourceChunkRecord
+from edutoon.repositories.source_chunks import NewSourceChunk as NewSourceChunk
+from edutoon.repositories.source_chunks import SourceChunkRecord as SourceChunkRecord
 
 
 async def create_source_chunks(
@@ -27,3 +28,9 @@ async def list_source_chunks(
     session: AsyncSession, source_id: UUID, *, limit: int = 50, cursor: str | None = None
 ) -> Page[SourceChunkRecord]:
     return await source_chunks_repo.list_by_source(session, source_id, limit=limit, cursor=cursor)
+
+
+async def list_source_chunks_in_order(
+    session: AsyncSession, source_id: UUID
+) -> list[SourceChunkRecord]:
+    return await source_chunks_repo.list_by_source_in_order(session, source_id)

@@ -7,9 +7,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from edutoon.core.errors import NotFoundError
 from edutoon.core.pagination import Page
+from edutoon.providers import pdf
 from edutoon.providers.storage import Storage
 from edutoon.repositories import uploaded_sources as uploaded_sources_repo
+from edutoon.repositories.source_chunks import NewSourceChunk
 from edutoon.repositories.uploaded_sources import UploadedSourceRecord as UploadedSourceRecord
+from edutoon.services import source_chunks as source_chunks_service
 
 
 async def upload_source(
@@ -22,8 +25,11 @@ async def upload_source(
     content_type: str,
     content: bytes,
     bucket: str,
+    max_pages: int,
 ) -> UploadedSourceRecord:
-    """Store ``content`` and record it against ``project_id``.
+    """Store ``content``, record it against ``project_id``, and parse it
+    into ``source_chunks`` inline (no job queue - this phase is
+    synchronous), one chunk per non-blank page.
 
     The storage key is deterministic (derived from the content's checksum),
     so a genuine re-upload of identical bytes overwrites the same object
@@ -31,6 +37,12 @@ async def upload_source(
     it is what actually enforces "already uploaded" (rule 4-adjacent: the
     unique index on ``(project_id, checksum_sha256)``), via
     ``raise_conflict_from_integrity_error`` in the repository.
+
+    A PDF that can't be read at all, or exceeds ``max_pages``, still
+    produces a row - with ``status="failed"`` - rather than failing the
+    whole request: the upload (storage + traceability record) succeeded
+    even though parsing didn't, and a failed source can't feed anything
+    downstream.
     """
     checksum = hashlib.sha256(content).hexdigest()
     storage_key = f"projects/{project_id}/{checksum}.pdf"
@@ -39,7 +51,7 @@ async def upload_source(
         bucket=bucket, key=storage_key, body=content, content_type=content_type
     )
 
-    return await create_uploaded_source(
+    source = await create_uploaded_source(
         session,
         project_id=project_id,
         original_filename=original_filename,
@@ -49,6 +61,45 @@ async def upload_source(
         checksum_sha256=checksum,
         uploader_id=uploader_id,
         content_type=content_type,
+    )
+
+    try:
+        pages = pdf.extract_pages(content)
+    except pdf.PdfParseError:
+        return await update_uploaded_source(
+            session, source_id=source.id, project_id=project_id, status="failed"
+        )
+
+    if len(pages) > max_pages:
+        return await update_uploaded_source(
+            session,
+            source_id=source.id,
+            project_id=project_id,
+            status="failed",
+            page_count=len(pages),
+        )
+
+    chunks = [
+        NewSourceChunk(
+            source_id=source.id,
+            project_id=project_id,
+            chunk_index=index,
+            content=text.strip(),
+            page_from=index + 1,
+            page_to=index + 1,
+        )
+        for index, text in enumerate(pages)
+        if text.strip()
+    ]
+    if chunks:
+        await source_chunks_service.create_source_chunks(session, chunks)
+
+    return await update_uploaded_source(
+        session,
+        source_id=source.id,
+        project_id=project_id,
+        status="parsed",
+        page_count=len(pages),
     )
 
 
@@ -83,6 +134,29 @@ async def get_uploaded_source_or_404(
     session: AsyncSession, source_id: UUID
 ) -> UploadedSourceRecord:
     source = await uploaded_sources_repo.get_by_id(session, source_id)
+    if source is None:
+        raise NotFoundError(f"Uploaded source {source_id} not found.")
+    return source
+
+
+async def get_uploaded_source_for_project(
+    session: AsyncSession, *, source_id: UUID, project_id: UUID
+) -> UploadedSourceRecord:
+    """Ownership-scoped fetch (rule 9): a source from a different project
+    looks exactly like one that doesn't exist.
+    """
+    source = await uploaded_sources_repo.get_by_id_for_project(session, source_id, project_id)
+    if source is None:
+        raise NotFoundError(f"Uploaded source {source_id} not found.")
+    return source
+
+
+async def update_uploaded_source(
+    session: AsyncSession, *, source_id: UUID, project_id: UUID, **fields: object
+) -> UploadedSourceRecord:
+    source = await uploaded_sources_repo.update(
+        session, source_id=source_id, project_id=project_id, **fields
+    )
     if source is None:
         raise NotFoundError(f"Uploaded source {source_id} not found.")
     return source
