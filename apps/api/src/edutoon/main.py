@@ -21,6 +21,8 @@ from edutoon.core.context import bind_request_id
 from edutoon.core.errors import register_exception_handlers
 from edutoon.db import dispose_engine, get_engine
 from edutoon.providers.cache import Redis, get_redis_client
+from edutoon.providers.embeddings import Embeddings, get_embeddings_client
+from edutoon.providers.llm import LLM, get_llm_client
 from edutoon.providers.storage import Storage, get_storage_client
 
 REQUEST_ID_HEADER = "X-Request-Id"
@@ -54,9 +56,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         access_key_id=settings.STORAGE_ACCESS_KEY_ID,
         secret_access_key=settings.STORAGE_SECRET_ACCESS_KEY,
     )
+    embeddings_client: Embeddings = get_embeddings_client(
+        api_key=settings.OPENAI_API_KEY, model=settings.EMBEDDING_MODEL
+    )
+    llm_client: LLM = get_llm_client(
+        api_key=settings.ANTHROPIC_API_KEY, model=settings.LLM_MODEL
+    )
     app.state.engine = get_engine()
     app.state.redis = redis_client
     app.state.storage = storage_client
+    app.state.embeddings = embeddings_client
+    app.state.llm = llm_client
     try:
         yield
     finally:

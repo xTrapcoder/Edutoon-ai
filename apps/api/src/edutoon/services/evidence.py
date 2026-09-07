@@ -1,6 +1,9 @@
 """Evidence Engine - indexing (Phase B) and claim verification (Phase D).
 
-API routes are a later phase and deliberately not touched here.
+The API routes over this service live in
+``api/routers/claim_verifications.py`` (Phase E); the read-side helpers they
+call (``list_claim_verifications``, ``get_claim_verification``,
+``list_claim_citations``) are at the bottom of this module.
 
 Indexing is jobs-backed (``kind='build_evidence'``): ``enqueue_indexing_job``
 creates the row, ``run_build_evidence_job`` is what a future worker would
@@ -18,6 +21,7 @@ persisted as "supported" without at least one citation; see the guard in
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
@@ -25,12 +29,19 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from edutoon.core.errors import NotFoundError
+from edutoon.core.pagination import DEFAULT_PAGE_SIZE, Page
 from edutoon.providers.embeddings import Embeddings
 from edutoon.providers.llm import LLM, Passage
 from edutoon.repositories import claim_verifications as claim_verifications_repo
 from edutoon.repositories import jobs as jobs_repo
 from edutoon.repositories import source_chunks as source_chunks_repo
-from edutoon.repositories.claim_verifications import ClaimVerificationRecord, NewClaimCitation
+from edutoon.repositories.claim_verifications import (
+    ClaimCitationRecord as ClaimCitationRecord,
+)
+from edutoon.repositories.claim_verifications import (
+    ClaimVerificationRecord as ClaimVerificationRecord,
+)
+from edutoon.repositories.claim_verifications import NewClaimCitation
 from edutoon.repositories.jobs import JobRecord
 from edutoon.repositories.source_chunks import DEFAULT_SIMILARITY_LIMIT
 
@@ -205,3 +216,52 @@ async def verify_claim(
         rationale=verdict.rationale,
         citations=citations,
     )
+
+
+# --- read side (Phase E: API-facing retrieval of persisted verdicts) ----------------
+
+
+async def list_claim_verifications(
+    session: AsyncSession,
+    *,
+    project_id: UUID,
+    limit: int = DEFAULT_PAGE_SIZE,
+    cursor: str | None = None,
+) -> Page[ClaimVerificationRecord]:
+    """A project's claim verifications, newest first (keyset-paginated).
+
+    Not ownership-scoped itself - callers check the project belongs to the
+    caller first (rule 9), exactly as the ``sources`` routes do.
+    """
+    return await claim_verifications_repo.list_by_project(
+        session, project_id, limit=limit, cursor=cursor
+    )
+
+
+async def get_claim_verification(
+    session: AsyncSession, *, verification_id: UUID, project_id: UUID
+) -> ClaimVerificationRecord:
+    """Ownership-scoped fetch (rule 9): a verification belonging to a
+    different project looks exactly like one that doesn't exist.
+    """
+    verification = await claim_verifications_repo.get_by_id_for_project(
+        session, verification_id, project_id
+    )
+    if verification is None:
+        raise NotFoundError(f"Claim verification {verification_id} not found.")
+    return verification
+
+
+async def list_claim_citations(
+    session: AsyncSession, verification_id: UUID
+) -> list[ClaimCitationRecord]:
+    return await claim_verifications_repo.list_citations(session, verification_id)
+
+
+async def list_claim_citations_for(
+    session: AsyncSession, verification_ids: Sequence[UUID]
+) -> dict[UUID, list[ClaimCitationRecord]]:
+    """Citations for many verifications at once, grouped by verification id -
+    lets the list endpoint attach citations without an N+1.
+    """
+    return await claim_verifications_repo.list_citations_for(session, verification_ids)

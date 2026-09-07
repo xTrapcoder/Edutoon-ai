@@ -13,6 +13,8 @@ from edutoon.core.errors import UnauthorizedError
 from edutoon.db.session import get_session
 from edutoon.providers.cache import Redis
 from edutoon.providers.clerk import ClerkTokenError, verify_token
+from edutoon.providers.embeddings import Embeddings
+from edutoon.providers.llm import LLM
 from edutoon.providers.storage import Storage
 from edutoon.services.auth import get_or_provision_user
 from edutoon.services.users import UserRecord
@@ -27,11 +29,22 @@ def get_storage(request: Request) -> Storage:
     return request.app.state.storage  # type: ignore[no-any-return]
 
 
-# Routers depend on these aliases rather than importing `Redis`/`Storage`
-# from `providers.*` themselves (rule 2: providers are only ever reached
-# through this dependency-injection seam, same as `get_current_user` below).
+def get_embeddings(request: Request) -> Embeddings:
+    return request.app.state.embeddings  # type: ignore[no-any-return]
+
+
+def get_llm(request: Request) -> LLM:
+    return request.app.state.llm  # type: ignore[no-any-return]
+
+
+# Routers depend on these aliases rather than importing `Redis`/`Storage`/
+# `Embeddings`/`LLM` from `providers.*` themselves (rule 2: providers are only
+# ever reached through this dependency-injection seam, same as
+# `get_current_user` below).
 RedisDep = Annotated[Redis, Depends(get_redis)]
 StorageDep = Annotated[Storage, Depends(get_storage)]
+EmbeddingsDep = Annotated[Embeddings, Depends(get_embeddings)]
+LLMDep = Annotated[LLM, Depends(get_llm)]
 
 
 def _extract_bearer_token(authorization: str | None) -> str:

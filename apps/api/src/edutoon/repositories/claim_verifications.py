@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
@@ -143,6 +144,21 @@ async def get_by_id(
     return _verification_from_row(row) if row is not None else None
 
 
+async def get_by_id_for_project(
+    session: AsyncSession, verification_id: UUID, project_id: UUID
+) -> ClaimVerificationRecord | None:
+    """Scoped fetch mirroring ``uploaded_sources.get_by_id_for_project``
+    (rule 9): a verification that exists but belongs to a different project
+    looks identical to one that doesn't exist at all.
+    """
+    stmt = select(claim_verifications).where(
+        claim_verifications.c.id == verification_id,
+        claim_verifications.c.project_id == project_id,
+    )
+    row = (await session.execute(stmt)).mappings().one_or_none()
+    return _verification_from_row(row) if row is not None else None
+
+
 async def list_by_project(
     session: AsyncSession, project_id: UUID, *, limit: int = 50, cursor: str | None = None
 ) -> Page[ClaimVerificationRecord]:
@@ -165,3 +181,23 @@ async def list_citations(
     )
     rows = (await session.execute(stmt)).mappings().all()
     return [_citation_from_row(row) for row in rows]
+
+
+async def list_citations_for(
+    session: AsyncSession, claim_verification_ids: Sequence[UUID]
+) -> dict[UUID, list[ClaimCitationRecord]]:
+    """Citations for many verifications in one query, grouped by
+    verification id - the list endpoint's N+1-free counterpart to
+    :func:`list_citations`. Verifications with no citations are simply
+    absent from the mapping (callers fall back to an empty list).
+    """
+    grouped: dict[UUID, list[ClaimCitationRecord]] = {}
+    if not claim_verification_ids:
+        return grouped
+    stmt = select(claim_citations).where(
+        claim_citations.c.claim_verification_id.in_(claim_verification_ids)
+    )
+    for row in (await session.execute(stmt)).mappings().all():
+        citation = _citation_from_row(row)
+        grouped.setdefault(citation.claim_verification_id, []).append(citation)
+    return grouped
