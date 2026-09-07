@@ -1,12 +1,19 @@
-"""Evidence Engine - Phase B: embedding generation only.
+"""Evidence Engine - indexing (Phase B) and claim verification (Phase D).
 
-Retrieval, similarity search, claim verification, and everything past them
-are later phases and deliberately not touched here.
+API routes are a later phase and deliberately not touched here.
 
 Indexing is jobs-backed (``kind='build_evidence'``): ``enqueue_indexing_job``
 creates the row, ``run_build_evidence_job`` is what a future worker would
 call after dequeuing it. No worker/poller process exists yet - out of scope
 for this phase - so today these are called directly (see the tests).
+
+Claim verification (``verify_claim``) is synchronous, not jobs-backed: embed
+the claim, retrieve the top candidates via Phase C's project-scoped
+similarity search, ask the LLM to judge the claim against exactly those
+candidates, and persist the verdict - citations only for chunks the LLM
+actually named, never the full candidate set. A claim can never be
+persisted as "supported" without at least one citation; see the guard in
+``verify_claim`` below.
 """
 
 from __future__ import annotations
@@ -19,9 +26,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from edutoon.core.errors import NotFoundError
 from edutoon.providers.embeddings import Embeddings
+from edutoon.providers.llm import LLM, Passage
+from edutoon.repositories import claim_verifications as claim_verifications_repo
 from edutoon.repositories import jobs as jobs_repo
 from edutoon.repositories import source_chunks as source_chunks_repo
+from edutoon.repositories.claim_verifications import ClaimVerificationRecord, NewClaimCitation
 from edutoon.repositories.jobs import JobRecord
+from edutoon.repositories.source_chunks import DEFAULT_SIMILARITY_LIMIT
 
 BUILD_EVIDENCE_JOB_KIND = "build_evidence"
 
@@ -118,3 +129,79 @@ async def _mark_failed(session: AsyncSession, *, job_id: UUID, error: str) -> Jo
     )
     assert updated is not None
     return updated
+
+
+async def verify_claim(
+    session: AsyncSession,
+    embeddings: Embeddings,
+    llm: LLM,
+    *,
+    project_id: UUID,
+    claim_text: str,
+    limit: int = DEFAULT_SIMILARITY_LIMIT,
+) -> ClaimVerificationRecord:
+    """Verify ``claim_text`` against ``project_id``'s indexed source material.
+
+    Flow: embed the claim -> retrieve the top ``limit`` candidates via
+    Phase C's project-scoped similarity search -> ask the LLM to judge the
+    claim against exactly those candidates -> persist the verdict, with
+    citations only for the candidates the LLM actually named.
+
+    The core guarantee: a claim is never persisted as "supported" without
+    at least one citation. If the LLM reports "supported" but names no
+    passage (a hallucinated-confidence failure mode - the model being
+    confident without pointing at anything real), the stored status is
+    downgraded to "unsupported" here. This is enforced at the point of
+    persistence, not merely assumed from the model's own self-report.
+    """
+    [claim_vector] = await embeddings.embed([claim_text])
+    candidates = await source_chunks_repo.search_by_similarity(
+        session, project_id=project_id, query_embedding=claim_vector, limit=limit
+    )
+
+    if not candidates:
+        return await claim_verifications_repo.create(
+            session,
+            project_id=project_id,
+            claim_text=claim_text,
+            status="unsupported",
+            embedding_model=embeddings.model,
+            llm_model=llm.model,
+            rationale="No indexed source material exists for this project yet.",
+        )
+
+    candidates_by_id = {str(chunk.id): (chunk, similarity) for chunk, similarity in candidates}
+    passages = [
+        Passage(id=chunk_id, content=chunk.content)
+        for chunk_id, (chunk, _similarity) in candidates_by_id.items()
+    ]
+
+    verdict = await llm.judge_claim(claim_text, passages)
+
+    # Defense in depth: providers.llm.LLM already filters cited ids against
+    # what it was shown, but this is the actual persistence boundary, so it
+    # re-checks against the real candidate set rather than trusting that
+    # filtering happened correctly one layer away.
+    cited = [
+        candidates_by_id[pid] for pid in verdict.cited_passage_ids if pid in candidates_by_id
+    ]
+
+    status = verdict.status
+    if status == "supported" and not cited:
+        status = "unsupported"
+
+    citations = [
+        NewClaimCitation(source_chunk_id=chunk.id, similarity=similarity)
+        for chunk, similarity in cited
+    ]
+
+    return await claim_verifications_repo.create(
+        session,
+        project_id=project_id,
+        claim_text=claim_text,
+        status=status,
+        embedding_model=embeddings.model,
+        llm_model=llm.model,
+        rationale=verdict.rationale,
+        citations=citations,
+    )

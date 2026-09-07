@@ -19,6 +19,7 @@ dependencies = [
     "pypdf",
     "openai",
     "pgvector",
+    "anthropic",
 ]
 
 [dependency-groups]

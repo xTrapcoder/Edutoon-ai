@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     CLERK_JWKS_URL: str
     CLERK_ISSUER: str
     OPENAI_API_KEY: str
+    ANTHROPIC_API_KEY: str
 
     # --- Optional (with defaults) -------------------------------------------------
     LOG_LEVEL: str = "INFO"
@@ -45,6 +46,7 @@ class Settings(BaseSettings):
     MAX_UPLOAD_BYTES: int = 104_857_600
     MAX_PDF_PAGES: int = 300
     EMBEDDING_MODEL: str = "text-embedding-3-small"
+    LLM_MODEL: str = "claude-sonnet-5"
 
 
 class MissingSettingsError(RuntimeError):

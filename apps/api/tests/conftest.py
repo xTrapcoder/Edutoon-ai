@@ -26,6 +26,7 @@ _TEST_ENV = {
     # monkeypatches its network call, so this only needs to satisfy
     # Settings/AsyncOpenAI's constructor, never actually authenticate.
     "OPENAI_API_KEY": "sk-test-not-a-real-key",
+    "ANTHROPIC_API_KEY": "sk-ant-test-not-a-real-key",
 }
 
 for key, value in _TEST_ENV.items():

@@ -8,16 +8,22 @@ orchestration is exercised exactly as it runs in production.
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
+from anthropic import AsyncAnthropic
+from anthropic.types import Message, ToolUseBlock
+from anthropic.types import Usage as AnthropicUsage
 from openai import AsyncOpenAI
 from openai.types import CreateEmbeddingResponse, Embedding
 from openai.types.create_embedding_response import Usage
 
 from edutoon.core.errors import ConflictError, NotFoundError
 from edutoon.providers.embeddings import Embeddings
+from edutoon.providers.llm import LLM, Verdict
+from edutoon.repositories import claim_verifications as claim_verifications_repo
 from edutoon.repositories import projects as projects_repo
 from edutoon.repositories import source_chunks as source_chunks_repo
 from edutoon.repositories import uploaded_sources as uploaded_sources_repo
@@ -26,6 +32,7 @@ from edutoon.repositories.source_chunks import NewSourceChunk
 from edutoon.services import evidence as evidence_service
 
 MODEL = "text-embedding-3-small"
+LLM_MODEL = "claude-sonnet-5"
 
 
 def _fake_embeddings(monkeypatch, vector_for: dict[str, list[float]] | None = None) -> Embeddings:
@@ -48,6 +55,26 @@ def _fake_embeddings(monkeypatch, vector_for: dict[str, list[float]] | None = No
 
     monkeypatch.setattr(client.embeddings, "create", _create)
     return Embeddings(client, model=MODEL)
+
+
+def _fake_llm(monkeypatch, tool_input: dict[str, Any]) -> LLM:
+    """A real LLM/AsyncAnthropic pair whose ``messages.create`` call always
+    returns the given verdict tool input - same monkeypatch-the-SDK-call
+    pattern as ``_fake_embeddings`` above and ``test_llm_provider.py``.
+    """
+    client = AsyncAnthropic(api_key="sk-ant-test-not-a-real-key")
+    message = Message(
+        id="msg_1",
+        content=[
+            ToolUseBlock(type="tool_use", id="toolu_1", name="submit_verdict", input=tool_input)
+        ],
+        model=LLM_MODEL,
+        role="assistant",
+        type="message",
+        usage=AnthropicUsage(input_tokens=10, output_tokens=10),
+    )
+    monkeypatch.setattr(client.messages, "create", AsyncMock(return_value=message))
+    return LLM(client, model=LLM_MODEL)
 
 
 async def _make_source(db_session, num_chunks: int = 2):
@@ -220,3 +247,179 @@ async def test_run_build_evidence_job_increments_attempts_on_retry(db_session, m
     assert first.attempts == 1
     assert second.attempts == 2
     assert second.result == {"chunks_embedded": 0}  # nothing left to embed the second time
+
+
+# --- verify_claim --------------------------------------------------------------------
+
+QUERY_VECTOR = [1.0] + [0.0] * 1535
+
+
+async def _make_indexed_chunk(db_session, *, project=None, content: str = "The sky is blue."):
+    """A project with one already-embedded chunk (embedding set directly,
+    bypassing the embeddings provider, since only the retrieval/persistence
+    side of verify_claim is under test here - Phase B already covers
+    indexing itself).
+    """
+    if project is None:
+        owner = await users_repo.create(db_session, email=f"{uuid4()}@example.com")
+        project = await projects_repo.create(
+            db_session, owner_id=owner.id, title="P", source_type="pdf"
+        )
+    source = await uploaded_sources_repo.create(
+        db_session,
+        project_id=project.id,
+        original_filename="notes.pdf",
+        storage_bucket="edutoon-uploads",
+        storage_key=f"{project.id}/{uuid4()}.pdf",
+        byte_size=1024,
+        checksum_sha256=uuid4().hex + uuid4().hex[:32],
+    )
+    [chunk] = await source_chunks_repo.create_many(
+        db_session,
+        [
+            NewSourceChunk(
+                source_id=source.id, project_id=project.id, chunk_index=0, content=content
+            )
+        ],
+    )
+    chunk = await source_chunks_repo.update_embedding(
+        db_session, chunk_id=chunk.id, embedding=QUERY_VECTOR, embedding_model=MODEL
+    )
+    assert chunk is not None
+    return project, chunk
+
+
+async def test_verify_claim_persists_supported_verdict_with_its_citation(db_session, monkeypatch):
+    project, chunk = await _make_indexed_chunk(db_session, content="The sky is blue.")
+    claim_text = "The sky is blue."
+    embeddings = _fake_embeddings(monkeypatch, {claim_text: QUERY_VECTOR})
+    llm = _fake_llm(
+        monkeypatch,
+        {
+            "status": "supported",
+            "rationale": "Directly stated in the source.",
+            "cited_passage_ids": [str(chunk.id)],
+        },
+    )
+
+    verification = await evidence_service.verify_claim(
+        db_session, embeddings, llm, project_id=project.id, claim_text=claim_text
+    )
+
+    assert verification.status == "supported"
+    assert verification.embedding_model == MODEL
+    assert verification.llm_model == LLM_MODEL
+    citations = await claim_verifications_repo.list_citations(db_session, verification.id)
+    assert [c.source_chunk_id for c in citations] == [chunk.id]
+
+
+async def test_verify_claim_downgrades_supported_with_no_citations_to_unsupported(
+    db_session, monkeypatch
+):
+    """The core guarantee: the LLM saying "supported" is not enough on its
+    own - without at least one real citation, the persisted status must
+    never be "supported".
+    """
+    project, _chunk = await _make_indexed_chunk(db_session)
+    claim_text = "An unrelated claim."
+    embeddings = _fake_embeddings(monkeypatch, {claim_text: QUERY_VECTOR})
+    llm = _fake_llm(
+        monkeypatch,
+        {
+            "status": "supported",
+            "rationale": "Confident but points at nothing.",
+            "cited_passage_ids": [],
+        },
+    )
+
+    verification = await evidence_service.verify_claim(
+        db_session, embeddings, llm, project_id=project.id, claim_text=claim_text
+    )
+
+    assert verification.status == "unsupported"
+    assert await claim_verifications_repo.list_citations(db_session, verification.id) == []
+
+
+async def test_verify_claim_persists_unsupported_verdict_with_no_citations(db_session, monkeypatch):
+    project, _chunk = await _make_indexed_chunk(db_session)
+    claim_text = "Something not in the source."
+    embeddings = _fake_embeddings(monkeypatch, {claim_text: QUERY_VECTOR})
+    llm = _fake_llm(
+        monkeypatch,
+        {"status": "unsupported", "rationale": "Not mentioned.", "cited_passage_ids": []},
+    )
+
+    verification = await evidence_service.verify_claim(
+        db_session, embeddings, llm, project_id=project.id, claim_text=claim_text
+    )
+
+    assert verification.status == "unsupported"
+    assert verification.rationale == "Not mentioned."
+
+
+async def test_verify_claim_drops_a_cited_id_outside_the_candidate_set(db_session, monkeypatch):
+    """Defense in depth at the persistence boundary: even if judge_claim's
+    own filtering somehow let a bogus id through, verify_claim must still
+    only ever persist citations for chunks that were real candidates.
+    """
+    project, _chunk = await _make_indexed_chunk(db_session)
+    claim_text = "Claim"
+    embeddings = _fake_embeddings(monkeypatch, {claim_text: QUERY_VECTOR})
+    llm = LLM(AsyncAnthropic(api_key="sk-ant-test-not-a-real-key"), model=LLM_MODEL)
+    monkeypatch.setattr(
+        llm,
+        "judge_claim",
+        AsyncMock(
+            return_value=Verdict(
+                status="supported", rationale="...", cited_passage_ids=["not-a-real-chunk-id"]
+            )
+        ),
+    )
+
+    verification = await evidence_service.verify_claim(
+        db_session, embeddings, llm, project_id=project.id, claim_text=claim_text
+    )
+
+    assert verification.status == "unsupported"  # downgraded: the only "citation" was bogus
+    assert await claim_verifications_repo.list_citations(db_session, verification.id) == []
+
+
+async def test_verify_claim_with_no_indexed_material_returns_unsupported_without_calling_the_llm(
+    db_session, monkeypatch
+):
+    owner = await users_repo.create(db_session, email=f"{uuid4()}@example.com")
+    project = await projects_repo.create(
+        db_session, owner_id=owner.id, title="Empty", source_type="pdf"
+    )
+    embeddings = _fake_embeddings(monkeypatch, {"Claim": QUERY_VECTOR})
+    llm = _fake_llm(
+        monkeypatch, {"status": "supported", "rationale": "...", "cited_passage_ids": []}
+    )
+    judge_spy = AsyncMock(wraps=llm.judge_claim)
+    monkeypatch.setattr(llm, "judge_claim", judge_spy)
+
+    verification = await evidence_service.verify_claim(
+        db_session, embeddings, llm, project_id=project.id, claim_text="Claim"
+    )
+
+    assert verification.status == "unsupported"
+    assert "no indexed source material" in verification.rationale.lower()
+    judge_spy.assert_not_called()
+
+
+async def test_verify_claim_never_retrieves_another_projects_chunks(db_session, monkeypatch):
+    _project_a, _chunk_a = await _make_indexed_chunk(db_session, content="Project A content.")
+    project_b, chunk_b = await _make_indexed_chunk(db_session, content="Project B content.")
+    claim_text = "Claim"
+    embeddings = _fake_embeddings(monkeypatch, {claim_text: QUERY_VECTOR})
+    llm = _fake_llm(
+        monkeypatch,
+        {"status": "supported", "rationale": "...", "cited_passage_ids": [str(chunk_b.id)]},
+    )
+
+    verification = await evidence_service.verify_claim(
+        db_session, embeddings, llm, project_id=project_b.id, claim_text=claim_text
+    )
+
+    citations = await claim_verifications_repo.list_citations(db_session, verification.id)
+    assert [c.source_chunk_id for c in citations] == [chunk_b.id]
