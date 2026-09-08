@@ -164,3 +164,44 @@ audit_logs = sa.Table(
     sa.Column("context", JSONB, nullable=False),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
 )
+
+# Script Generation Engine (migration 0007). ``scripts`` is a status machine
+# (``pending -> draft -> approved`` / ``failed`` / ``superseded``) with a
+# ``set_updated_at`` trigger, like ``jobs`` / ``projects``.
+scripts = sa.Table(
+    "scripts",
+    metadata,
+    sa.Column("id", UUID(as_uuid=True), primary_key=True, server_default=sa.FetchedValue()),
+    sa.Column("project_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("status", sa.Text, nullable=False),
+    sa.Column("llm_model", sa.Text, nullable=False),
+    sa.Column("estimated_duration_ms", sa.BigInteger),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+)
+
+# Append-only (same discipline as claim_citations): repositories only ever
+# INSERT or SELECT script_segments / script_segment_claims. A regenerated
+# script is a new ``scripts`` row, never an edit of these child rows.
+script_segments = sa.Table(
+    "script_segments",
+    metadata,
+    sa.Column("id", UUID(as_uuid=True), primary_key=True, server_default=sa.FetchedValue()),
+    sa.Column("script_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("segment_index", sa.Integer, nullable=False),
+    sa.Column("narration_text", sa.Text, nullable=False),
+    sa.Column("estimated_duration_ms", sa.BigInteger, nullable=False),
+    sa.Column("topic_id", UUID(as_uuid=True)),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+)
+
+# The traceability link back to the Evidence Engine: every row points at a
+# real claim_verifications row (FK ON DELETE RESTRICT).
+script_segment_claims = sa.Table(
+    "script_segment_claims",
+    metadata,
+    sa.Column("id", UUID(as_uuid=True), primary_key=True, server_default=sa.FetchedValue()),
+    sa.Column("script_segment_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("claim_verification_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+)

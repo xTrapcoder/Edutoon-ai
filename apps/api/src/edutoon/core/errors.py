@@ -116,6 +116,15 @@ _UNIQUE_CONSTRAINT_MESSAGES: dict[str, str] = {
     "uq_claim_citations_claim_verification_id_source_chunk_id": (
         "This source chunk is already cited by this verification."
     ),
+    "uq_scripts_project_id_active": (
+        "This project already has an active script."
+    ),
+    "uq_script_segments_script_id_segment_index": (
+        "A segment already occupies this index in the script."
+    ),
+    "uq_script_segment_claims_segment_verification": (
+        "This claim is already cited by this script segment."
+    ),
 }
 
 
