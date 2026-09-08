@@ -48,6 +48,15 @@ class Settings(BaseSettings):
     EMBEDDING_MODEL: str = "text-embedding-3-small"
     LLM_MODEL: str = "claude-sonnet-5"
 
+    # Script Generation Engine (SG-2). The script writer may use a different
+    # model from the claim judge (``LLM_MODEL``). Segment and claim caps bound
+    # a single generation's size and cost; words-per-minute converts a
+    # segment's word count into an estimated spoken duration.
+    SCRIPT_LLM_MODEL: str = "claude-sonnet-5"
+    MAX_SCRIPT_SEGMENTS: int = 12
+    MAX_CLAIMS_PER_GENERATION: int = 40
+    SCRIPT_WORDS_PER_MINUTE: int = 150
+
 
 class MissingSettingsError(RuntimeError):
     """Raised when one or more required settings are absent from the environment."""
