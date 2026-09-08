@@ -278,3 +278,28 @@ async def test_list_supported_by_project_never_leaks_another_project(db_session)
     rows = await claim_verifications_repo.list_supported_by_project(db_session, project_b.id)
 
     assert [row.id for row in rows] == [mine.id]
+
+
+async def test_list_by_ids_is_project_scoped(db_session):
+    project_a, _ = await _make_chunk(db_session)
+    project_b, _ = await _make_chunk(db_session)
+    a1 = await _verification(db_session, project_a, status="supported", text="A1.")
+    a2 = await _verification(db_session, project_a, status="unsupported", text="A2.")
+    b1 = await _verification(db_session, project_b, status="supported", text="B1.")
+
+    rows = await claim_verifications_repo.list_by_ids(
+        db_session, project_id=project_a.id, verification_ids=[a1.id, a2.id, b1.id]
+    )
+
+    # b1 is another project's - absent, not an error. Status is not filtered here.
+    assert {row.id for row in rows} == {a1.id, a2.id}
+
+
+async def test_list_by_ids_with_no_ids_returns_empty(db_session):
+    project, _ = await _make_chunk(db_session)
+    assert (
+        await claim_verifications_repo.list_by_ids(
+            db_session, project_id=project.id, verification_ids=[]
+        )
+        == []
+    )

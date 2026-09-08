@@ -556,3 +556,83 @@ async def test_create_script_without_supersede_conflicts_on_the_active_slot(db_s
             draft=_validated_draft(_validated_segment(0, "Second active.", (v1.id,))),
             supersede=False,
         )
+
+
+# --- attach_draft / list_segment_claims_for_script (SG-4 support) ----------------
+
+
+async def test_attach_draft_fills_a_pending_script_and_advances_it(db_session):
+    project = await _make_project(db_session)
+    v1 = await _make_verified_claim(db_session, project)
+    script = await scripts_repo.create(db_session, project_id=project.id, llm_model=MODEL)
+
+    updated = await scripts_repo.attach_draft(
+        db_session,
+        project_id=project.id,
+        script_id=script.id,
+        draft=_validated_draft(
+            _validated_segment(0, "Intro.", (), connective=True, duration_ms=1_000),
+            _validated_segment(1, "A fact.", (v1.id,), duration_ms=3_000),
+        ),
+    )
+
+    assert updated is not None
+    assert updated.status == "draft"
+    assert updated.estimated_duration_ms == 4_000
+    segments = await scripts_repo.list_segments(
+        db_session, project_id=project.id, script_id=script.id
+    )
+    assert [s.segment_index for s in segments] == [0, 1]
+
+
+async def test_attach_draft_is_project_scoped_and_pending_only(db_session):
+    project_a = await _make_project(db_session)
+    project_b = await _make_project(db_session)
+    script = await scripts_repo.create(db_session, project_id=project_a.id, llm_model=MODEL)
+
+    # wrong project -> None (rule 9)
+    assert (
+        await scripts_repo.attach_draft(
+            db_session, project_id=project_b.id, script_id=script.id, draft=_validated_draft()
+        )
+        is None
+    )
+    # not pending -> None
+    await scripts_repo.set_status(
+        db_session, project_id=project_a.id, script_id=script.id, status="draft"
+    )
+    assert (
+        await scripts_repo.attach_draft(
+            db_session, project_id=project_a.id, script_id=script.id, draft=_validated_draft()
+        )
+        is None
+    )
+
+
+async def test_list_segment_claims_for_script_batches_and_scopes(db_session):
+    project = await _make_project(db_session)
+    v1 = await _make_verified_claim(db_session, project)
+    v2 = await _make_verified_claim(db_session, project)
+    script = await scripts_repo.create(
+        db_session,
+        project_id=project.id,
+        llm_model=MODEL,
+        segments=[
+            NewScriptSegment(0, "One.", 1_000, claim_verification_ids=(v1.id,)),
+            NewScriptSegment(1, "Two.", 1_000, claim_verification_ids=(v1.id, v2.id)),
+        ],
+    )
+
+    links = await scripts_repo.list_segment_claims_for_script(
+        db_session, project_id=project.id, script_id=script.id
+    )
+    assert {link.claim_verification_id for link in links} == {v1.id, v2.id}
+    assert len(links) == 3
+
+    other_project = await _make_project(db_session)
+    assert (
+        await scripts_repo.list_segment_claims_for_script(
+            db_session, project_id=other_project.id, script_id=script.id
+        )
+        == []
+    )

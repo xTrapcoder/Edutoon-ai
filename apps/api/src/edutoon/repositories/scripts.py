@@ -247,6 +247,48 @@ async def create_script(
         )
 
 
+async def attach_draft(
+    session: AsyncSession,
+    *,
+    project_id: UUID,
+    script_id: UUID,
+    draft: ValidatedScriptDraft,
+) -> ScriptRecord | None:
+    """Fill an existing *pending* script with a validated draft - its
+    segments and their claim-verification links - and advance it to
+    ``draft``, all inside one SAVEPOINT.
+
+    This is the job-flow counterpart to :func:`create_script`: the pending
+    ``scripts`` row was created up front by ``enqueue_script_generation`` (so
+    the caller gets an id immediately), and the background job fills it in
+    here. Returns ``None`` if the script does not exist, belongs to another
+    project, or is no longer ``pending`` (rule 9 for the first two). Any
+    failure rolls the whole attachment back and leaves the script
+    ``pending``.
+    """
+    new_segments = [
+        NewScriptSegment(
+            segment_index=segment.segment_index,
+            narration_text=segment.narration_text,
+            estimated_duration_ms=segment.estimated_duration_ms,
+            claim_verification_ids=segment.claim_verification_ids,
+        )
+        for segment in draft.segments
+    ]
+    async with session.begin_nested():
+        script = await get_by_id_for_project(session, script_id, project_id)
+        if script is None or script.status != "pending":
+            return None
+        await add_segments(session, script_id=script_id, segments=new_segments)
+        return await set_status(
+            session,
+            project_id=project_id,
+            script_id=script_id,
+            status="draft",
+            estimated_duration_ms=draft.estimated_duration_ms,
+        )
+
+
 async def get_by_id(session: AsyncSession, script_id: UUID) -> ScriptRecord | None:
     stmt = select(scripts).where(scripts.c.id == script_id)
     row = (await session.execute(stmt)).mappings().one_or_none()
@@ -324,6 +366,31 @@ async def list_segment_claims(
         .join(scripts, script_segments.c.script_id == scripts.c.id)
         .where(
             script_segment_claims.c.script_segment_id == script_segment_id,
+            scripts.c.project_id == project_id,
+        )
+    )
+    rows = (await session.execute(stmt)).mappings().all()
+    return [_segment_claim_from_row(row) for row in rows]
+
+
+async def list_segment_claims_for_script(
+    session: AsyncSession, *, project_id: UUID, script_id: UUID
+) -> list[ScriptSegmentClaimRecord]:
+    """Every ``script_segment_claims`` row for one whole script in a single
+    query - the N+1-free counterpart to :func:`list_segment_claims`, for
+    assembling a full script-detail view. Project-scoped through
+    ``script_segments -> scripts``; a script from another project yields
+    ``[]`` (rule 9).
+    """
+    stmt = (
+        select(script_segment_claims)
+        .join(
+            script_segments,
+            script_segment_claims.c.script_segment_id == script_segments.c.id,
+        )
+        .join(scripts, script_segments.c.script_id == scripts.c.id)
+        .where(
+            script_segments.c.script_id == script_id,
             scripts.c.project_id == project_id,
         )
     )

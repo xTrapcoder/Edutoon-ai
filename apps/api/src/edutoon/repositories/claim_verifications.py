@@ -169,6 +169,25 @@ async def list_by_project(
     return Page(items=[_verification_from_row(row) for row in rows], next_cursor=next_cursor)
 
 
+async def list_by_ids(
+    session: AsyncSession, *, project_id: UUID, verification_ids: Sequence[UUID]
+) -> list[ClaimVerificationRecord]:
+    """Resolve a set of verification ids to their records, scoped to
+    ``project_id`` - an id from another project is simply absent from the
+    result (rule 9), never an error. Order is not guaranteed. Returns ``[]``
+    for an empty ``verification_ids``. The N+1-free way to attach claim
+    detail to a batch of script segments.
+    """
+    if not verification_ids:
+        return []
+    stmt = select(claim_verifications).where(
+        claim_verifications.c.project_id == project_id,
+        claim_verifications.c.id.in_(verification_ids),
+    )
+    rows = (await session.execute(stmt)).mappings().all()
+    return [_verification_from_row(row) for row in rows]
+
+
 async def list_supported_by_project(
     session: AsyncSession, project_id: UUID
 ) -> list[ClaimVerificationRecord]:
