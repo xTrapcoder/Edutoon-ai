@@ -169,6 +169,29 @@ async def list_by_project(
     return Page(items=[_verification_from_row(row) for row in rows], next_cursor=next_cursor)
 
 
+async def list_supported_by_project(
+    session: AsyncSession, project_id: UUID
+) -> list[ClaimVerificationRecord]:
+    """Every ``status='supported'`` verification for ``project_id``, oldest
+    first - the pool a script's segments are allowed to cite.
+
+    Deliberately strict: ``partially_supported`` is *not* included. A script
+    segment may only rest on a claim that stood up in full. Unpaginated,
+    like ``list_citations`` - the count is bounded by the topics worth
+    covering, which the pipeline caps upstream.
+    """
+    stmt = (
+        select(claim_verifications)
+        .where(
+            claim_verifications.c.project_id == project_id,
+            claim_verifications.c.status == "supported",
+        )
+        .order_by(claim_verifications.c.created_at.asc(), claim_verifications.c.id.asc())
+    )
+    rows = (await session.execute(stmt)).mappings().all()
+    return [_verification_from_row(row) for row in rows]
+
+
 async def list_citations(
     session: AsyncSession, claim_verification_id: UUID
 ) -> list[ClaimCitationRecord]:

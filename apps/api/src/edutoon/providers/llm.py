@@ -27,6 +27,8 @@ from typing import Literal, cast
 from anthropic import AsyncAnthropic
 from anthropic.types import MessageParam, ToolChoiceToolParam, ToolParam, ToolUseBlock
 
+from edutoon.domain.script import ScriptDraft, ScriptSegmentDraft
+
 VerdictStatus = Literal["supported", "partially_supported", "unsupported", "contradicted"]
 
 _VALID_STATUSES: frozenset[str] = frozenset(
@@ -123,8 +125,18 @@ _SCRIPT_TOOL: ToolParam = {
                             "items": {"type": "string"},
                             "description": (
                                 "Ids of the supplied claims this segment's "
-                                "narration draws on; empty for a purely "
+                                "narration draws on; empty only for a "
                                 "connective segment."
+                            ),
+                        },
+                        "connective": {
+                            "type": "boolean",
+                            "description": (
+                                "True for a purely connective segment - an "
+                                "introduction or a hand-off between topics - "
+                                "that asserts no fact of its own. Such a "
+                                "segment, and only such a segment, may list "
+                                "no claim ids."
                             ),
                         },
                     },
@@ -155,21 +167,6 @@ class ScriptBrief:
     audience: str | None = None
     tone: str | None = None
     target_duration_ms: int | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class ScriptSegmentDraft:
-    segment_index: int
-    narration_text: str
-    claim_ids: list[str]
-    estimated_duration_ms: int
-
-
-@dataclass(frozen=True, slots=True)
-class ScriptDraft:
-    title: str
-    segments: list[ScriptSegmentDraft]
-    estimated_duration_ms: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -256,6 +253,10 @@ def _parse_script_draft(
                 f"Segment {index} cites claim ids that were not supplied: {unknown}."
             )
 
+        connective = raw_segment.get("connective", False)
+        if not isinstance(connective, bool):
+            raise LLMResponseError("Each segment's connective flag must be a boolean.")
+
         segments.append(
             ScriptSegmentDraft(
                 segment_index=index,
@@ -265,6 +266,7 @@ def _parse_script_draft(
                 estimated_duration_ms=_estimate_segment_duration_ms(
                     narration, words_per_minute
                 ),
+                connective=connective,
             )
         )
 

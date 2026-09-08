@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -150,3 +151,22 @@ async def list_by_project(
         session, stmt, table=uploaded_sources, limit=limit, cursor=cursor
     )
     return Page(items=[_from_row(row) for row in rows], next_cursor=next_cursor)
+
+
+async def list_by_ids(
+    session: AsyncSession, *, project_id: UUID, source_ids: Sequence[UUID]
+) -> list[UploadedSourceRecord]:
+    """Resolve a set of source ids to their records, scoped to
+    ``project_id`` - any id belonging to another project is simply absent
+    from the result (rule 9), never an error. Order is not guaranteed;
+    callers that need one should sort by a field on the record. Returns
+    ``[]`` for an empty ``source_ids``.
+    """
+    if not source_ids:
+        return []
+    stmt = select(uploaded_sources).where(
+        uploaded_sources.c.project_id == project_id,
+        uploaded_sources.c.id.in_(source_ids),
+    )
+    rows = (await session.execute(stmt)).mappings().all()
+    return [_from_row(row) for row in rows]

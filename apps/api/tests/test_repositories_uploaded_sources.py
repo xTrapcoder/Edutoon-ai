@@ -55,3 +55,38 @@ async def test_get_by_checksum(db_session):
     )
 
     assert found == source
+
+
+async def _source(db_session, project, name: str):
+    return await uploaded_sources_repo.create(
+        db_session,
+        project_id=project.id,
+        original_filename=name,
+        storage_bucket="edutoon-uploads",
+        storage_key=f"{project.id}/{name}",
+        byte_size=1024,
+        checksum_sha256=_sha256_hex(),
+    )
+
+
+async def test_list_by_ids_is_project_scoped(db_session):
+    project_a = await _make_project(db_session)
+    project_b = await _make_project(db_session)
+    a1 = await _source(db_session, project_a, "a1.pdf")
+    a2 = await _source(db_session, project_a, "a2.pdf")
+    b1 = await _source(db_session, project_b, "b1.pdf")
+
+    rows = await uploaded_sources_repo.list_by_ids(
+        db_session, project_id=project_a.id, source_ids=[a1.id, a2.id, b1.id]
+    )
+
+    # b1 belongs to another project - absent, not an error (rule 9).
+    assert {row.id for row in rows} == {a1.id, a2.id}
+
+
+async def test_list_by_ids_with_no_ids_returns_empty(db_session):
+    project = await _make_project(db_session)
+
+    assert await uploaded_sources_repo.list_by_ids(
+        db_session, project_id=project.id, source_ids=[]
+    ) == []

@@ -240,3 +240,41 @@ async def test_deleting_a_cited_source_chunk_is_restricted(db_session):
 
     with pytest.raises(IntegrityError):
         await db_session.execute(delete(source_chunks).where(source_chunks.c.id == chunk.id))
+
+
+# --- list_supported_by_project (SG-3 helper) --------------------------------------
+
+
+async def _verification(db_session, project, *, status: str, text: str = "A claim."):
+    return await claim_verifications_repo.create(
+        db_session,
+        project_id=project.id,
+        claim_text=text,
+        status=status,
+        embedding_model="text-embedding-3-small",
+        llm_model="claude-sonnet-5",
+    )
+
+
+async def test_list_supported_by_project_returns_only_supported(db_session):
+    project, _ = await _make_chunk(db_session)
+    supported_a = await _verification(db_session, project, status="supported", text="One.")
+    supported_b = await _verification(db_session, project, status="supported", text="Two.")
+    await _verification(db_session, project, status="partially_supported", text="Three.")
+    await _verification(db_session, project, status="unsupported", text="Four.")
+    await _verification(db_session, project, status="contradicted", text="Five.")
+
+    rows = await claim_verifications_repo.list_supported_by_project(db_session, project.id)
+
+    assert [row.id for row in rows] == [supported_a.id, supported_b.id]
+
+
+async def test_list_supported_by_project_never_leaks_another_project(db_session):
+    project_a, _ = await _make_chunk(db_session)
+    project_b, _ = await _make_chunk(db_session)
+    await _verification(db_session, project_a, status="supported")
+    mine = await _verification(db_session, project_b, status="supported")
+
+    rows = await claim_verifications_repo.list_supported_by_project(db_session, project_b.id)
+
+    assert [row.id for row in rows] == [mine.id]

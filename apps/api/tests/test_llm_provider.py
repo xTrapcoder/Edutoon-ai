@@ -259,6 +259,39 @@ async def test_compose_script_allows_a_connective_segment_with_no_claims(monkeyp
     draft, _ = await _compose(llm)
 
     assert draft.segments[0].claim_ids == []
+    assert draft.segments[0].connective is False
+
+
+async def test_compose_script_parses_the_connective_flag(monkeypatch):
+    llm, _ = _llm_for_script(
+        monkeypatch,
+        {
+            "title": "T",
+            "segments": [
+                {"narration_text": "An aside.", "claim_ids": [], "connective": True},
+                {"narration_text": "A fact.", "claim_ids": ["cl1"], "connective": False},
+            ],
+        },
+    )
+
+    draft, _ = await _compose(llm)
+
+    assert [s.connective for s in draft.segments] == [True, False]
+
+
+async def test_compose_script_rejects_a_non_boolean_connective_flag(monkeypatch):
+    llm, _ = _llm_for_script(
+        monkeypatch,
+        {
+            "title": "T",
+            "segments": [
+                {"narration_text": "x.", "claim_ids": ["cl1"], "connective": "yes"}
+            ],
+        },
+    )
+
+    with pytest.raises(LLMResponseError):
+        await _compose(llm)
 
 
 async def test_compose_script_deduplicates_claim_ids_within_a_segment(monkeypatch):
