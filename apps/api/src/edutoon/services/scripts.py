@@ -37,6 +37,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from edutoon.core.config import get_settings
 from edutoon.core.errors import ConflictError, NotFoundError, ValidationError
+from edutoon.core.pagination import DEFAULT_PAGE_SIZE, Page
 from edutoon.domain.script_provenance import filter_and_validate
 from edutoon.providers.llm import LLM, Claim, ScriptBrief
 from edutoon.repositories import claim_verifications as claim_verifications_repo
@@ -273,6 +274,24 @@ async def _mark_job_failed(session: AsyncSession, *, job_id: UUID, error: str) -
 
 
 # --- read model -----------------------------------------------------------------
+
+
+async def list_scripts(
+    session: AsyncSession,
+    *,
+    project_id: UUID,
+    limit: int = DEFAULT_PAGE_SIZE,
+    cursor: str | None = None,
+) -> Page[ScriptRecord]:
+    """A project's scripts, newest first (keyset-paginated).
+
+    Not ownership-scoped itself - callers check the project belongs to the
+    caller first (rule 9), exactly as the ``claim-verifications`` and
+    ``sources`` list routes do.
+    """
+    return await scripts_repo.list_by_project(
+        session, project_id, limit=limit, cursor=cursor
+    )
 
 
 async def assemble_script_detail(
