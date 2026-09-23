@@ -159,3 +159,46 @@ async def list_by_project(
     stmt = select(jobs).where(jobs.c.project_id == project_id)
     rows, next_cursor = await paginate_rows(session, stmt, table=jobs, limit=limit, cursor=cursor)
     return Page(items=[_from_row(row) for row in rows], next_cursor=next_cursor)
+
+
+# A job in either of these states is *in flight*: it will still run, or is
+# running now. ``succeeded`` / ``failed`` / ``cancelled`` are terminal.
+ACTIVE_STATUSES: tuple[str, ...] = ("queued", "running")
+
+
+async def lock_project_kind(session: AsyncSession, *, project_id: UUID, kind: str) -> None:
+    """Serialise concurrent work on one ``(project, kind)`` for the rest of
+    the current transaction, using a Postgres transaction-level advisory lock.
+
+    "At most one active job of this kind per project" is a check-then-insert:
+    two requests can each see no active job and both insert one. Taking this
+    lock *before* the check makes the pair atomic - a second caller blocks here
+    until the first commits or rolls back, then sees the first's job. The lock
+    is released automatically at transaction end, so there is nothing to clean
+    up and no schema change.
+
+    Advisory locks are keyed by a 64-bit integer; hashing ``kind:project_id``
+    means unrelated projects, and other job kinds, never contend.
+    """
+    key = f"{kind}:{project_id}"
+    await session.execute(select(func.pg_advisory_xact_lock(func.hashtextextended(key, 0))))
+
+
+async def get_active_by_project_kind(
+    session: AsyncSession, *, project_id: UUID, kind: str
+) -> JobRecord | None:
+    """The oldest in-flight (``queued`` or ``running``) job of ``kind`` for
+    ``project_id``, if any.
+    """
+    stmt = (
+        select(jobs)
+        .where(
+            jobs.c.project_id == project_id,
+            jobs.c.kind == kind,
+            jobs.c.status.in_(ACTIVE_STATUSES),
+        )
+        .order_by(jobs.c.created_at.asc(), jobs.c.id.asc())
+        .limit(1)
+    )
+    row = (await session.execute(stmt)).mappings().one_or_none()
+    return _from_row(row) if row is not None else None

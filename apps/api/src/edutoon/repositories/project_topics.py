@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from edutoon.core.errors import raise_conflict_from_integrity_error
 from edutoon.core.pagination import Page, paginate_rows
-from edutoon.db.tables import project_topics
+from edutoon.db.tables import project_topics, script_segments
 
 # The ``status`` a topic starts in. Mirrors the column's DB default; stated
 # here so bulk inserts (which must give every row the same keys) stay
@@ -265,3 +265,24 @@ async def delete_derived_by_project(session: AsyncSession, project_id: UUID) -> 
     )
     result = cast(CursorResult[Any], await session.execute(stmt))
     return result.rowcount
+
+
+async def is_referenced_by_scripts(session: AsyncSession, project_id: UUID) -> bool:
+    """Whether any script segment - of any script, in any status - points at a
+    topic of ``project_id``.
+
+    A script's ``script_segments.topic_id`` is ``ON DELETE SET NULL``: deleting
+    a topic would not fail, it would silently cut the link a script relies on.
+    So anything that is about to delete topics asks this first.
+    """
+    stmt = (
+        select(script_segments.c.id)
+        .select_from(
+            script_segments.join(
+                project_topics, script_segments.c.topic_id == project_topics.c.id
+            )
+        )
+        .where(project_topics.c.project_id == project_id)
+        .limit(1)
+    )
+    return (await session.execute(stmt)).first() is not None

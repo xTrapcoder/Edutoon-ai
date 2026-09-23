@@ -1,0 +1,519 @@
+"""Topic Extraction - service layer (Phase 5, Step 4).
+
+Turns a project's material and/or the user's own topics into a persisted topic
+outline. Mirrors ``services/scripts.py`` deliberately - one job pattern, not a
+second one:
+
+- ``enqueue_topic_extraction`` - the caller-facing entry point. Verifies
+  project ownership, replays an earlier request with the same idempotency key,
+  refuses a second in-flight extraction, checks there is something to extract
+  from, applies the ``replace`` rules, creates an ``extract_topics`` job and
+  writes an audit-log row.
+- ``run_extract_topics_job`` - what the ``worker`` process
+  (``edutoon/worker/``) calls after claiming the job. Any failure marks the job
+  ``failed`` and never raises; the only exception is ``NotFoundError`` for a
+  ``job_id`` that does not exist at all (a caller bug).
+
+The flow a job runs::
+
+    inputs (source chunks, user topics)
+      -> mode (pdf | keywords | pdf_keywords)
+      -> select_passages          (deterministic, whole-document, budgeted)
+      -> LLM.extract_topics       (Step 3: one forced tool call)
+      -> validate_and_build       (Step 2: evidence, hierarchy, origins, seeds)
+      -> persist                  (one savepoint)
+      -> structured job result
+
+**The invariant that matters most: a failed extraction never destroys the last
+successful topic set.** Everything that can fail - the reads, the model call,
+provider validation, domain validation - happens *before* any write. The
+writes (clear evidence, delete derived topics if replacing, update seeds,
+insert the new tree and its citations) then run inside a single SAVEPOINT, so
+if any of them fails the previous derived topics and their evidence are exactly
+as they were.
+
+Architecture (CLAUDE.md rules 1, 2, 3, 9): this module is the only topic layer
+allowed to touch ``providers.llm``; it never issues SQL itself; it builds
+``TopicLimits`` from settings and passes them explicitly, so the domain never
+reads configuration; every path is project + owner scoped and a project the
+caller does not own is a 404.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import Any
+from uuid import UUID
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from edutoon.core.config import Settings, get_settings
+from edutoon.core.errors import ConflictError, NotFoundError, ValidationError
+from edutoon.domain.topic import (
+    PassageSelection,
+    SourcePassage,
+    TopicLimits,
+    TopicSeed,
+    ValidatedTopicNode,
+    ValidatedTopicTree,
+)
+from edutoon.domain.topic_tree import (
+    NoTopicInputError,
+    evidence_count_is_valid,
+    resolve_input_mode,
+    select_passages,
+    validate_and_build,
+)
+from edutoon.providers.llm import LLM, TokenUsage, TopicBrief
+from edutoon.repositories import jobs as jobs_repo
+from edutoon.repositories import project_topics as project_topics_repo
+from edutoon.repositories import projects as projects_repo
+from edutoon.repositories import source_chunks as source_chunks_repo
+from edutoon.repositories import topic_citations as topic_citations_repo
+from edutoon.repositories.jobs import JobRecord
+from edutoon.repositories.project_topics import NewProjectTopic, ProjectTopicRecord
+from edutoon.services import audit_logs as audit_logs_service
+from edutoon.services import projects as projects_service
+
+EXTRACT_TOPICS_JOB_KIND = "extract_topics"
+
+AUDIT_ENTITY_TYPE = "topic_extraction"
+AUDIT_ACTION_ENQUEUED = "topics.extraction_enqueued"
+
+_USER_ORIGIN = project_topics_repo.USER_ORIGIN
+_REJECTED = "rejected"
+
+
+@dataclass(frozen=True, slots=True)
+class TopicExtractionEnqueued:
+    job: JobRecord
+    replayed: bool
+
+
+def topic_limits_from_settings(settings: Settings) -> TopicLimits:
+    """Build the domain's :class:`TopicLimits` from application settings.
+
+    This is the one place configuration crosses into the domain: the result is
+    handed to the provider and to ``validate_and_build`` explicitly, so neither
+    ever reads settings or the environment.
+    """
+    return TopicLimits(
+        max_topics=settings.MAX_TOPICS_PER_EXTRACTION,
+        max_depth=settings.MAX_TOPIC_DEPTH,
+        max_title_chars=settings.MAX_TOPIC_TITLE_CHARS,
+        max_summary_chars=settings.MAX_TOPIC_SUMMARY_CHARS,
+        max_keywords_per_topic=settings.MAX_TOPIC_KEYWORDS,
+        max_keyword_chars=settings.MAX_TOPIC_KEYWORD_CHARS,
+        max_evidence_per_topic=settings.MAX_TOPIC_EVIDENCE,
+    )
+
+
+def _derived(topics: Sequence[ProjectTopicRecord]) -> list[ProjectTopicRecord]:
+    """Topics the pipeline made (``source`` / ``suggested``), as opposed to the
+    ones the user typed.
+    """
+    return [topic for topic in topics if topic.origin != _USER_ORIGIN]
+
+
+def _seed_topics(topics: Sequence[ProjectTopicRecord]) -> list[ProjectTopicRecord]:
+    """The user topics an extraction works from: the user's own roots that they
+    have not rejected. A rejected user topic is a decision to drop it, so it is
+    neither offered to the model nor expanded.
+    """
+    return [
+        topic
+        for topic in topics
+        if topic.origin == _USER_ORIGIN and topic.parent_id is None and topic.status != _REJECTED
+    ]
+
+
+# --- enqueue -----------------------------------------------------------------------
+
+
+async def enqueue_topic_extraction(
+    session: AsyncSession,
+    *,
+    project_id: UUID,
+    owner_id: UUID,
+    idempotency_key: str,
+    replace: bool = False,
+) -> TopicExtractionEnqueued:
+    """Queue a topic extraction for ``project_id``.
+
+    In order:
+
+    1. Raises :class:`~edutoon.core.errors.NotFoundError` if the project isn't
+       owned by ``owner_id`` (rule 9).
+    2. A repeat call with the same ``idempotency_key`` returns the original job
+       with ``replayed=True``.
+    3. Raises :class:`~edutoon.core.errors.ConflictError` if another extraction
+       is already ``queued`` or ``running`` for the project. The check is made
+       under a per-project advisory lock (see ``jobs.lock_project_kind``), so
+       two simultaneous requests cannot both pass it.
+    4. Raises :class:`~edutoon.core.errors.ValidationError` if there is nothing
+       to extract from (no parsed material and no user topics).
+    5. ``replace=False`` raises ``ConflictError`` if topics were already
+       extracted (nothing is overwritten unless asked); ``replace=True`` raises
+       ``ConflictError`` if any script references one of the project's topics.
+    """
+    await projects_service.get_project(session, project_id=project_id, owner_id=owner_id)
+
+    existing_job = await jobs_repo.get_by_idempotency_key(
+        session,
+        project_id=project_id,
+        kind=EXTRACT_TOPICS_JOB_KIND,
+        idempotency_key=idempotency_key,
+    )
+    if existing_job is not None:
+        return TopicExtractionEnqueued(job=existing_job, replayed=True)
+
+    await jobs_repo.lock_project_kind(session, project_id=project_id, kind=EXTRACT_TOPICS_JOB_KIND)
+    active = await jobs_repo.get_active_by_project_kind(
+        session, project_id=project_id, kind=EXTRACT_TOPICS_JOB_KIND
+    )
+    if active is not None:
+        raise ConflictError(
+            "Topic extraction is already queued or running for this project; "
+            "wait for it to finish."
+        )
+
+    topics = await project_topics_repo.list_all_by_project(session, project_id)
+    chunk_count = await source_chunks_repo.count_by_project(session, project_id)
+    try:
+        mode = resolve_input_mode(
+            has_passages=chunk_count > 0, has_seeds=bool(_seed_topics(topics))
+        )
+    except NoTopicInputError as exc:
+        raise ValidationError(str(exc)) from exc
+
+    await _check_replace_rules(session, project_id, topics=topics, replace=replace)
+
+    job = await jobs_repo.create(
+        session,
+        project_id=project_id,
+        kind=EXTRACT_TOPICS_JOB_KIND,
+        payload={"project_id": str(project_id), "replace": replace},
+        idempotency_key=idempotency_key,
+    )
+    await audit_logs_service.record_audit_log(
+        session,
+        action=AUDIT_ACTION_ENQUEUED,
+        entity_type=AUDIT_ENTITY_TYPE,
+        entity_id=job.id,
+        project_id=project_id,
+        actor_id=owner_id,
+        context={"job_id": str(job.id), "replace": replace, "mode": mode},
+    )
+    return TopicExtractionEnqueued(job=job, replayed=False)
+
+
+async def _check_replace_rules(
+    session: AsyncSession,
+    project_id: UUID,
+    *,
+    topics: Sequence[ProjectTopicRecord],
+    replace: bool,
+) -> None:
+    """The two rules about overwriting. Used when enqueueing and again when the
+    job runs, because the project can change in between.
+    """
+    if replace:
+        if await project_topics_repo.is_referenced_by_scripts(session, project_id):
+            raise ConflictError(
+                "A script already references this project's topics, so they cannot be "
+                "replaced. Generate a new script from the current topics instead."
+            )
+    elif _derived(topics):
+        raise ConflictError(
+            "Topics have already been extracted for this project. Run the extraction "
+            "again with replace to overwrite the derived topics (your own topics are kept)."
+        )
+
+
+# --- run (background job) ----------------------------------------------------------------
+
+
+async def run_extract_topics_job(
+    session: AsyncSession, llm: LLM, *, job_id: UUID
+) -> JobRecord:
+    """Process one queued ``extract_topics`` job end to end.
+
+    Marks it running, extracts and persists (see the module docstring), then
+    marks it ``succeeded`` with the result metadata - or ``failed`` with the
+    error. Never raises for an extraction failure: a bad payload, a project that
+    has vanished, a model or validation failure and a persistence failure all
+    end as a failed job. Only :class:`NotFoundError` for a ``job_id`` that does
+    not exist at all (a caller bug), matching ``scripts.run_generate_script_job``.
+    """
+    job = await jobs_repo.get_by_id(session, job_id)
+    if job is None:
+        raise NotFoundError(f"Job {job_id} not found.")
+
+    running = await jobs_repo.update(
+        session,
+        job_id=job.id,
+        status="running",
+        started_at=datetime.now(UTC),
+        attempts=job.attempts + 1,
+    )
+    assert running is not None  # just fetched by this id
+
+    try:
+        project_id, replace = _parse_payload(running.payload)
+        result = await _extract_and_persist(session, llm, project_id=project_id, replace=replace)
+    except Exception as exc:  # noqa: BLE001 - any failure fails the job, never raises
+        return await _mark_job_failed(session, job_id=running.id, error=str(exc))
+
+    return await _mark_job_succeeded(session, job_id=running.id, result=result)
+
+
+def _parse_payload(payload: Mapping[str, Any]) -> tuple[UUID, bool]:
+    try:
+        project_id = UUID(str(payload["project_id"]))
+    except (KeyError, ValueError) as exc:
+        raise ValueError("The extraction job has no valid project_id in its payload.") from exc
+    return project_id, bool(payload.get("replace", False))
+
+
+async def _extract_and_persist(
+    session: AsyncSession, llm: LLM, *, project_id: UUID, replace: bool
+) -> dict[str, object]:
+    settings = get_settings()
+    limits = topic_limits_from_settings(settings)
+
+    project = await projects_repo.get_by_id(session, project_id)
+    if project is None:
+        raise NotFoundError(f"Project {project_id} not found.")
+
+    # --- everything that can fail happens before the first write ---------------------
+    topics = await project_topics_repo.list_all_by_project(session, project_id)
+    await _check_replace_rules(session, project_id, topics=topics, replace=replace)
+
+    chunks = await source_chunks_repo.list_by_project_in_order(session, project_id)
+    seed_records = _seed_topics(topics)
+    seeds = [
+        TopicSeed(ref=str(topic.id), title=topic.title, position=topic.position)
+        for topic in seed_records
+    ]
+    try:
+        resolve_input_mode(has_passages=bool(chunks), has_seeds=bool(seeds))
+    except NoTopicInputError as exc:
+        raise ValidationError(str(exc)) from exc
+
+    selection = select_passages(
+        [
+            SourcePassage(
+                chunk_id=str(chunk.id),
+                text=chunk.content,
+                page_from=chunk.page_from,
+                page_to=chunk.page_to,
+            )
+            for chunk in chunks
+        ],
+        budget_chars=settings.TOPIC_INPUT_BUDGET_CHARS,
+    )
+
+    draft, usage = await llm.extract_topics(
+        TopicBrief(
+            subject=project.title, description=project.description, language=project.language
+        ),
+        selection.passages,
+        seeds,
+        limits=limits,
+    )
+
+    # Only the passages the model was actually shown may be cited - not every
+    # chunk the project has.
+    tree = validate_and_build(
+        draft,
+        seeds=seeds,
+        known_chunk_ids={UUID(passage.chunk_id) for passage in selection.passages},
+        limits=limits,
+        first_root_position=_first_free_root_position(topics),
+    )
+    _assert_evidence_invariant(tree)
+    if replace and _derived(topics) and all(node.origin == _USER_ORIGIN for node in tree.nodes):
+        # Not a rule violation - a seeds-only outline is valid on its own - but
+        # replacing a real derived set with nothing because the model returned
+        # nothing useful would be data loss, so it is treated as a failure.
+        raise ValueError(
+            "The new extraction produced no topics of its own, so the previous topics were kept."
+        )
+
+    # --- the writes: one savepoint, all or nothing -----------------------------------
+    await _persist(
+        session,
+        project_id=project_id,
+        tree=tree,
+        replace=replace,
+        seed_records={topic.id: topic for topic in seed_records},
+    )
+
+    return _result(tree=tree, selection=selection, replace=replace, usage=usage, model=llm.model)
+
+
+def _first_free_root_position(topics: Sequence[ProjectTopicRecord]) -> int:
+    """One past the highest root position among topics that will still exist
+    after this run - every user root, rejected ones included, since a rejected
+    topic still occupies its position.
+    """
+    return (
+        max(
+            (t.position for t in topics if t.parent_id is None and t.origin == _USER_ORIGIN),
+            default=-1,
+        )
+        + 1
+    )
+
+
+def _assert_evidence_invariant(tree: ValidatedTopicTree) -> None:
+    """Defence in depth at the persistence boundary: whatever the rules
+    produced, an origin/evidence combination that breaks the invariant is never
+    written. ``validate_and_build`` guarantees this; a future change to it
+    must not be able to slip past silently.
+    """
+    for node in tree.nodes:
+        if not evidence_count_is_valid(node.origin, len(node.evidence_chunk_ids)):
+            raise ValueError(
+                f"Topic {node.title!r} has origin {node.origin!r} with "
+                f"{len(node.evidence_chunk_ids)} citations, which is not allowed."
+            )
+
+
+async def _persist(
+    session: AsyncSession,
+    *,
+    project_id: UUID,
+    tree: ValidatedTopicTree,
+    replace: bool,
+    seed_records: Mapping[UUID, ProjectTopicRecord],
+) -> None:
+    """Write ``tree`` inside one SAVEPOINT. Any failure rolls the whole thing
+    back - including the deletion of the previous derived topics - and
+    propagates, so the last successful topic set is left exactly as it was.
+    """
+    async with session.begin_nested():
+        # Evidence is rebuilt wholesale from this run (it also covers user
+        # topics, whose citations come from the latest extraction).
+        await topic_citations_repo.delete_by_project(session, project_id)
+        if replace:
+            await project_topics_repo.delete_derived_by_project(session, project_id)
+
+        topic_ids: dict[int, UUID] = {}
+        for node in tree.nodes:
+            if node.seed_ref is not None:
+                topic_id = UUID(node.seed_ref)
+                topic_ids[node.index] = topic_id
+                await _fill_seed(session, project_id, topic_id, node, seed_records[topic_id])
+
+        new_nodes = [node for node in tree.nodes if node.seed_ref is None]
+        for depth in sorted({node.depth for node in new_nodes}):
+            level = [node for node in new_nodes if node.depth == depth]
+            rows = [
+                NewProjectTopic(
+                    project_id=project_id,
+                    title=node.title,
+                    parent_id=None if node.parent_index is None else topic_ids[node.parent_index],
+                    summary=node.summary,
+                    position=node.position,
+                    depth=node.depth,
+                    origin=node.origin,
+                    keywords=node.keywords,
+                )
+                for node in level
+            ]
+            created = await project_topics_repo.create_many(session, rows)
+            # RETURNING order is not guaranteed: map back by (parent, position).
+            by_slot = {(topic.parent_id, topic.position): topic.id for topic in created}
+            for node, row in zip(level, rows, strict=True):
+                topic_ids[node.index] = by_slot[(row.parent_id, row.position)]
+
+        for node in tree.nodes:
+            if not node.evidence_chunk_ids:
+                continue
+            cited = await topic_citations_repo.add_many(
+                session,
+                project_id=project_id,
+                topic_id=topic_ids[node.index],
+                source_chunk_ids=node.evidence_chunk_ids,
+            )
+            if len(cited) != len(node.evidence_chunk_ids):
+                raise ValueError(
+                    f"Topic {node.title!r} cites material that does not belong to this project."
+                )
+
+
+async def _fill_seed(
+    session: AsyncSession,
+    project_id: UUID,
+    topic_id: UUID,
+    node: ValidatedTopicNode,
+    current: ProjectTopicRecord,
+) -> None:
+    """Give a user topic the summary and keywords the model produced - but only
+    where it has none of its own. The user's wording (title, and anything they
+    wrote themselves) is authoritative and is never overwritten.
+    """
+    fields: dict[str, Any] = {}
+    if node.summary and not current.summary:
+        fields["summary"] = node.summary
+    if node.keywords and not current.keywords:
+        fields["keywords"] = list(node.keywords)
+    if fields:
+        await project_topics_repo.update_for_project(
+            session, topic_id=topic_id, project_id=project_id, **fields
+        )
+
+
+def _result(
+    *,
+    tree: ValidatedTopicTree,
+    selection: PassageSelection,
+    replace: bool,
+    usage: TokenUsage,
+    model: str,
+) -> dict[str, object]:
+    """The structured job result. ``truncated`` says the model saw only part of
+    the material (``chunks_used`` of ``chunks_total``), so a caller can report
+    coverage honestly.
+    """
+    return {
+        "mode": tree.mode,
+        "topic_count": len(tree.nodes),
+        "chunks_total": selection.chunks_total,
+        "chunks_used": selection.chunks_used,
+        "truncated": selection.truncated,
+        "dropped_uncited": tree.dropped_uncited,
+        "replaced": replace,
+        "input_tokens": usage.input_tokens,
+        "output_tokens": usage.output_tokens,
+        "llm_model": model,
+    }
+
+
+async def _mark_job_succeeded(
+    session: AsyncSession, *, job_id: UUID, result: dict[str, object]
+) -> JobRecord:
+    updated = await jobs_repo.update(
+        session,
+        job_id=job_id,
+        status="succeeded",
+        finished_at=datetime.now(UTC),
+        result=result,
+    )
+    assert updated is not None
+    return updated
+
+
+async def _mark_job_failed(session: AsyncSession, *, job_id: UUID, error: str) -> JobRecord:
+    updated = await jobs_repo.update(
+        session,
+        job_id=job_id,
+        status="failed",
+        finished_at=datetime.now(UTC),
+        error=error,
+    )
+    assert updated is not None
+    return updated

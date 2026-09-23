@@ -7,13 +7,13 @@ business logic itself - it only wires a job's ``kind`` (the ``jobs.kind``
 CHECK constraint from migration 0003) to the service function that already
 knows how to run it.
 
-``jobs.kind`` currently allows six values; only two have a handler
+``jobs.kind`` currently allows six values; only three have a handler
 implemented anywhere in the service layer today
-(``evidence.run_build_evidence_job``, ``scripts.run_generate_script_job``).
-The rest (``parse_source``, ``extract_topics``, ``synthesise_voice``,
-``render_video``) have no service-layer implementation yet - deliberately
-out of scope for this phase - so they are simply absent from
-``JOB_HANDLERS``. ``worker.runner`` treats a missing handler as a normal,
+(``evidence.run_build_evidence_job``, ``scripts.run_generate_script_job``,
+``topic_extraction.run_extract_topics_job``). The rest (``parse_source``,
+``synthesise_voice``, ``render_video``) have no service-layer implementation
+yet - deliberately out of scope for this phase - so they are simply absent
+from ``JOB_HANDLERS``. ``worker.runner`` treats a missing handler as a normal,
 terminal job failure (not a crash), so a job of one of those kinds is
 handled safely rather than silently stalling forever.
 """
@@ -31,6 +31,7 @@ from edutoon.providers.llm import LLM
 from edutoon.repositories.jobs import JobRecord
 from edutoon.services import evidence as evidence_service
 from edutoon.services import scripts as scripts_service
+from edutoon.services import topic_extraction as topic_extraction_service
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,7 +61,16 @@ async def _handle_generate_script(
     return await scripts_service.run_generate_script_job(session, providers.llm, job_id=job_id)
 
 
+async def _handle_extract_topics(
+    session: AsyncSession, providers: WorkerProviders, job_id: UUID
+) -> JobRecord:
+    return await topic_extraction_service.run_extract_topics_job(
+        session, providers.llm, job_id=job_id
+    )
+
+
 JOB_HANDLERS: dict[str, JobHandler] = {
     evidence_service.BUILD_EVIDENCE_JOB_KIND: _handle_build_evidence,
     scripts_service.GENERATE_SCRIPT_JOB_KIND: _handle_generate_script,
+    topic_extraction_service.EXTRACT_TOPICS_JOB_KIND: _handle_extract_topics,
 }

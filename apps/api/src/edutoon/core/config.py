@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from pydantic import ValidationError
+from pydantic import Field, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -56,6 +56,22 @@ class Settings(BaseSettings):
     MAX_SCRIPT_SEGMENTS: int = 12
     MAX_CLAIMS_PER_GENERATION: int = 40
     SCRIPT_WORDS_PER_MINUTE: int = 150
+
+    # Topic extraction (Phase 5). Every one is optional: an ``.env`` written
+    # before Phase 5 boots unchanged. ``TOPIC_INPUT_BUDGET_CHARS`` bounds how
+    # much of the uploaded material one extraction call is shown - and so its
+    # cost; the rest bound the size of the outline the model may return. They
+    # are the single home of the numbers ``domain.topic.TopicLimits`` is built
+    # from (the domain never reads configuration itself). ``ge=1`` rejects a
+    # nonsensical value at start-up rather than mid-job.
+    TOPIC_INPUT_BUDGET_CHARS: int = Field(default=48_000, ge=1)
+    MAX_TOPICS_PER_EXTRACTION: int = Field(default=30, ge=1)
+    MAX_TOPIC_DEPTH: int = Field(default=3, ge=1)
+    MAX_TOPIC_TITLE_CHARS: int = Field(default=120, ge=1)
+    MAX_TOPIC_SUMMARY_CHARS: int = Field(default=400, ge=1)
+    MAX_TOPIC_KEYWORDS: int = Field(default=8, ge=1)
+    MAX_TOPIC_KEYWORD_CHARS: int = Field(default=40, ge=1)
+    MAX_TOPIC_EVIDENCE: int = Field(default=6, ge=1)
 
 
 class MissingSettingsError(RuntimeError):

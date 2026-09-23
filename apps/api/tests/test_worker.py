@@ -43,6 +43,7 @@ from edutoon.providers.embeddings import Embeddings
 from edutoon.providers.llm import LLM
 from edutoon.repositories import claim_verifications as claim_verifications_repo
 from edutoon.repositories import jobs as jobs_repo
+from edutoon.repositories import project_topics as project_topics_repo
 from edutoon.repositories import projects as projects_repo
 from edutoon.repositories import source_chunks as source_chunks_repo
 from edutoon.repositories import uploaded_sources as uploaded_sources_repo
@@ -51,7 +52,8 @@ from edutoon.repositories.claim_verifications import NewClaimCitation
 from edutoon.repositories.source_chunks import NewSourceChunk
 from edutoon.services import evidence as evidence_service
 from edutoon.services import scripts as scripts_service
-from edutoon.worker.dispatch import WorkerProviders
+from edutoon.services import topic_extraction as topic_extraction_service
+from edutoon.worker.dispatch import JOB_HANDLERS, WorkerProviders
 from edutoon.worker.runner import process_one_job
 
 EMBEDDING_MODEL = "text-embedding-3-small"
@@ -112,6 +114,24 @@ def _fake_llm(monkeypatch: Any, segments: list[dict[str, Any]], *, title: str = 
         role="assistant",
         type="message",
         usage=AnthropicUsage(input_tokens=10, output_tokens=20),
+    )
+    monkeypatch.setattr(client.messages, "create", AsyncMock(return_value=message))
+    return LLM(client, model=LLM_MODEL)
+
+
+def _fake_topics_llm(monkeypatch: Any, topics: list[dict[str, Any]]) -> LLM:
+    client = AsyncAnthropic(api_key="sk-ant-test-not-a-real-key")
+    message = Message(
+        id="msg_1",
+        content=[
+            ToolUseBlock(
+                type="tool_use", id="toolu_1", name="submit_topics", input={"topics": topics}
+            )
+        ],
+        model=LLM_MODEL,
+        role="assistant",
+        type="message",
+        usage=AnthropicUsage(input_tokens=11, output_tokens=22),
     )
     monkeypatch.setattr(client.messages, "create", AsyncMock(return_value=message))
     return LLM(client, model=LLM_MODEL)
@@ -273,10 +293,106 @@ async def test_process_one_job_runs_the_generate_script_handler(
     assert finished.result["segment_count"] == 1
 
 
-# --- process_one_job: unknown job kind ----------------------------------------------
+# --- process_one_job: extract_topics -----------------------------------------------
 
 
-async def test_process_one_job_marks_an_unknown_job_kind_failed_without_crashing(
+async def _project_with_a_user_topic(db_session: AsyncSession):
+    project = await _make_project(db_session)
+    seed = await project_topics_repo.create(
+        db_session, project_id=project.id, title="Photosynthesis", status="accepted"
+    )
+    return project, seed
+
+
+def test_the_worker_has_a_handler_for_each_implemented_job_kind_and_no_others():
+    assert set(JOB_HANDLERS) == {"build_evidence", "generate_script", "extract_topics"}
+
+
+async def test_process_one_job_runs_the_extract_topics_handler(
+    db_session, worker_sessionmaker, monkeypatch
+):
+    project, seed = await _project_with_a_user_topic(db_session)
+    enqueued = await topic_extraction_service.enqueue_topic_extraction(
+        db_session, project_id=project.id, owner_id=project.owner_id, idempotency_key="k"
+    )
+    await db_session.commit()  # release the savepoint so the worker's own session sees it
+
+    llm = _fake_topics_llm(
+        monkeypatch,
+        [
+            {
+                "ref": "t1",
+                "title": "Photosynthesis",
+                "summary": "How plants make food.",
+                "keywords": ["light"],
+                "evidence_chunk_ids": [],
+                "seed_ref": str(seed.id),
+            },
+            {
+                "ref": "t2",
+                "title": "Light reactions",
+                "parent_ref": "t1",
+                "summary": "",
+                "keywords": [],
+                "evidence_chunk_ids": [],
+            },
+        ],
+    )
+    providers = WorkerProviders(embeddings=_idle_embeddings(), llm=llm)
+
+    claimed_something = await process_one_job(worker_sessionmaker, providers)
+
+    assert claimed_something is True
+    finished = await jobs_repo.get_by_id(db_session, enqueued.job.id)
+    assert finished is not None
+    assert finished.status == "succeeded"
+    assert finished.result == {
+        "mode": "keywords",
+        "topic_count": 2,
+        "chunks_total": 0,
+        "chunks_used": 0,
+        "truncated": False,
+        "dropped_uncited": 0,
+        "replaced": False,
+        "input_tokens": 11,
+        "output_tokens": 22,
+        "llm_model": LLM_MODEL,
+    }
+    stored = await project_topics_repo.list_all_by_project(db_session, project.id)
+    topics = {t.title: t for t in stored}
+    assert topics["Light reactions"].parent_id == seed.id
+    assert topics["Light reactions"].origin == "suggested"
+
+
+async def test_process_one_job_marks_extract_topics_failed_on_a_provider_error(
+    db_session, worker_sessionmaker
+):
+    project, seed = await _project_with_a_user_topic(db_session)
+    enqueued = await topic_extraction_service.enqueue_topic_extraction(
+        db_session, project_id=project.id, owner_id=project.owner_id, idempotency_key="k"
+    )
+    await db_session.commit()
+
+    client = AsyncAnthropic(api_key="sk-ant-test-not-a-real-key")
+    client.messages.create = AsyncMock(  # type: ignore[method-assign]
+        side_effect=RuntimeError("anthropic is unreachable")
+    )
+    providers = WorkerProviders(embeddings=_idle_embeddings(), llm=LLM(client, model=LLM_MODEL))
+
+    claimed_something = await process_one_job(worker_sessionmaker, providers)
+
+    assert claimed_something is True
+    finished = await jobs_repo.get_by_id(db_session, enqueued.job.id)
+    assert finished is not None
+    assert finished.status == "failed"
+    assert finished.error == "anthropic is unreachable"
+    assert finished.finished_at is not None
+    # The user's own topic is exactly as it was.
+    stored = await project_topics_repo.list_all_by_project(db_session, project.id)
+    assert [t.id for t in stored] == [seed.id]
+
+
+async def test_process_one_job_marks_a_corrupt_extract_topics_payload_failed_without_crashing(
     db_session, worker_sessionmaker
 ):
     project = await _make_project(db_session)
@@ -290,7 +406,31 @@ async def test_process_one_job_marks_an_unknown_job_kind_failed_without_crashing
     finished = await jobs_repo.get_by_id(db_session, job.id)
     assert finished is not None
     assert finished.status == "failed"
-    assert "extract_topics" in finished.error
+    assert "project_id" in finished.error
+    assert finished.finished_at is not None
+
+
+# --- process_one_job: unknown job kind ----------------------------------------------
+
+
+async def test_process_one_job_marks_an_unknown_job_kind_failed_without_crashing(
+    db_session, worker_sessionmaker
+):
+    # ``render_video`` is a valid ``jobs.kind`` with no handler registered - the
+    # case this test is about. (It used ``extract_topics`` until that gained a
+    # real handler; any still-unimplemented kind exercises the same path.)
+    project = await _make_project(db_session)
+    job = await jobs_repo.create(db_session, project_id=project.id, kind="render_video")
+    await db_session.commit()
+
+    providers = WorkerProviders(embeddings=_idle_embeddings(), llm=_idle_llm())
+    claimed_something = await process_one_job(worker_sessionmaker, providers)
+
+    assert claimed_something is True
+    finished = await jobs_repo.get_by_id(db_session, job.id)
+    assert finished is not None
+    assert finished.status == "failed"
+    assert "render_video" in finished.error
     assert finished.finished_at is not None
 
 
