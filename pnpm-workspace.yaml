@@ -1,0 +1,7 @@
+packages:
+  - 'apps/*'
+  - 'packages/*'
+
+# unrs-resolver ships prebuilt binaries; its postinstall build is not needed.
+allowBuilds:
+  unrs-resolver: false

@@ -1,0 +1,161 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Any
+from uuid import UUID
+
+from sqlalchemy import func, select
+from sqlalchemy.engine import RowMapping
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from edutoon.core.errors import raise_conflict_from_integrity_error
+from edutoon.core.pagination import Page, paginate_rows
+from edutoon.db.tables import jobs
+
+
+@dataclass(frozen=True, slots=True)
+class JobRecord:
+    id: UUID
+    project_id: UUID
+    kind: str
+    status: str
+    priority: int
+    attempts: int
+    max_attempts: int
+    idempotency_key: str | None
+    payload: dict[str, Any]
+    result: dict[str, Any] | None
+    error: str | None
+    scheduled_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+def _from_row(row: RowMapping) -> JobRecord:
+    return JobRecord(
+        id=row["id"],
+        project_id=row["project_id"],
+        kind=row["kind"],
+        status=row["status"],
+        priority=row["priority"],
+        attempts=row["attempts"],
+        max_attempts=row["max_attempts"],
+        idempotency_key=row["idempotency_key"],
+        payload=row["payload"],
+        result=row["result"],
+        error=row["error"],
+        scheduled_at=row["scheduled_at"],
+        started_at=row["started_at"],
+        finished_at=row["finished_at"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+async def create(
+    session: AsyncSession,
+    *,
+    project_id: UUID,
+    kind: str,
+    payload: dict[str, Any] | None = None,
+    priority: int = 100,
+    max_attempts: int = 3,
+    idempotency_key: str | None = None,
+) -> JobRecord:
+    stmt = (
+        jobs.insert()
+        .values(
+            project_id=project_id,
+            kind=kind,
+            payload=payload or {},
+            priority=priority,
+            max_attempts=max_attempts,
+            idempotency_key=idempotency_key,
+        )
+        .returning(*jobs.c)
+    )
+    try:
+        result = await session.execute(stmt)
+    except IntegrityError as exc:
+        raise_conflict_from_integrity_error(exc)
+    return _from_row(result.mappings().one())
+
+
+async def update(session: AsyncSession, *, job_id: UUID, **fields: Any) -> JobRecord | None:
+    """Partial update for status-transition writes (queued -> running ->
+    succeeded/failed). Returns ``None`` if the job doesn't exist. An empty
+    ``fields`` is a no-op read, mirroring ``projects.update``.
+    """
+    if not fields:
+        return await get_by_id(session, job_id)
+
+    stmt = jobs.update().where(jobs.c.id == job_id).values(**fields).returning(*jobs.c)
+    try:
+        result = await session.execute(stmt)
+    except IntegrityError as exc:
+        raise_conflict_from_integrity_error(exc)
+    row = result.mappings().one_or_none()
+    return _from_row(row) if row is not None else None
+
+
+async def get_by_id(session: AsyncSession, job_id: UUID) -> JobRecord | None:
+    stmt = select(jobs).where(jobs.c.id == job_id)
+    row = (await session.execute(stmt)).mappings().one_or_none()
+    return _from_row(row) if row is not None else None
+
+
+async def get_by_idempotency_key(
+    session: AsyncSession, *, project_id: UUID, kind: str, idempotency_key: str
+) -> JobRecord | None:
+    stmt = select(jobs).where(
+        jobs.c.project_id == project_id,
+        jobs.c.kind == kind,
+        jobs.c.idempotency_key == idempotency_key,
+    )
+    row = (await session.execute(stmt)).mappings().one_or_none()
+    return _from_row(row) if row is not None else None
+
+
+async def claim_next(session: AsyncSession) -> JobRecord | None:
+    """Atomically claim the next due ``queued`` job for a worker, flipping
+    it straight to ``running``. Returns ``None`` if no job is claimable.
+
+    The candidate row is picked with ``SELECT ... FOR UPDATE SKIP LOCKED``:
+    if two workers call this concurrently, each one's subquery skips any
+    row the other has already locked (rather than blocking on it or, worse,
+    both resolving to the same row), so the same job can never be claimed
+    twice. The lock itself is only held for this single statement - the
+    caller commits right away - so it never blocks a concurrent claim
+    attempt for longer than one UPDATE.
+
+    Ordered by ``priority`` ascending (a lower number is more urgent) then
+    ``scheduled_at`` ascending (oldest first within the same priority); a
+    job whose ``scheduled_at`` is still in the future is not yet claimable.
+    """
+    candidate = (
+        select(jobs.c.id)
+        .where(jobs.c.status == "queued", jobs.c.scheduled_at <= func.now())
+        .order_by(jobs.c.priority.asc(), jobs.c.scheduled_at.asc())
+        .with_for_update(skip_locked=True)
+        .limit(1)
+    )
+    stmt = (
+        jobs.update()
+        .where(jobs.c.id == candidate.scalar_subquery())
+        .values(status="running", started_at=func.now())
+        .returning(*jobs.c)
+    )
+    row = (await session.execute(stmt)).mappings().one_or_none()
+    return _from_row(row) if row is not None else None
+
+
+async def list_by_project(
+    session: AsyncSession, project_id: UUID, *, limit: int = 50, cursor: str | None = None
+) -> Page[JobRecord]:
+    stmt = select(jobs).where(jobs.c.project_id == project_id)
+    rows, next_cursor = await paginate_rows(session, stmt, table=jobs, limit=limit, cursor=cursor)
+    return Page(items=[_from_row(row) for row in rows], next_cursor=next_cursor)

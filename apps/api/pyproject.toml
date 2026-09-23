@@ -1,0 +1,58 @@
+[project]
+name = "edutoon-api"
+version = "0.1.0"
+description = "EduToon AI — API service"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "pydantic",
+    "pydantic-settings",
+    "sqlalchemy[asyncio]",
+    "asyncpg",
+    "alembic",
+    "redis",
+    "python-multipart",
+    "structlog",
+    "pyjwt[crypto]>=2.13.0",
+    "boto3",
+    "pypdf",
+    "openai",
+    "pgvector",
+    "anthropic",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "httpx",
+    "ruff",
+    "mypy",
+    "fpdf2",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/edutoon"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+mypy_path = "src"
+packages = ["edutoon"]
+
+# boto3/botocore ship no inline types and no stub package is installed;
+# confined to providers/storage.py (rule 3), so untyped Any there can't leak
+# strict-mode violations into the rest of the codebase.
+[[tool.mypy.overrides]]
+module = ["boto3.*", "botocore.*"]
+ignore_missing_imports = true
