@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import sqlalchemy as sa
 from pgvector.sqlalchemy import Vector
-from sqlalchemy.dialects.postgresql import INET, JSONB, UUID
+from sqlalchemy.dialects.postgresql import ARRAY, INET, JSONB, UUID
 
 EMBEDDING_DIMENSIONS = 1536
 
@@ -80,6 +80,11 @@ project_topics = sa.Table(
     sa.Column("position", sa.Integer, nullable=False),
     sa.Column("depth", sa.Integer, nullable=False),
     sa.Column("status", sa.Text, nullable=False),
+    # Migration 0009. ``origin`` is text + CHECK ('source' | 'user' |
+    # 'suggested'), never a Postgres enum; ``keywords`` is a native text[]
+    # (never NULL, no NULL elements).
+    sa.Column("origin", sa.Text, nullable=False),
+    sa.Column("keywords", ARRAY(sa.Text), nullable=False),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
 )
@@ -144,6 +149,19 @@ claim_citations = sa.Table(
     sa.Column("claim_verification_id", UUID(as_uuid=True), nullable=False),
     sa.Column("source_chunk_id", UUID(as_uuid=True), nullable=False),
     sa.Column("similarity", sa.REAL, nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+)
+
+# Which source_chunks a topic was drawn from (migration 0009). Derived and
+# regenerable, so - unlike claim_citations - it cascades from both parents
+# and a whole project's evidence may be cleared and rebuilt. Rows are never
+# UPDATEd, only inserted or deleted.
+topic_citations = sa.Table(
+    "topic_citations",
+    metadata,
+    sa.Column("id", UUID(as_uuid=True), primary_key=True, server_default=sa.FetchedValue()),
+    sa.Column("topic_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("source_chunk_id", UUID(as_uuid=True), nullable=False),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
 )
 

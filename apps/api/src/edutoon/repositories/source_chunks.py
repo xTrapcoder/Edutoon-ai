@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.engine import RowMapping
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -203,3 +203,44 @@ async def list_by_source_in_order(
     )
     rows = (await session.execute(stmt)).mappings().all()
     return [_from_row(row) for row in rows]
+
+
+async def list_by_project_in_order(
+    session: AsyncSession, project_id: UUID
+) -> list[SourceChunkRecord]:
+    """All of a project's chunks across every source, in reading order:
+    sources in the order they were uploaded, each source's chunks in
+    ``chunk_index`` order.
+
+    The order is ``(created_at, source_id, chunk_index)``. A source's chunks
+    are bulk-inserted in one transaction, so they share a ``created_at`` and
+    ``chunk_index`` alone orders them; ``source_id`` (time-ordered UUIDv7)
+    keeps two sources that happen to share a timestamp stable. Unpaginated
+    for the same reason as :func:`list_by_source_in_order`: a source is
+    bounded by ``MAX_PDF_PAGES``, and topic extraction needs the whole
+    document to choose what to show the model.
+
+    Only chunks that exist are returned - a source that failed to parse has
+    none, so this never includes unreadable material.
+    """
+    stmt = (
+        select(source_chunks)
+        .where(source_chunks.c.project_id == project_id)
+        .order_by(
+            source_chunks.c.created_at.asc(),
+            source_chunks.c.source_id.asc(),
+            source_chunks.c.chunk_index.asc(),
+        )
+    )
+    rows = (await session.execute(stmt)).mappings().all()
+    return [_from_row(row) for row in rows]
+
+
+async def count_by_project(session: AsyncSession, project_id: UUID) -> int:
+    """How many chunks a project has - a cheap "is there any parsed text to
+    work from?" check that does not load any content.
+    """
+    stmt = select(func.count()).select_from(source_chunks).where(
+        source_chunks.c.project_id == project_id
+    )
+    return int((await session.execute(stmt)).scalar_one())

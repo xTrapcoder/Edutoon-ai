@@ -240,3 +240,121 @@ async def test_search_by_similarity_respects_limit(db_session):
     )
 
     assert len(results) == 2
+
+
+# --- list_by_project_in_order / count_by_project ----------------------------------------
+
+
+async def _make_project_with_sources(db_session, *, sources: int):
+    owner = await users_repo.create(db_session, email=f"{uuid4()}@example.com")
+    project = await projects_repo.create(
+        db_session, owner_id=owner.id, title="P", source_type="pdf"
+    )
+    created = []
+    for i in range(sources):
+        created.append(
+            await uploaded_sources_repo.create(
+                db_session,
+                project_id=project.id,
+                original_filename=f"notes-{i}.pdf",
+                storage_bucket="edutoon-uploads",
+                storage_key=f"{project.id}/{uuid4()}.pdf",
+                byte_size=1024,
+                checksum_sha256=uuid4().hex + uuid4().hex[:32],
+            )
+        )
+    return project, created
+
+
+async def test_list_by_project_in_order_spans_sources_in_upload_then_page_order(db_session):
+    project, (first, second) = await _make_project_with_sources(db_session, sources=2)
+    # Chunks are inserted second-source-first and out of index order on purpose:
+    # the result must not depend on insertion order.
+    await source_chunks_repo.create_many(
+        db_session,
+        [
+            NewSourceChunk(source_id=second.id, project_id=project.id, chunk_index=1, content="B1"),
+            NewSourceChunk(source_id=second.id, project_id=project.id, chunk_index=0, content="B0"),
+        ],
+    )
+    await source_chunks_repo.create_many(
+        db_session,
+        [
+            NewSourceChunk(source_id=first.id, project_id=project.id, chunk_index=1, content="A1"),
+            NewSourceChunk(source_id=first.id, project_id=project.id, chunk_index=0, content="A0"),
+        ],
+    )
+
+    chunks = await source_chunks_repo.list_by_project_in_order(db_session, project.id)
+
+    assert [chunk.content for chunk in chunks] == ["A0", "A1", "B0", "B1"]
+
+
+async def test_list_by_project_in_order_is_not_paginated(db_session):
+    project, (source,) = await _make_project_with_sources(db_session, sources=1)
+    await source_chunks_repo.create_many(
+        db_session,
+        [
+            NewSourceChunk(
+                source_id=source.id, project_id=project.id, chunk_index=i, content=f"p{i}"
+            )
+            for i in range(120)  # more than MAX_PAGE_SIZE
+        ],
+    )
+
+    chunks = await source_chunks_repo.list_by_project_in_order(db_session, project.id)
+
+    assert [chunk.chunk_index for chunk in chunks] == list(range(120))
+
+
+async def test_list_by_project_in_order_only_returns_that_projects_chunks(db_session):
+    project, (source,) = await _make_project_with_sources(db_session, sources=1)
+    other, (other_source,) = await _make_project_with_sources(db_session, sources=1)
+    await source_chunks_repo.create_many(
+        db_session,
+        [NewSourceChunk(source_id=source.id, project_id=project.id, chunk_index=0, content="mine")],
+    )
+    await source_chunks_repo.create_many(
+        db_session,
+        [
+            NewSourceChunk(
+                source_id=other_source.id, project_id=other.id, chunk_index=0, content="theirs"
+            )
+        ],
+    )
+
+    chunks = await source_chunks_repo.list_by_project_in_order(db_session, project.id)
+
+    assert [chunk.content for chunk in chunks] == ["mine"]
+
+
+async def test_list_by_project_in_order_is_empty_when_there_are_no_chunks(db_session):
+    project, _sources = await _make_project_with_sources(db_session, sources=1)
+
+    assert await source_chunks_repo.list_by_project_in_order(db_session, project.id) == []
+
+
+async def test_count_by_project_counts_only_that_projects_chunks(db_session):
+    project, (first, second) = await _make_project_with_sources(db_session, sources=2)
+    other, (other_source,) = await _make_project_with_sources(db_session, sources=1)
+    assert await source_chunks_repo.count_by_project(db_session, project.id) == 0
+
+    await source_chunks_repo.create_many(
+        db_session,
+        [
+            NewSourceChunk(source_id=first.id, project_id=project.id, chunk_index=0, content="a"),
+            NewSourceChunk(source_id=first.id, project_id=project.id, chunk_index=1, content="b"),
+            NewSourceChunk(source_id=second.id, project_id=project.id, chunk_index=0, content="c"),
+        ],
+    )
+    await source_chunks_repo.create_many(
+        db_session,
+        [
+            NewSourceChunk(
+                source_id=other_source.id, project_id=other.id, chunk_index=0, content="x"
+            )
+        ],
+    )
+
+    assert await source_chunks_repo.count_by_project(db_session, project.id) == 3
+    assert await source_chunks_repo.count_by_project(db_session, other.id) == 1
