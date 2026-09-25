@@ -51,7 +51,7 @@ import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from edutoon.core.config import Settings, get_settings
-from edutoon.core.errors import ConflictError, NotFoundError, ValidationError
+from edutoon.core.errors import ConflictError, JobError, NotFoundError, ValidationError
 from edutoon.domain.topic import (
     PassageSelection,
     SourcePassage,
@@ -78,6 +78,7 @@ from edutoon.repositories.project_topics import NewProjectTopic, ProjectTopicRec
 from edutoon.repositories.projects import ProjectRecord
 from edutoon.services import audit_logs as audit_logs_service
 from edutoon.services import projects as projects_service
+from edutoon.services.job_errors import describe_job_failure
 
 log = structlog.get_logger()
 
@@ -342,7 +343,8 @@ async def run_extract_topics_job(
         project_id, replace = _parse_payload(running.payload)
         result = await _extract_and_persist(session, llm, project_id=project_id, replace=replace)
     except Exception as exc:  # noqa: BLE001 - any failure fails the job, never raises
-        return await _mark_job_failed(session, job_id=running.id, error=str(exc))
+        error = describe_job_failure(exc, job_id=running.id, kind=EXTRACT_TOPICS_JOB_KIND)
+        return await _mark_job_failed(session, job_id=running.id, error=error)
 
     return await _mark_job_succeeded(session, job_id=running.id, result=result)
 
@@ -351,7 +353,7 @@ def _parse_payload(payload: Mapping[str, Any]) -> tuple[UUID, bool]:
     try:
         project_id = UUID(str(payload["project_id"]))
     except (KeyError, ValueError) as exc:
-        raise ValueError("The extraction job has no valid project_id in its payload.") from exc
+        raise JobError("The extraction job has no valid project_id in its payload.") from exc
     return project_id, bool(payload.get("replace", False))
 
 
@@ -414,7 +416,7 @@ async def _extract_and_persist(
         # Not a rule violation - a seeds-only outline is valid on its own - but
         # replacing a real derived set with nothing because the model returned
         # nothing useful would be data loss, so it is treated as a failure.
-        raise ValueError(
+        raise JobError(
             "The new extraction produced no topics of its own, so the previous topics were kept."
         )
 

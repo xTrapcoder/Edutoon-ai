@@ -39,6 +39,7 @@ from edutoon.db.session import get_sessionmaker
 from edutoon.db.tables import jobs as jobs_table
 from edutoon.db.tables import projects as projects_table
 from edutoon.db.tables import users as users_table
+from edutoon.providers import errors as provider_errors
 from edutoon.providers.embeddings import Embeddings
 from edutoon.providers.llm import LLM
 from edutoon.repositories import claim_verifications as claim_verifications_repo
@@ -51,10 +52,12 @@ from edutoon.repositories import users as users_repo
 from edutoon.repositories.claim_verifications import NewClaimCitation
 from edutoon.repositories.source_chunks import NewSourceChunk
 from edutoon.services import evidence as evidence_service
+from edutoon.services import job_errors
 from edutoon.services import scripts as scripts_service
 from edutoon.services import topic_extraction as topic_extraction_service
 from edutoon.worker.dispatch import JOB_HANDLERS, WorkerProviders
 from edutoon.worker.runner import process_one_job
+from tests.leaky_errors import assert_clean, leaky_anthropic, leaky_db_error
 
 EMBEDDING_MODEL = "text-embedding-3-small"
 LLM_MODEL = "claude-sonnet-5"
@@ -263,7 +266,8 @@ async def test_process_one_job_marks_build_evidence_failed_on_a_provider_error(
     finished = await jobs_repo.get_by_id(db_session, job.id)
     assert finished is not None
     assert finished.status == "failed"
-    assert finished.error == "openai is unreachable"
+    assert finished.error == job_errors.GENERIC_ERROR
+    assert "unreachable" not in finished.error
 
 
 # --- process_one_job: generate_script -----------------------------------------------
@@ -385,7 +389,8 @@ async def test_process_one_job_marks_extract_topics_failed_on_a_provider_error(
     finished = await jobs_repo.get_by_id(db_session, enqueued.job.id)
     assert finished is not None
     assert finished.status == "failed"
-    assert finished.error == "anthropic is unreachable"
+    assert finished.error == job_errors.GENERIC_ERROR
+    assert "unreachable" not in finished.error
     assert finished.finished_at is not None
     # The user's own topic is exactly as it was.
     stored = await project_topics_repo.list_all_by_project(db_session, project.id)
@@ -432,6 +437,49 @@ async def test_process_one_job_marks_an_unknown_job_kind_failed_without_crashing
     assert finished.status == "failed"
     assert "render_video" in finished.error
     assert finished.finished_at is not None
+
+
+# --- process_one_job: the last-resort crash branch ------------------------------------
+#
+# Every run_*_job catches its own failures, so a handler that *raises* means
+# something unexpected (a dropped connection, a bug). The job must still end up
+# terminal - and what its owner can read must be a message written for them, not
+# the exception's own text.
+
+
+@pytest.mark.parametrize(
+    ("make_exc", "expected"),
+    [
+        (leaky_db_error, job_errors.DATABASE_ERROR),
+        (lambda: leaky_anthropic(401), provider_errors.NOT_AUTHORISED),
+        (
+            lambda: RuntimeError("password=hunter2 at /srv/app/worker.py"),
+            job_errors.GENERIC_ERROR,
+        ),
+    ],
+    ids=["database", "provider", "unexpected"],
+)
+async def test_a_crashing_handler_still_ends_the_job_failed_with_a_safe_message(
+    db_session, worker_sessionmaker, monkeypatch, make_exc, expected
+):
+    project = await _make_project(db_session)
+    job = await jobs_repo.create(db_session, project_id=project.id, kind="extract_topics")
+    await db_session.commit()
+
+    async def crashes(session, providers, job_id):
+        raise make_exc()
+
+    monkeypatch.setitem(JOB_HANDLERS, "extract_topics", crashes)
+    providers = WorkerProviders(embeddings=_idle_embeddings(), llm=_idle_llm())
+
+    claimed_something = await process_one_job(worker_sessionmaker, providers)
+
+    assert claimed_something is True
+    finished = await jobs_repo.get_by_id(db_session, job.id)
+    assert finished is not None
+    assert finished.status == "failed" and finished.finished_at is not None
+    assert finished.error == expected
+    assert_clean(finished.error)
 
 
 # --- real concurrency: FOR UPDATE SKIP LOCKED actually prevents a double claim -----

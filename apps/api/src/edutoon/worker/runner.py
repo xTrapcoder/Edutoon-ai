@@ -33,6 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from edutoon.repositories import jobs as jobs_repo
 from edutoon.services import jobs as jobs_service
+from edutoon.services.job_errors import describe_job_failure
 from edutoon.worker.dispatch import JOB_HANDLERS, WorkerProviders
 
 log = structlog.get_logger()
@@ -92,19 +93,16 @@ async def process_one_job(
             # terminal, never stuck "running" forever - hence the fresh
             # session below, since `session` itself may now be unusable.
             await session.rollback()
-            log.error(
-                "worker.job_crashed",
-                job_id=str(claimed.id),
-                kind=claimed.kind,
-                error=str(exc),
-            )
+            # The full exception (with its stack trace) goes to the log; the job
+            # - which its owner can read - gets only a message written for them.
+            log.error("worker.job_crashed", job_id=str(claimed.id), kind=claimed.kind)
             async with sessionmaker() as failure_session:
                 await jobs_repo.update(
                     failure_session,
                     job_id=claimed.id,
                     status="failed",
                     finished_at=datetime.now(UTC),
-                    error=str(exc),
+                    error=describe_job_failure(exc, job_id=claimed.id, kind=claimed.kind),
                 )
                 await failure_session.commit()
 

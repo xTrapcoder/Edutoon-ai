@@ -43,6 +43,7 @@ from edutoon.repositories.claim_verifications import (
 from edutoon.repositories.claim_verifications import NewClaimCitation
 from edutoon.repositories.jobs import JobRecord
 from edutoon.repositories.source_chunks import DEFAULT_SIMILARITY_LIMIT
+from edutoon.services.job_errors import describe_job_failure
 
 BUILD_EVIDENCE_JOB_KIND = "build_evidence"
 
@@ -116,7 +117,8 @@ async def run_build_evidence_job(
             session, embeddings, source_id=UUID(running.payload["source_id"])
         )
     except Exception as exc:  # noqa: BLE001 - any failure marks the job failed, never raises
-        return await _mark_failed(session, job_id=running.id, error=str(exc))
+        error = describe_job_failure(exc, job_id=running.id, kind=BUILD_EVIDENCE_JOB_KIND)
+        return await _mark_failed(session, job_id=running.id, error=error)
 
     return await _mark_succeeded(session, job_id=running.id, chunks_embedded=chunks_embedded)
 

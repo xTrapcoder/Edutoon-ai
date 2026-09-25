@@ -91,6 +91,20 @@ class ValidationError(AppError):
     code = "validation_error"
 
 
+class JobError(AppError):
+    """A background job failed for a reason its owner should be told, in words
+    written for them.
+
+    Raised deliberately by a job's own code, and - like every :class:`AppError`
+    - its message is shown to the owner verbatim (``services.job_errors``), so
+    it must be written for them and must never be built from another
+    exception's text.
+    """
+
+    status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
+    code = "job_failed"
+
+
 # Postgres unique-constraint names (from the migrations) mapped to a message
 # safe to return to a client. Anything not listed here still becomes a
 # ConflictError, just with a generic message - the raw DB error never reaches

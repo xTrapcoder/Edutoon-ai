@@ -1,0 +1,76 @@
+"""What a failed provider call may say to the person who started the job.
+
+An SDK exception's own text is not safe to show: it carries the provider's
+response body (which can echo the request, including the user's own material),
+request ids, and whatever else the provider chose to put in it. This module turns
+a provider error into one of a small, fixed set of sentences, chosen from its
+*kind* (rate limit, timeout, bad request, ...) and HTTP status alone - never from
+``str(exc)``, ``exc.body`` or ``exc.response``. The full exception is for the
+server log.
+
+Lives in ``providers`` because it must name the OpenAI and Anthropic SDK types
+(rule 3: no provider SDK is imported anywhere else). Both SDKs share the same
+shape - ``APITimeoutError`` under ``APIConnectionError``, ``APIStatusError`` with
+a ``status_code`` - so the two are handled together.
+"""
+
+from __future__ import annotations
+
+import anthropic
+import openai
+
+_TIMEOUT = (anthropic.APITimeoutError, openai.APITimeoutError)
+_CONNECTION = (anthropic.APIConnectionError, openai.APIConnectionError)
+_STATUS = (anthropic.APIStatusError, openai.APIStatusError)
+_ANY_PROVIDER_ERROR = (anthropic.AnthropicError, openai.OpenAIError)
+
+RATE_LIMITED = (
+    "The AI provider is rate-limiting requests right now. Please try again in a few minutes."
+)
+TIMED_OUT = "The AI provider took too long to respond. Please try again."
+UNREACHABLE = "The AI provider could not be reached. Please try again."
+UNAVAILABLE = "The AI provider is temporarily unavailable. Please try again shortly."
+NOT_AUTHORISED = (
+    "This service is not currently authorised to use the AI provider. "
+    "This is a configuration problem - please contact support."
+)
+MODEL_UNAVAILABLE = (
+    "The AI model this service is configured to use is not available. "
+    "This is a configuration problem - please contact support."
+)
+TOO_LARGE = "The material was too large for the AI provider to process."
+REJECTED = "The AI provider could not process this request."
+UNEXPECTED = "The AI provider returned an unexpected error."
+
+
+def describe_provider_error(exc: BaseException) -> str | None:
+    """A message safe to show the job's owner for a provider SDK error, or
+    ``None`` if ``exc`` is not one (the caller then decides what to say).
+    """
+    if isinstance(exc, _TIMEOUT):
+        return TIMED_OUT
+    if isinstance(exc, _CONNECTION):
+        return UNREACHABLE
+    if isinstance(exc, _STATUS):
+        return _describe_status(exc.status_code)
+    if isinstance(exc, _ANY_PROVIDER_ERROR):
+        return UNEXPECTED
+    return None
+
+
+def _describe_status(status: int) -> str:
+    if status in (401, 403):
+        return NOT_AUTHORISED
+    if status == 404:
+        return MODEL_UNAVAILABLE
+    if status in (408, 504):
+        return TIMED_OUT
+    if status == 413:
+        return TOO_LARGE
+    if status == 429:
+        return RATE_LIMITED
+    if status >= 500:  # includes Anthropic's 529 "overloaded"
+        return UNAVAILABLE
+    if status in (400, 422):
+        return REJECTED
+    return UNEXPECTED

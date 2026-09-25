@@ -28,6 +28,19 @@ marked `failed` with a clear error rather than stalling forever. Stop it
 with Ctrl-C (or `SIGTERM`); it finishes whatever job it's already claimed
 before exiting.
 
+**What a failed job says.** A job's `error` is returned by
+`GET /v1/projects/{id}/jobs`, so it is written for the project's owner
+(`src/edutoon/services/job_errors.py`). A message this codebase wrote for people
+- a validation or conflict error, a topic or script rule, the model's response
+breaking the contract - is shown as written (capped at 300 characters). A
+provider failure becomes a fixed sentence chosen by its kind (rate limit,
+timeout, not authorised, ...); a database or connection failure, and anything
+unexpected, become a generic one. Never shown: SQL or its parameters, stack
+traces, a provider's response body, request ids, credentials, file paths. The
+full exception - with the job's id - goes to the server log (`job.failed` /
+`job.failed_unexpectedly`) so an operator can find it. Jobs that failed before
+this was introduced keep whatever text they were stored with.
+
 ## Topic understanding
 
 Before any claim is verified or script written, the project needs an outline of

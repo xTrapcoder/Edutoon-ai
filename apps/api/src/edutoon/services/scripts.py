@@ -50,6 +50,7 @@ from edutoon.repositories.jobs import JobRecord
 from edutoon.repositories.scripts import ScriptRecord, ScriptSegmentRecord
 from edutoon.services import audit_logs as audit_logs_service
 from edutoon.services import projects as projects_service
+from edutoon.services.job_errors import describe_job_failure
 
 GENERATE_SCRIPT_JOB_KIND = "generate_script"
 
@@ -186,7 +187,8 @@ async def run_generate_script_job(
         await scripts_repo.set_status(
             session, project_id=project_id, script_id=script_id, status="failed"
         )
-        return await _mark_job_failed(session, job_id=running.id, error=str(exc))
+        error = describe_job_failure(exc, job_id=running.id, kind=GENERATE_SCRIPT_JOB_KIND)
+        return await _mark_job_failed(session, job_id=running.id, error=error)
 
     return await _mark_job_succeeded(session, job_id=running.id, result=result)
 

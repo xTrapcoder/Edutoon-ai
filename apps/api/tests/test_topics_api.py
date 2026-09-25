@@ -34,6 +34,7 @@ from edutoon.core.config import get_settings
 from edutoon.db.session import get_session
 from edutoon.main import create_app
 from edutoon.providers import clerk
+from edutoon.providers import errors as provider_errors
 from edutoon.providers.cache import get_redis_client
 from edutoon.providers.llm import LLM
 from edutoon.repositories import jobs as jobs_repo
@@ -44,6 +45,7 @@ from edutoon.repositories import uploaded_sources as uploaded_sources_repo
 from edutoon.repositories.source_chunks import NewSourceChunk
 from edutoon.services import audit_logs as audit_logs_service
 from edutoon.services import topic_extraction as topic_extraction_service
+from tests.leaky_errors import assert_clean, leaky_anthropic
 
 TEST_ISSUER = "https://test.clerk.accounts.dev"
 MODEL = "claude-sonnet-5"
@@ -1363,3 +1365,31 @@ async def test_a_live_extraction_still_blocks_over_the_api(client_factory, auth_
         )
 
     assert added.status_code == 409
+
+
+async def test_a_failed_extraction_shows_the_client_a_safe_message_in_the_job_list(
+    client_factory, auth_headers, db_session, monkeypatch
+):
+    """The whole path: the model call fails with an error whose text is stuffed
+    with a key, a request id and a fragment of the user's material; the client
+    reads the job back over HTTP and none of it is in the response body.
+    """
+    headers = auth_headers()
+    async with client_factory() as client:
+        project_id = await _create_project(client, headers)
+        await _add_keywords(client, headers, project_id, ["Photosynthesis"])
+        await client.post(f"/v1/projects/{project_id}/topics/extraction", headers=_headers(headers))
+        sdk_client = AsyncAnthropic(api_key="sk-ant-test-not-a-real-key")
+        monkeypatch.setattr(
+            sdk_client.messages, "create", AsyncMock(side_effect=leaky_anthropic(401))
+        )
+        job = await _run_pending_extraction(db_session, project_id, LLM(sdk_client, model=MODEL))
+        assert job.status == "failed"
+
+        response = await client.get(f"/v1/projects/{project_id}/jobs", headers=headers)
+
+    assert response.status_code == 200
+    [body] = response.json()["items"]
+    assert body["status"] == "failed"
+    assert body["error"] == provider_errors.NOT_AUTHORISED
+    assert_clean(response.text)  # the whole body, not just the error field

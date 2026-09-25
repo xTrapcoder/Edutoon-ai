@@ -21,6 +21,7 @@ from openai.types import CreateEmbeddingResponse, Embedding
 from openai.types.create_embedding_response import Usage
 
 from edutoon.core.errors import ConflictError, NotFoundError
+from edutoon.providers import errors as provider_errors
 from edutoon.providers.embeddings import Embeddings
 from edutoon.providers.llm import LLM, Verdict
 from edutoon.repositories import claim_verifications as claim_verifications_repo
@@ -30,6 +31,8 @@ from edutoon.repositories import uploaded_sources as uploaded_sources_repo
 from edutoon.repositories import users as users_repo
 from edutoon.repositories.source_chunks import NewSourceChunk
 from edutoon.services import evidence as evidence_service
+from edutoon.services import job_errors
+from tests.leaky_errors import assert_clean, leaky_openai
 
 MODEL = "text-embedding-3-small"
 LLM_MODEL = "claude-sonnet-5"
@@ -220,7 +223,9 @@ async def test_run_build_evidence_job_marks_failed_on_embedding_error(db_session
     )
 
     assert completed.status == "failed"
-    assert completed.error == "openai is unreachable"
+    # A bare exception's text is never shown to the owner - only a fixed sentence.
+    assert completed.error == job_errors.GENERIC_ERROR
+    assert "unreachable" not in completed.error
     remaining = await source_chunks_repo.list_missing_embedding_by_source(db_session, source.id)
     assert len(remaining) == 1  # nothing was embedded
 
@@ -423,3 +428,23 @@ async def test_verify_claim_never_retrieves_another_projects_chunks(db_session, 
 
     citations = await claim_verifications_repo.list_citations(db_session, verification.id)
     assert [c.source_chunk_id for c in citations] == [chunk_b.id]
+
+
+async def test_a_provider_failure_tells_the_owner_a_fixed_sentence_and_nothing_else(db_session):
+    project, source, _ = await _make_source(db_session, num_chunks=1)
+    job = await evidence_service.enqueue_indexing_job(
+        db_session, project_id=project.id, source_id=source.id
+    )
+    client = AsyncOpenAI(api_key="sk-test-not-a-real-key")
+
+    async def _rate_limited(**_kwargs):
+        raise leaky_openai(429)
+
+    client.embeddings.create = _rate_limited  # type: ignore[method-assign]
+
+    completed = await evidence_service.run_build_evidence_job(
+        db_session, Embeddings(client, model=MODEL), job_id=job.id
+    )
+
+    assert completed.status == "failed" and completed.error == provider_errors.RATE_LIMITED
+    assert_clean(completed.error)

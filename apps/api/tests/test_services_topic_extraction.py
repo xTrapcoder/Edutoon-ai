@@ -32,6 +32,7 @@ from edutoon.db.database import dispose_engine, get_engine
 from edutoon.db.session import get_sessionmaker
 from edutoon.db.tables import users as users_table
 from edutoon.domain.topic import TopicLimits
+from edutoon.providers import errors as provider_errors
 from edutoon.providers.llm import LLM
 from edutoon.repositories import jobs as jobs_repo
 from edutoon.repositories import project_topics as project_topics_repo
@@ -44,8 +45,10 @@ from edutoon.repositories import users as users_repo
 from edutoon.repositories.scripts import NewScriptSegment
 from edutoon.repositories.source_chunks import NewSourceChunk
 from edutoon.services import audit_logs as audit_logs_service
+from edutoon.services import job_errors
 from edutoon.services import topic_extraction as service
 from edutoon.services import uploaded_sources as uploaded_sources_service
+from tests.leaky_errors import assert_clean, leaky_anthropic, leaky_db_error
 
 MODEL = "claude-sonnet-5"
 
@@ -749,7 +752,8 @@ async def test_a_failing_model_call_preserves_the_previous_topics(db_session, mo
         lambda ctx: _llm_raising(monkeypatch, RuntimeError("the API is down")),
     )
 
-    assert job.status == "failed" and job.error == "the API is down"
+    assert job.status == "failed" and job.error == job_errors.GENERIC_ERROR
+    assert "API is down" not in job.error
     assert after == before
 
 
@@ -874,7 +878,8 @@ async def test_a_persistence_failure_rolls_back_everything_including_the_deletio
     )
 
     assert job.status == "failed"
-    assert job.error == f"{failing_step}: disk full"
+    assert job.error == job_errors.GENERIC_ERROR
+    assert "disk full" not in job.error and failing_step not in job.error
     assert after == before
     assert "A brand new topic" not in {row[1] for row in after}
 
@@ -920,7 +925,8 @@ async def test_a_failed_job_records_the_error_and_never_raises(db_session, monke
         job_id=enqueued.job.id,
     )
 
-    assert (job.status, job.attempts, job.error) == ("failed", 1, "upstream exploded")
+    assert (job.status, job.attempts, job.error) == ("failed", 1, job_errors.GENERIC_ERROR)
+    assert "exploded" not in job.error
     assert job.result is None
     assert job.started_at is not None and job.finished_at is not None
 
@@ -1378,3 +1384,74 @@ async def test_an_ordinary_project_brief_is_sent_unchanged(db_session, monkeypat
     assert "Subject: How photosynthesis works" in message
     assert "Description: A short explainer for year 9." in message
     assert "Language: en-GB" in message
+
+
+# --- what the owner is told when a job fails -----------------------------------------------
+#
+# A job's error is returned by GET /jobs, so it is written for the owner: a fixed
+# sentence for a provider or database failure, never the failure's own text (see
+# services/job_errors.py). A failed extraction still leaves the previous topics as
+# they were - that is asserted alongside, since it is what the failure is about.
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        (401, provider_errors.NOT_AUTHORISED),
+        (404, provider_errors.MODEL_UNAVAILABLE),
+        (429, provider_errors.RATE_LIMITED),
+        (529, provider_errors.UNAVAILABLE),
+    ],
+)
+async def test_a_provider_failure_tells_the_owner_a_fixed_sentence_and_nothing_else(
+    db_session, monkeypatch, status, expected
+):
+    job, before, after = await _failed_replace_preserves_everything(
+        db_session, monkeypatch, lambda ctx: _llm_raising(monkeypatch, leaky_anthropic(status))
+    )
+
+    assert job.status == "failed" and job.error == expected
+    assert_clean(job.error)
+    assert after == before
+
+
+async def test_a_database_failure_while_saving_shows_no_sql(db_session, monkeypatch):
+    def fresh_valid_outline(ctx):
+        chunks, seed_a = ctx[2], ctx[3]
+        llm, _ = _fake_llm(
+            monkeypatch,
+            [
+                _topic("t1", "Photosynthesis", evidence=(chunks[0].id,), seed=seed_a.id),
+                _topic("t2", "A brand new topic", parent="t1", evidence=(chunks[1].id,)),
+            ],
+        )
+
+        async def boom(*args: Any, **kwargs: Any):
+            raise leaky_db_error()
+
+        monkeypatch.setattr(project_topics_repo, "create_many", boom)
+        return llm
+
+    job, before, after = await _failed_replace_preserves_everything(
+        db_session, monkeypatch, fresh_valid_outline
+    )
+
+    assert job.status == "failed" and job.error == job_errors.DATABASE_ERROR
+    assert_clean(job.error)
+    assert after == before
+
+
+async def test_an_error_the_owner_can_act_on_is_still_shown_in_full(db_session, monkeypatch):
+    """Hiding the leaky text must not hide the useful text: a failure that is
+    about the owner's own request still says what was wrong.
+    """
+    owner, project = await _project(db_session)  # nothing to extract from is a 400 at enqueue,
+    await _add_chunks(db_session, project, ["Page."])  # so make a job whose payload is broken
+    job = await jobs_repo.create(
+        db_session, project_id=project.id, kind="extract_topics", payload={"replace": False}
+    )
+    llm, _ = _fake_llm(monkeypatch, [])
+
+    finished = await service.run_extract_topics_job(db_session, llm, job_id=job.id)
+
+    assert finished.error == "The extraction job has no valid project_id in its payload."

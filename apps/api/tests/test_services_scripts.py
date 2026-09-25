@@ -18,6 +18,7 @@ from anthropic.types import Message, ToolUseBlock
 from anthropic.types import Usage as AnthropicUsage
 
 from edutoon.core.errors import ConflictError, NotFoundError, ValidationError
+from edutoon.providers import errors as provider_errors
 from edutoon.providers.llm import LLM, LLMResponseError
 from edutoon.repositories import claim_verifications as claim_verifications_repo
 from edutoon.repositories import jobs as jobs_repo
@@ -29,7 +30,9 @@ from edutoon.repositories import users as users_repo
 from edutoon.repositories.claim_verifications import NewClaimCitation
 from edutoon.repositories.source_chunks import NewSourceChunk
 from edutoon.services import audit_logs as audit_logs_service
+from edutoon.services import job_errors
 from edutoon.services import scripts as scripts_service
+from tests.leaky_errors import assert_clean, leaky_anthropic
 
 SCRIPT_MODEL = "claude-sonnet-5"
 
@@ -469,3 +472,29 @@ async def test_approve_is_idempotent_enough_to_reject_double_approval(db_session
         await scripts_service.approve_script(
             db_session, project_id=project.id, owner_id=owner.id, script_id=script_id
         )
+
+
+async def test_a_provider_failure_tells_the_owner_a_fixed_sentence_and_nothing_else(
+    db_session, monkeypatch
+):
+    _owner, _project, _claims, enq = await _enqueued(db_session)
+    llm = _llm_raising(monkeypatch, leaky_anthropic(429))
+
+    job = await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
+
+    assert job.status == "failed" and job.error == provider_errors.RATE_LIMITED
+    assert_clean(job.error)
+    script = await scripts_repo.get_by_id(db_session, enq.script.id)
+    assert script.status == "failed"
+
+
+async def test_an_unexpected_failure_while_composing_a_script_is_generic(
+    db_session, monkeypatch
+):
+    _owner, _project, _claims, enq = await _enqueued(db_session)
+    llm = _llm_raising(monkeypatch, RuntimeError("password=hunter2 at /srv/app/worker.py"))
+
+    job = await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
+
+    assert job.status == "failed" and job.error == job_errors.GENERIC_ERROR
+    assert_clean(job.error)
