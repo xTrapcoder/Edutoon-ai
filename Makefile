@@ -49,9 +49,12 @@ worker: ## Run the background job worker on its own (polls jobs, dispatches to e
 test: ## Run the test suites
 	cd apps/api && uv run pytest
 
+# Python is type-checked on the package (`src`) only - that is what [tool.mypy] in
+# apps/api/pyproject.toml targets. `mypy .` also strict-checks the test suite,
+# whose functions are deliberately untyped, and fails on all of them.
 lint: ## Lint JS/TS and Python
 	pnpm lint
-	cd apps/api && uv run ruff check . && uv run mypy .
+	cd apps/api && uv run ruff check . && uv run mypy src
 
 format: ## Format JS/TS and Python
 	pnpm format
@@ -59,4 +62,4 @@ format: ## Format JS/TS and Python
 
 typecheck: ## Type-check JS/TS and Python
 	pnpm typecheck
-	cd apps/api && uv run mypy .
+	cd apps/api && uv run mypy src
