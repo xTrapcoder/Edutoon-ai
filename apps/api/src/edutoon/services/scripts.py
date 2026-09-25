@@ -96,6 +96,10 @@ async def enqueue_script_generation(
     :class:`~edutoon.core.errors.ValidationError` if the project has no
     supported claim for a script to cite. A repeat call with the same
     ``idempotency_key`` returns the original result with ``replayed=True``.
+
+    ``llm_model`` is the model the script is *queued for* (the API passes its
+    script client's; ``SCRIPT_LLM_MODEL`` when omitted). The job that writes the
+    script records the model it actually ran with, replacing this if they differ.
     """
     await projects_service.get_project(session, project_id=project_id, owner_id=owner_id)
 
@@ -185,7 +189,11 @@ async def run_generate_script_job(
         )
     except Exception as exc:  # noqa: BLE001 - any failure fails job + script, never raises
         await scripts_repo.set_status(
-            session, project_id=project_id, script_id=script_id, status="failed"
+            session,
+            project_id=project_id,
+            script_id=script_id,
+            status="failed",
+            llm_model=llm.model,
         )
         error = describe_job_failure(exc, job_id=running.id, kind=GENERATE_SCRIPT_JOB_KIND)
         return await _mark_job_failed(session, job_id=running.id, error=error)
@@ -233,7 +241,11 @@ async def _generate_and_attach(
     )
 
     attached = await scripts_repo.attach_draft(
-        session, project_id=project_id, script_id=script_id, draft=validated
+        session,
+        project_id=project_id,
+        script_id=script_id,
+        draft=validated,
+        llm_model=llm.model,
     )
     if attached is None:
         raise ConflictError(

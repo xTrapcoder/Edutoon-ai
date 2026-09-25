@@ -43,11 +43,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     llm_client: LLM = get_llm_client(
         api_key=settings.ANTHROPIC_API_KEY, model=settings.LLM_MODEL
     )
+    # A second client bound to SCRIPT_LLM_MODEL. Claim judging keeps `llm`; a script is
+    # queued for this one's model (and the worker builds its own to write it).
+    script_llm_client: LLM = get_llm_client(
+        api_key=settings.ANTHROPIC_API_KEY, model=settings.SCRIPT_LLM_MODEL
+    )
     app.state.engine = get_engine()
     app.state.redis = redis_client
     app.state.storage = storage_client
     app.state.embeddings = embeddings_client
     app.state.llm = llm_client
+    app.state.script_llm = script_llm_client
     try:
         yield
     finally:

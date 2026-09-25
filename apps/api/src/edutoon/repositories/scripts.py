@@ -253,10 +253,12 @@ async def attach_draft(
     project_id: UUID,
     script_id: UUID,
     draft: ValidatedScriptDraft,
+    llm_model: str | None = None,
 ) -> ScriptRecord | None:
     """Fill an existing *pending* script with a validated draft - its
     segments and their claim-verification links - and advance it to
-    ``draft``, all inside one SAVEPOINT.
+    ``draft``, all inside one SAVEPOINT. ``llm_model``, when given, is the model
+    that actually wrote the draft and replaces the one the script was queued with.
 
     This is the job-flow counterpart to :func:`create_script`: the pending
     ``scripts`` row was created up front by ``enqueue_script_generation`` (so
@@ -286,6 +288,7 @@ async def attach_draft(
             script_id=script_id,
             status="draft",
             estimated_duration_ms=draft.estimated_duration_ms,
+            llm_model=llm_model,
         )
 
 
@@ -405,16 +408,23 @@ async def set_status(
     script_id: UUID,
     status: str,
     estimated_duration_ms: int | None = None,
+    llm_model: str | None = None,
 ) -> ScriptRecord | None:
     """The only update path on ``scripts`` - a status-machine transition
     (``pending -> draft -> approved`` / ``failed`` / ``superseded``).
     ``updated_at`` is stamped by the ``trg_scripts_set_updated_at`` trigger.
     Project-scoped: returns ``None`` if the script doesn't exist *or*
     belongs to another project (rule 9).
+
+    ``llm_model`` is written on the transitions the generation job makes (to
+    ``draft`` or ``failed``): a script is queued with the model it is *meant* to be
+    written by, and the job then records the model it actually ran with.
     """
     values: dict[str, Any] = {"status": status}
     if estimated_duration_ms is not None:
         values["estimated_duration_ms"] = estimated_duration_ms
+    if llm_model is not None:
+        values["llm_model"] = llm_model
 
     stmt = (
         scripts.update()

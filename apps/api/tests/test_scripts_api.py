@@ -97,7 +97,22 @@ def auth_headers(rsa_keypair, monkeypatch) -> Callable[[], dict[str, str]]:
 
 
 @pytest.fixture
-async def client_factory(db_session) -> AsyncIterator[Callable[[], httpx.AsyncClient]]:
+def script_llm_model() -> str:
+    """The model the app's script client (``app.state.script_llm``) is bound to.
+    Override it with ``@pytest.mark.parametrize("script_llm_model", [...])``.
+    """
+    return get_settings().SCRIPT_LLM_MODEL
+
+
+def _script_llm(model: str) -> LLM:
+    """The client the API queues scripts for - never called by these tests."""
+    return LLM(AsyncAnthropic(api_key="sk-ant-test-not-a-real-key"), model=model)
+
+
+@pytest.fixture
+async def client_factory(
+    db_session, script_llm_model
+) -> AsyncIterator[Callable[[], httpx.AsyncClient]]:
     app = create_app()
 
     async def _session_override():
@@ -108,6 +123,7 @@ async def client_factory(db_session) -> AsyncIterator[Callable[[], httpx.AsyncCl
     # the idempotency dependency reads - is set here exactly as lifespan()
     # would have set it.
     app.state.redis = get_redis_client(get_settings().REDIS_URL)
+    app.state.script_llm = _script_llm(script_llm_model)
 
     def _make() -> httpx.AsyncClient:
         return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
@@ -259,6 +275,27 @@ async def test_enqueue_returns_202_with_a_pending_script(client_factory, auth_he
     assert body["project_id"] == project_id
     assert body["llm_model"] == get_settings().SCRIPT_LLM_MODEL
     assert body["estimated_duration_ms"] is None
+
+
+@pytest.mark.parametrize("script_llm_model", ["script-model-y"])
+async def test_enqueue_queues_the_script_for_the_script_clients_model(
+    client_factory, auth_headers, db_session
+):
+    """The model comes from the API's script client (``SCRIPT_LLM_MODEL``), not from
+    whichever client judges claims - the two are bound to different models here.
+    """
+    headers = auth_headers()
+
+    async with client_factory() as client:
+        project_id = await _create_project(client, headers)
+        await _add_supported_claims(db_session, project_id, ["A verified fact."])
+        response = await client.post(
+            f"/v1/projects/{project_id}/scripts", headers=_headers(headers)
+        )
+
+    assert response.status_code == 202
+    assert response.json()["llm_model"] == "script-model-y"
+    assert response.json()["llm_model"] != get_settings().LLM_MODEL
 
 
 async def test_enqueue_requires_a_supported_claim(client_factory, auth_headers):
@@ -607,6 +644,7 @@ async def test_concurrent_enqueue_duplicate_returns_409(db_session):
     app.dependency_overrides[get_session] = _session_override
     app.dependency_overrides[get_current_user] = lambda: owner
     app.state.redis = get_redis_client(get_settings().REDIS_URL)
+    app.state.script_llm = _script_llm(get_settings().SCRIPT_LLM_MODEL)
 
     path = f"/v1/projects/{project.id}/scripts"
     headers = {"Idempotency-Key": str(uuid4())}

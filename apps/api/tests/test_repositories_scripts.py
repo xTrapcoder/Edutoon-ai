@@ -128,6 +128,28 @@ async def test_set_status_advances_the_state_machine(db_session):
     assert approved.estimated_duration_ms == 90_000  # unchanged
 
 
+async def test_set_status_records_the_model_only_when_it_is_given(db_session):
+    """The generation job passes the model it ran with; every other transition
+    (approval, supersession) leaves the recorded model exactly as it was.
+    """
+    project = await _make_project(db_session)
+    script = await scripts_repo.create(db_session, project_id=project.id, llm_model="queued-for")
+
+    drafted = await scripts_repo.set_status(
+        db_session,
+        project_id=project.id,
+        script_id=script.id,
+        status="draft",
+        llm_model="ran-with",
+    )
+    approved = await scripts_repo.set_status(
+        db_session, project_id=project.id, script_id=script.id, status="approved"
+    )
+
+    assert drafted is not None and drafted.llm_model == "ran-with"
+    assert approved is not None and approved.llm_model == "ran-with"  # not reset by a later call
+
+
 async def test_set_status_returns_none_when_missing(db_session):
     assert (
         await scripts_repo.set_status(
@@ -583,6 +605,36 @@ async def test_attach_draft_fills_a_pending_script_and_advances_it(db_session):
         db_session, project_id=project.id, script_id=script.id
     )
     assert [s.segment_index for s in segments] == [0, 1]
+
+
+async def test_attach_draft_records_the_model_that_wrote_it_when_given(db_session):
+    project = await _make_project(db_session)
+    v1 = await _make_verified_claim(db_session, project)
+    draft = _validated_draft(_validated_segment(0, "A fact.", (v1.id,), duration_ms=3_000))
+
+    with_model = await scripts_repo.create(
+        db_session, project_id=project.id, llm_model="queued-for"
+    )
+    updated = await scripts_repo.attach_draft(
+        db_session,
+        project_id=project.id,
+        script_id=with_model.id,
+        draft=draft,
+        llm_model="ran-with",
+    )
+    assert updated is not None and updated.llm_model == "ran-with"
+
+    # Omitting it keeps whatever the script was queued with.
+    await scripts_repo.set_status(
+        db_session, project_id=project.id, script_id=with_model.id, status="superseded"
+    )
+    without_model = await scripts_repo.create(
+        db_session, project_id=project.id, llm_model="queued-for"
+    )
+    kept = await scripts_repo.attach_draft(
+        db_session, project_id=project.id, script_id=without_model.id, draft=draft
+    )
+    assert kept is not None and kept.llm_model == "queued-for"
 
 
 async def test_attach_draft_is_project_scoped_and_pending_only(db_session):

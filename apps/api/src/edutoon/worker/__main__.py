@@ -1,9 +1,9 @@
 """Standalone job worker process entrypoint: ``python -m edutoon.worker``.
 
 Builds the same provider clients ``main.py``'s lifespan builds for the API
-process (same settings, same client factories), but with no HTTP server -
-just the poll loop. Run alongside the API, e.g. via ``make dev`` or its own
-process/container.
+process (same settings, same client factories - including a second LLM client
+for ``SCRIPT_LLM_MODEL``), but with no HTTP server - just the poll loop. Run
+alongside the API, e.g. via ``make dev`` or its own process/container.
 """
 
 from __future__ import annotations
@@ -18,9 +18,7 @@ from edutoon.core.config import get_settings
 from edutoon.core.logging import configure_logging
 from edutoon.db.database import dispose_engine, get_engine
 from edutoon.db.session import get_sessionmaker
-from edutoon.providers.embeddings import get_embeddings_client
-from edutoon.providers.llm import get_llm_client
-from edutoon.worker.dispatch import WorkerProviders
+from edutoon.worker.dispatch import build_worker_providers
 from edutoon.worker.runner import run_forever
 
 log = structlog.get_logger()
@@ -30,12 +28,7 @@ async def main() -> None:
     settings = get_settings()
     configure_logging(settings.LOG_LEVEL)
 
-    providers = WorkerProviders(
-        embeddings=get_embeddings_client(
-            api_key=settings.OPENAI_API_KEY, model=settings.EMBEDDING_MODEL
-        ),
-        llm=get_llm_client(api_key=settings.ANTHROPIC_API_KEY, model=settings.LLM_MODEL),
-    )
+    providers = build_worker_providers(settings)
 
     get_engine()  # initialise the process-wide engine/pool up front
     sessionmaker = get_sessionmaker()

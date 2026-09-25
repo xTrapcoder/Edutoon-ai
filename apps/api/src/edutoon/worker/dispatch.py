@@ -26,8 +26,9 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from edutoon.providers.embeddings import Embeddings
-from edutoon.providers.llm import LLM
+from edutoon.core.config import Settings
+from edutoon.providers.embeddings import Embeddings, get_embeddings_client
+from edutoon.providers.llm import LLM, get_llm_client
 from edutoon.repositories.jobs import JobRecord
 from edutoon.services import evidence as evidence_service
 from edutoon.services import scripts as scripts_service
@@ -38,10 +39,35 @@ from edutoon.services import topic_extraction as topic_extraction_service
 class WorkerProviders:
     """The provider clients job handlers need, bundled once at worker
     startup - the worker-process equivalent of ``app.state`` in ``main.py``.
+
+    There are two LLM clients, one per configured model, and a handler uses the
+    one for its task: ``llm`` (``LLM_MODEL``) for claim judging and topic
+    extraction, ``script_llm`` (``SCRIPT_LLM_MODEL``) for writing scripts.
+    ``script_llm`` has no default on purpose: falling back to ``llm`` would make a
+    forgotten wiring silently write scripts with the wrong model.
     """
 
     embeddings: Embeddings
     llm: LLM
+    script_llm: LLM
+
+
+def build_worker_providers(settings: Settings) -> WorkerProviders:
+    """The worker's provider clients, built once at start-up from ``settings``.
+
+    The two LLM clients share one API key and differ only in the model they are
+    bound to, so ``SCRIPT_LLM_MODEL`` really does choose the model that writes
+    scripts, and ``LLM_MODEL`` still serves everything else.
+    """
+    return WorkerProviders(
+        embeddings=get_embeddings_client(
+            api_key=settings.OPENAI_API_KEY, model=settings.EMBEDDING_MODEL
+        ),
+        llm=get_llm_client(api_key=settings.ANTHROPIC_API_KEY, model=settings.LLM_MODEL),
+        script_llm=get_llm_client(
+            api_key=settings.ANTHROPIC_API_KEY, model=settings.SCRIPT_LLM_MODEL
+        ),
+    )
 
 
 JobHandler = Callable[[AsyncSession, WorkerProviders, UUID], Awaitable[JobRecord]]
@@ -58,7 +84,9 @@ async def _handle_build_evidence(
 async def _handle_generate_script(
     session: AsyncSession, providers: WorkerProviders, job_id: UUID
 ) -> JobRecord:
-    return await scripts_service.run_generate_script_job(session, providers.llm, job_id=job_id)
+    return await scripts_service.run_generate_script_job(
+        session, providers.script_llm, job_id=job_id
+    )
 
 
 async def _handle_extract_topics(

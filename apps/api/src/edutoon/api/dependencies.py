@@ -37,6 +37,11 @@ def get_llm(request: Request) -> LLM:
     return request.app.state.llm  # type: ignore[no-any-return]
 
 
+def get_script_llm(request: Request) -> LLM:
+    """The LLM client bound to ``SCRIPT_LLM_MODEL`` (``get_llm`` is ``LLM_MODEL``)."""
+    return request.app.state.script_llm  # type: ignore[no-any-return]
+
+
 # Routers depend on these aliases rather than importing `Redis`/`Storage`/
 # `Embeddings`/`LLM` from `providers.*` themselves (rule 2: providers are only
 # ever reached through this dependency-injection seam, same as
@@ -45,6 +50,7 @@ RedisDep = Annotated[Redis, Depends(get_redis)]
 StorageDep = Annotated[Storage, Depends(get_storage)]
 EmbeddingsDep = Annotated[Embeddings, Depends(get_embeddings)]
 LLMDep = Annotated[LLM, Depends(get_llm)]
+ScriptLLMDep = Annotated[LLM, Depends(get_script_llm)]
 
 
 # The ``Idempotency-Key`` request header (rule 8), bounded on both sides:

@@ -34,7 +34,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from edutoon.api.dependencies import IdempotencyKey, RedisDep, get_current_user
+from edutoon.api.dependencies import IdempotencyKey, RedisDep, ScriptLLMDep, get_current_user
 from edutoon.api.schemas.scripts import (
     ScriptDetailResponse,
     ScriptGenerateRequest,
@@ -61,6 +61,7 @@ async def enqueue_script_generation(
     current_user: CurrentUser,
     session: Session,
     redis: RedisDep,
+    script_llm: ScriptLLMDep,
     idempotency_key: IdempotencyKey,
     body: ScriptGenerateRequest | None = None,
 ) -> ScriptResponse:
@@ -76,6 +77,7 @@ async def enqueue_script_generation(
             project_id=project_id,
             owner_id=current_user.id,
             idempotency_key=idempotency_key,
+            llm_model=script_llm.model,
         )
         return status.HTTP_202_ACCEPTED, ScriptResponse.from_record(
             result.script

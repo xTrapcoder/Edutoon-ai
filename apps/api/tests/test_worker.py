@@ -46,6 +46,7 @@ from edutoon.repositories import claim_verifications as claim_verifications_repo
 from edutoon.repositories import jobs as jobs_repo
 from edutoon.repositories import project_topics as project_topics_repo
 from edutoon.repositories import projects as projects_repo
+from edutoon.repositories import scripts as scripts_repo
 from edutoon.repositories import source_chunks as source_chunks_repo
 from edutoon.repositories import uploaded_sources as uploaded_sources_repo
 from edutoon.repositories import users as users_repo
@@ -108,7 +109,18 @@ def _idle_embeddings() -> Embeddings:
     return Embeddings(AsyncOpenAI(api_key="sk-test-not-a-real-key"), model=EMBEDDING_MODEL)
 
 
-def _fake_llm(monkeypatch: Any, segments: list[dict[str, Any]], *, title: str = "A title") -> LLM:
+def _idle_providers() -> WorkerProviders:
+    """Providers none of which is expected to be called."""
+    return WorkerProviders(embeddings=_idle_embeddings(), llm=_idle_llm(), script_llm=_idle_llm())
+
+
+def _fake_llm(
+    monkeypatch: Any,
+    segments: list[dict[str, Any]],
+    *,
+    title: str = "A title",
+    model: str = LLM_MODEL,
+) -> LLM:
     client = AsyncAnthropic(api_key="sk-ant-test-not-a-real-key")
     message = Message(
         id="msg_1",
@@ -118,16 +130,18 @@ def _fake_llm(monkeypatch: Any, segments: list[dict[str, Any]], *, title: str = 
                 input={"title": title, "segments": segments},
             )
         ],
-        model=LLM_MODEL,
+        model=model,
         role="assistant",
         type="message",
         usage=AnthropicUsage(input_tokens=10, output_tokens=20),
     )
     monkeypatch.setattr(client.messages, "create", AsyncMock(return_value=message))
-    return LLM(client, model=LLM_MODEL)
+    return LLM(client, model=model)
 
 
-def _fake_topics_llm(monkeypatch: Any, topics: list[dict[str, Any]]) -> LLM:
+def _fake_topics_llm(
+    monkeypatch: Any, topics: list[dict[str, Any]], *, model: str = LLM_MODEL
+) -> LLM:
     client = AsyncAnthropic(api_key="sk-ant-test-not-a-real-key")
     message = Message(
         id="msg_1",
@@ -136,13 +150,20 @@ def _fake_topics_llm(monkeypatch: Any, topics: list[dict[str, Any]]) -> LLM:
                 type="tool_use", id="toolu_1", name="submit_topics", input={"topics": topics}
             )
         ],
-        model=LLM_MODEL,
+        model=model,
         role="assistant",
         type="message",
         usage=AnthropicUsage(input_tokens=11, output_tokens=22),
     )
     monkeypatch.setattr(client.messages, "create", AsyncMock(return_value=message))
-    return LLM(client, model=LLM_MODEL)
+    return LLM(client, model=model)
+
+
+def _create_of(llm: LLM) -> AsyncMock:
+    """The patched ``messages.create`` double of an LLM built by ``_fake_llm`` /
+    ``_fake_topics_llm`` - the one place these tests look inside an ``LLM``.
+    """
+    return llm._client.messages.create  # type: ignore[no-any-return]
 
 
 async def _make_project(db_session: AsyncSession):
@@ -209,7 +230,7 @@ async def _project_with_supported_claim(db_session: AsyncSession):
 
 
 async def test_process_one_job_returns_false_when_queue_is_empty(worker_sessionmaker):
-    providers = WorkerProviders(embeddings=_idle_embeddings(), llm=_idle_llm())
+    providers = _idle_providers()
 
     claimed_something = await process_one_job(worker_sessionmaker, providers)
 
@@ -230,7 +251,7 @@ async def test_process_one_job_runs_the_build_evidence_handler(
     await db_session.commit()  # release the savepoint so the worker's own session sees it
 
     providers = WorkerProviders(
-        embeddings=_fake_embeddings(monkeypatch), llm=_idle_llm()
+        embeddings=_fake_embeddings(monkeypatch), llm=_idle_llm(), script_llm=_idle_llm()
     )
     claimed_something = await process_one_job(worker_sessionmaker, providers)
 
@@ -262,7 +283,9 @@ async def test_process_one_job_marks_build_evidence_failed_on_a_provider_error(
 
     client.embeddings.create = _boom  # type: ignore[method-assign]
     providers = WorkerProviders(
-        embeddings=Embeddings(client, model=EMBEDDING_MODEL), llm=_idle_llm()
+        embeddings=Embeddings(client, model=EMBEDDING_MODEL),
+        llm=_idle_llm(),
+        script_llm=_idle_llm(),
     )
 
     claimed_something = await process_one_job(worker_sessionmaker, providers)
@@ -291,7 +314,7 @@ async def test_process_one_job_runs_the_generate_script_handler(
         monkeypatch,
         [{"narration_text": "A cited sentence.", "claim_ids": [str(claim.id)]}],
     )
-    providers = WorkerProviders(embeddings=_idle_embeddings(), llm=llm)
+    providers = WorkerProviders(embeddings=_idle_embeddings(), llm=_idle_llm(), script_llm=llm)
 
     claimed_something = await process_one_job(worker_sessionmaker, providers)
 
@@ -300,6 +323,135 @@ async def test_process_one_job_runs_the_generate_script_handler(
     assert finished is not None
     assert finished.status == "succeeded"
     assert finished.result["segment_count"] == 1
+
+
+# --- which LLM client a job runs on -------------------------------------------------
+#
+# Two clients, two models: ``llm`` (LLM_MODEL) for claim judging and topic extraction,
+# ``script_llm`` (SCRIPT_LLM_MODEL) for writing scripts. The models below are made up
+# and differ, so a job that reached for the wrong client - or one that recorded the
+# wrong model - cannot pass by coincidence.
+
+GENERAL_MODEL = "general-model-x"
+SCRIPT_MODEL = "script-model-y"
+QUEUED_FOR_MODEL = "queued-for-model-z"
+
+
+async def _queued_script(db_session: AsyncSession):
+    """A project with a verified claim and a script queued for ``QUEUED_FOR_MODEL``."""
+    project, claim = await _project_with_supported_claim(db_session)
+    enqueued = await scripts_service.enqueue_script_generation(
+        db_session,
+        project_id=project.id,
+        owner_id=project.owner_id,
+        idempotency_key="k",
+        llm_model=QUEUED_FOR_MODEL,
+    )
+    await db_session.commit()  # release the savepoint so the worker's own session sees it
+    return project, claim, enqueued
+
+
+async def test_script_generation_runs_on_the_script_client_and_never_the_general_one(
+    db_session, worker_sessionmaker, monkeypatch
+):
+    project, claim, enqueued = await _queued_script(db_session)
+    general = _fake_llm(monkeypatch, [], model=GENERAL_MODEL)
+    script = _fake_llm(
+        monkeypatch,
+        [{"narration_text": "A cited sentence.", "claim_ids": [str(claim.id)]}],
+        model=SCRIPT_MODEL,
+    )
+    providers = WorkerProviders(embeddings=_idle_embeddings(), llm=general, script_llm=script)
+
+    await process_one_job(worker_sessionmaker, providers)
+
+    general_create, script_create = _create_of(general), _create_of(script)
+    general_create.assert_not_awaited()
+    script_create.assert_awaited_once()
+    # SCRIPT_LLM_MODEL is the model actually asked of the provider, not merely recorded.
+    assert script_create.await_args.kwargs["model"] == SCRIPT_MODEL
+    finished = await jobs_repo.get_by_id(db_session, enqueued.job.id)
+    assert finished is not None and finished.status == "succeeded"
+    assert finished.result["llm_model"] == SCRIPT_MODEL
+
+
+async def test_the_script_records_the_model_that_actually_wrote_it(
+    db_session, worker_sessionmaker, monkeypatch
+):
+    project, claim, enqueued = await _queued_script(db_session)
+    queued = await scripts_repo.get_by_id(db_session, enqueued.script.id)
+    assert queued is not None and queued.llm_model == QUEUED_FOR_MODEL
+    script = _fake_llm(
+        monkeypatch,
+        [{"narration_text": "A cited sentence.", "claim_ids": [str(claim.id)]}],
+        model=SCRIPT_MODEL,
+    )
+    providers = WorkerProviders(
+        embeddings=_idle_embeddings(), llm=_idle_llm(), script_llm=script
+    )
+
+    await process_one_job(worker_sessionmaker, providers)
+
+    written = await scripts_repo.get_by_id(db_session, enqueued.script.id)
+    assert written is not None
+    assert written.status == "draft"
+    assert written.llm_model == SCRIPT_MODEL  # what ran - not what it was queued for
+
+
+async def test_a_script_that_fails_still_records_the_model_that_attempted_it(
+    db_session, worker_sessionmaker, monkeypatch
+):
+    project, _claim, enqueued = await _queued_script(db_session)
+    client = AsyncAnthropic(api_key="sk-ant-test-not-a-real-key")
+    monkeypatch.setattr(
+        client.messages, "create", AsyncMock(side_effect=RuntimeError("anthropic is unreachable"))
+    )
+    providers = WorkerProviders(
+        embeddings=_idle_embeddings(),
+        llm=_idle_llm(),
+        script_llm=LLM(client, model=SCRIPT_MODEL),
+    )
+
+    await process_one_job(worker_sessionmaker, providers)
+
+    failed = await scripts_repo.get_by_id(db_session, enqueued.script.id)
+    assert failed is not None
+    assert failed.status == "failed"
+    assert failed.llm_model == SCRIPT_MODEL
+
+
+async def test_topic_extraction_stays_on_the_general_client_and_never_the_script_one(
+    db_session, worker_sessionmaker, monkeypatch
+):
+    project, seed = await _project_with_a_user_topic(db_session)
+    enqueued = await topic_extraction_service.enqueue_topic_extraction(
+        db_session, project_id=project.id, owner_id=project.owner_id, idempotency_key="k"
+    )
+    await db_session.commit()
+    general = _fake_topics_llm(
+        monkeypatch,
+        [
+            {
+                "ref": "t1",
+                "title": "Photosynthesis",
+                "summary": "",
+                "keywords": [],
+                "evidence_chunk_ids": [],
+                "seed_ref": str(seed.id),
+            }
+        ],
+        model=GENERAL_MODEL,
+    )
+    script = _fake_llm(monkeypatch, [], model=SCRIPT_MODEL)
+    providers = WorkerProviders(embeddings=_idle_embeddings(), llm=general, script_llm=script)
+
+    await process_one_job(worker_sessionmaker, providers)
+
+    _create_of(script).assert_not_awaited()
+    _create_of(general).assert_awaited_once()
+    finished = await jobs_repo.get_by_id(db_session, enqueued.job.id)
+    assert finished is not None and finished.status == "succeeded"
+    assert finished.result["llm_model"] == GENERAL_MODEL
 
 
 # --- process_one_job: extract_topics -----------------------------------------------
@@ -347,7 +499,7 @@ async def test_process_one_job_runs_the_extract_topics_handler(
             },
         ],
     )
-    providers = WorkerProviders(embeddings=_idle_embeddings(), llm=llm)
+    providers = WorkerProviders(embeddings=_idle_embeddings(), llm=llm, script_llm=_idle_llm())
 
     claimed_something = await process_one_job(worker_sessionmaker, providers)
 
@@ -386,7 +538,9 @@ async def test_process_one_job_marks_extract_topics_failed_on_a_provider_error(
     client.messages.create = AsyncMock(  # type: ignore[method-assign]
         side_effect=RuntimeError("anthropic is unreachable")
     )
-    providers = WorkerProviders(embeddings=_idle_embeddings(), llm=LLM(client, model=LLM_MODEL))
+    providers = WorkerProviders(
+        embeddings=_idle_embeddings(), llm=LLM(client, model=LLM_MODEL), script_llm=_idle_llm()
+    )
 
     claimed_something = await process_one_job(worker_sessionmaker, providers)
 
@@ -409,7 +563,7 @@ async def test_process_one_job_marks_a_corrupt_extract_topics_payload_failed_wit
     job = await jobs_repo.create(db_session, project_id=project.id, kind="extract_topics")
     await db_session.commit()
 
-    providers = WorkerProviders(embeddings=_idle_embeddings(), llm=_idle_llm())
+    providers = _idle_providers()
     claimed_something = await process_one_job(worker_sessionmaker, providers)
 
     assert claimed_something is True
@@ -433,7 +587,7 @@ async def test_process_one_job_marks_an_unknown_job_kind_failed_without_crashing
     job = await jobs_repo.create(db_session, project_id=project.id, kind="render_video")
     await db_session.commit()
 
-    providers = WorkerProviders(embeddings=_idle_embeddings(), llm=_idle_llm())
+    providers = _idle_providers()
     claimed_something = await process_one_job(worker_sessionmaker, providers)
 
     assert claimed_something is True
@@ -475,7 +629,7 @@ async def test_a_crashing_handler_still_ends_the_job_failed_with_a_safe_message(
         raise make_exc()
 
     monkeypatch.setitem(JOB_HANDLERS, "extract_topics", crashes)
-    providers = WorkerProviders(embeddings=_idle_embeddings(), llm=_idle_llm())
+    providers = _idle_providers()
 
     claimed_something = await process_one_job(worker_sessionmaker, providers)
 
