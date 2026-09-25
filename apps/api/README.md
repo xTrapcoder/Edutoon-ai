@@ -79,12 +79,23 @@ the model), then writes the topics in one savepoint. The job result reports
 - **Editing during a run.** Adding keywords and changing a title or summary are
   refused (`409`) while an extraction is queued or running; accepting or
   rejecting a topic is always allowed.
+- **A crashed worker cannot block a project for ever.** If a worker dies
+  mid-extraction its job is left `running`. The next request that needs the
+  project free (a new extraction, adding keywords, editing a title or summary)
+  fails that job first - `failed`, with "run the extraction again" as its error,
+  and a `topics.extraction_recovered` audit entry - and carries on. A job is only
+  recovered if it is older than `TOPIC_EXTRACTION_STALE_AFTER_SECONDS` *and* no
+  live worker holds it: a running handler keeps its job's row locked until it
+  finishes, so a slow model call is never mistaken for a dead worker. Nothing is
+  left half-written, since an extraction's writes are one transaction. Until the
+  next such request the abandoned job still shows as `running` in the job list.
 
 Settings (all optional, defaults in the repository root `.env.example`):
 `TOPIC_INPUT_BUDGET_CHARS` (the cost control), `MAX_TOPICS_PER_EXTRACTION`
 (also the cap on a project's own keywords), `MAX_TOPIC_DEPTH`,
 `MAX_TOPIC_TITLE_CHARS`, `MAX_TOPIC_SUMMARY_CHARS`, `MAX_TOPIC_KEYWORDS`,
-`MAX_TOPIC_KEYWORD_CHARS`, `MAX_TOPIC_EVIDENCE`. They use `LLM_MODEL` — there is
+`MAX_TOPIC_KEYWORD_CHARS`, `MAX_TOPIC_EVIDENCE`, `TOPIC_EXTRACTION_STALE_AFTER_SECONDS`
+(default 3600, minimum 60; keep it above a model call's worst case). They use `LLM_MODEL` — there is
 no separate topic model. Extraction needs `ANTHROPIC_API_KEY`; the test suite
 never calls the network (it replaces `messages.create` on a real client), so the
 prompt in `providers/llm.py` has not yet been tried against a live model.

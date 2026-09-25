@@ -73,6 +73,17 @@ class Settings(BaseSettings):
     MAX_TOPIC_KEYWORD_CHARS: int = Field(default=40, ge=1)
     MAX_TOPIC_EVIDENCE: int = Field(default=6, ge=1)
 
+    # How long an extraction may sit ``running`` with no worker holding it before
+    # it is treated as abandoned by a crashed worker and failed, so the project's
+    # topic edits are not blocked for ever. A live job is never failed by this:
+    # its worker holds the job's row lock (see ``jobs.fail_stale_running``), so
+    # this is only the backstop. It must comfortably exceed the longest a model
+    # call can take - the SDK's 600 s read timeout over its three attempts is
+    # about 30 minutes - hence the default; lower it only if the client's timeout
+    # is lowered too. ``ge=60`` rejects a value short enough to race a healthy
+    # worker starting the job.
+    TOPIC_EXTRACTION_STALE_AFTER_SECONDS: int = Field(default=3600, ge=60)
+
 
 class MissingSettingsError(RuntimeError):
     """Raised when one or more required settings are absent from the environment."""

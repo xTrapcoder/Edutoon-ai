@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import AsyncIterator, Callable
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
@@ -1286,3 +1287,79 @@ async def test_the_openapi_document_describes_the_four_topic_operations(client_f
     ]:
         header_names = {p["name"] for p in paths[path][method]["parameters"] if p["in"] == "header"}
         assert "idempotency-key" in header_names
+
+
+async def _abandoned_extraction(client, headers, db_session):
+    """A project whose extraction the worker claimed two hours ago (well past the
+    stale threshold) and then died on, leaving the job ``running``.
+    """
+    project_id = await _create_project(client, headers)
+    await _add_keywords(client, headers, project_id, ["Photosynthesis"])
+    enqueue = await client.post(
+        f"/v1/projects/{project_id}/topics/extraction", headers=_headers(headers)
+    )
+    job_id = UUID(enqueue.json()["id"])
+    await jobs_repo.update(
+        db_session,
+        job_id=job_id,
+        status="running",
+        started_at=datetime.now(UTC) - timedelta(hours=2),
+    )
+    return project_id, job_id
+
+
+async def test_a_crashed_workers_extraction_no_longer_blocks_adding_keywords(
+    client_factory, auth_headers, db_session
+):
+    headers = auth_headers()
+    async with client_factory() as client:
+        project_id, job_id = await _abandoned_extraction(client, headers, db_session)
+
+        added = await client.post(
+            f"/v1/projects/{project_id}/topics",
+            json={"keywords": ["Respiration"]},
+            headers=_headers(headers),
+        )
+        jobs = await client.get(f"/v1/projects/{project_id}/jobs", headers=headers)
+
+    assert added.status_code == 201
+    [job] = jobs.json()["items"]
+    assert job["id"] == str(job_id) and job["status"] == "failed"
+    assert "run the extraction again" in job["error"]
+    assert job["finished_at"] is not None
+
+
+async def test_a_crashed_workers_extraction_no_longer_blocks_a_new_extraction(
+    client_factory, auth_headers, db_session
+):
+    headers = auth_headers()
+    async with client_factory() as client:
+        project_id, job_id = await _abandoned_extraction(client, headers, db_session)
+
+        retry = await client.post(
+            f"/v1/projects/{project_id}/topics/extraction", headers=_headers(headers)
+        )
+        jobs = await client.get(f"/v1/projects/{project_id}/jobs", headers=headers)
+
+    assert retry.status_code == 202 and retry.json()["id"] != str(job_id)
+    statuses = {j["id"]: j["status"] for j in jobs.json()["items"]}
+    assert statuses == {str(job_id): "failed", retry.json()["id"]: "queued"}
+
+
+async def test_a_live_extraction_still_blocks_over_the_api(client_factory, auth_headers):
+    """The recovery must not turn a healthy in-flight extraction into a
+    free-for-all: a freshly enqueued job still refuses keywords.
+    """
+    headers = auth_headers()
+    async with client_factory() as client:
+        project_id = await _create_project(client, headers)
+        await _add_keywords(client, headers, project_id, ["Photosynthesis"])
+        await client.post(f"/v1/projects/{project_id}/topics/extraction", headers=_headers(headers))
+
+        added = await client.post(
+            f"/v1/projects/{project_id}/topics",
+            json={"keywords": ["Respiration"]},
+            headers=_headers(headers),
+        )
+
+    assert added.status_code == 409

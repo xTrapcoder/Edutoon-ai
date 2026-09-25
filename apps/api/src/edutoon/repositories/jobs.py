@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -202,3 +202,57 @@ async def get_active_by_project_kind(
     )
     row = (await session.execute(stmt)).mappings().one_or_none()
     return _from_row(row) if row is not None else None
+
+
+async def fail_stale_running(
+    session: AsyncSession,
+    *,
+    project_id: UUID,
+    kind: str,
+    stale_after: timedelta,
+    error: str,
+) -> list[JobRecord]:
+    """Fail every ``running`` job of ``kind`` for ``project_id`` that a crashed
+    worker has left behind, and return them.
+
+    A job qualifies only if **both** hold:
+
+    - it has been ``running`` for longer than ``stale_after`` (measured from
+      ``started_at``, which the claim sets from the database clock), and
+    - nothing is holding its row. A live worker's handler marks the job
+      ``running`` inside the transaction it keeps open until the job finishes, so
+      the row stays locked for the whole run - however long a model call takes.
+      A crashed worker's connection is closed, its transaction rolled back and
+      the lock released. ``FOR UPDATE SKIP LOCKED`` skips a locked row, so a job
+      that is genuinely being worked on is never touched, whatever its age.
+
+    Only ``running`` jobs are considered: a ``queued`` one is waiting for a worker
+    rather than abandoned by one, and terminal jobs are left alone. The
+    ``finished_at`` CHECK needs ``started_at``, so a (never expected) running job
+    without one is given it in the same statement.
+    """
+    started = func.coalesce(jobs.c.started_at, jobs.c.created_at)
+    stale = (
+        select(jobs.c.id)
+        .where(
+            jobs.c.project_id == project_id,
+            jobs.c.kind == kind,
+            jobs.c.status == "running",
+            started < func.now() - stale_after,
+        )
+        .with_for_update(skip_locked=True)
+    )
+    stmt = (
+        jobs.update()
+        .where(jobs.c.id.in_(stale))
+        .values(
+            status="failed",
+            started_at=func.coalesce(jobs.c.started_at, func.now()),
+            finished_at=func.now(),
+            error=error,
+        )
+        .returning(*jobs.c)
+    )
+    rows = (await session.execute(stmt)).mappings().all()
+    return sorted((_from_row(row) for row in rows), key=lambda job: (job.created_at, str(job.id)))
+

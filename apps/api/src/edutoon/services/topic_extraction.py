@@ -43,10 +43,11 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
+import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from edutoon.core.config import Settings, get_settings
@@ -78,10 +79,21 @@ from edutoon.repositories.projects import ProjectRecord
 from edutoon.services import audit_logs as audit_logs_service
 from edutoon.services import projects as projects_service
 
+log = structlog.get_logger()
+
 EXTRACT_TOPICS_JOB_KIND = "extract_topics"
 
 AUDIT_ENTITY_TYPE = "topic_extraction"
 AUDIT_ACTION_ENQUEUED = "topics.extraction_enqueued"
+AUDIT_ACTION_RECOVERED = "topics.extraction_recovered"
+
+# What the owner sees on a job a crashed worker abandoned. Accurate because an
+# extraction's writes are one transaction: a worker that died mid-run left
+# nothing behind.
+STALE_EXTRACTION_ERROR = (
+    "The worker stopped before finishing this extraction, so it was marked as failed. "
+    "Nothing was changed - run the extraction again."
+)
 
 _USER_ORIGIN = project_topics_repo.USER_ORIGIN
 _REJECTED = "rejected"
@@ -222,14 +234,56 @@ async def refuse_if_extraction_active(session: AsyncSession, *, project_id: UUID
     refused here, rather than racing the caller's write. Used by
     :func:`enqueue_topic_extraction` itself and by every topic edit that an
     in-flight extraction would otherwise collide with.
+
+    Before checking, an extraction that a crashed worker abandoned is failed
+    (:func:`_recover_stale_extractions`), so a dead job cannot refuse these
+    for ever; one a live worker is running is never affected.
     """
     await jobs_repo.lock_project_kind(session, project_id=project_id, kind=EXTRACT_TOPICS_JOB_KIND)
+    await _recover_stale_extractions(session, project_id=project_id)
     active = await jobs_repo.get_active_by_project_kind(
         session, project_id=project_id, kind=EXTRACT_TOPICS_JOB_KIND
     )
     if active is not None:
         raise ConflictError(
             "Topic extraction is already queued or running for this project; wait for it to finish."
+        )
+
+
+async def _recover_stale_extractions(session: AsyncSession, *, project_id: UUID) -> None:
+    """Fail any extraction a crashed worker left ``running``, so it cannot block
+    the project for ever. Called under the project's extraction lock, so two
+    requests cannot both recover the same job.
+
+    A job that is genuinely being worked on is never touched: recovery needs it
+    to be older than ``TOPIC_EXTRACTION_STALE_AFTER_SECONDS`` *and* not held by a
+    live worker (see ``jobs.fail_stale_running``). What is recovered is logged
+    and audited as a system action.
+    """
+    stale_after = get_settings().TOPIC_EXTRACTION_STALE_AFTER_SECONDS
+    recovered = await jobs_repo.fail_stale_running(
+        session,
+        project_id=project_id,
+        kind=EXTRACT_TOPICS_JOB_KIND,
+        stale_after=timedelta(seconds=stale_after),
+        error=STALE_EXTRACTION_ERROR,
+    )
+    for job in recovered:
+        log.warning(
+            "topics.stale_extraction_recovered",
+            job_id=str(job.id),
+            project_id=str(project_id),
+            started_at=job.started_at.isoformat() if job.started_at else None,
+            stale_after_seconds=stale_after,
+        )
+        await audit_logs_service.record_audit_log(
+            session,
+            action=AUDIT_ACTION_RECOVERED,
+            entity_type=AUDIT_ENTITY_TYPE,
+            entity_id=job.id,
+            project_id=project_id,
+            actor_type="system",
+            context={"job_id": str(job.id), "stale_after_seconds": stale_after},
         )
 
 
