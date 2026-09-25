@@ -35,6 +35,7 @@ from edutoon.providers.llm import Passage, Verdict
 from edutoon.repositories import source_chunks as source_chunks_repo
 from edutoon.repositories import uploaded_sources as uploaded_sources_repo
 from edutoon.repositories.source_chunks import NewSourceChunk
+from tests.idempotency_helpers import INVALID_KEYS, idempotency_status
 
 # Stands in for an external provider (OpenAI / Anthropic): these tests prove how our code
 # handles a response, never how a real provider behaves. See "Provider-mocked tests"
@@ -577,3 +578,99 @@ async def test_rejects_missing_claim(client_factory, auth_headers):
         )
 
     assert response.status_code == 422
+
+
+# --- the Idempotency-Key header, and durability before the response --------------------
+
+
+async def test_a_verdict_is_committed_before_it_is_cached_or_returned(
+    client_factory, auth_headers, stub_llm, db_session, redis_client, monkeypatch
+):
+    """The route commits for itself, before anything is cached: at the moment it does,
+    the dedupe record must still say "in_progress" - a cached "completed" would promise
+    a verdict that a failed commit could still lose. (This module's session override
+    also commits once the response is out, so the spy sees a second call; only the
+    first is the route's own.)
+    """
+    headers = auth_headers()
+    stub_llm.will_return("supported", cite="all")
+    async with client_factory() as client:
+        project_id = await _create_project(client, headers)
+        await _seed_indexed_chunk(db_session, project_id)
+        path = f"/v1/projects/{project_id}/claim-verifications"
+        key = str(uuid4())
+        seen_at_commit: list[str | None] = []
+        real_commit = db_session.commit
+
+        async def _spying_commit() -> None:
+            seen_at_commit.append(await idempotency_status(redis_client, path, key))
+            await real_commit()
+
+        monkeypatch.setattr(db_session, "commit", _spying_commit)
+        response = await client.post(
+            path, json={"claim_text": "The sky is blue."}, headers=_verify_headers(headers, key)
+        )
+
+    assert response.status_code == 201, response.text
+    assert seen_at_commit[0] == "in_progress"
+    assert await idempotency_status(redis_client, path, key) == "completed"
+
+
+async def test_a_commit_that_fails_leaves_no_cached_success_behind(
+    client_factory, auth_headers, db_session, redis_client, monkeypatch
+):
+    headers = auth_headers()
+    async with client_factory() as client:
+        project_id = await _create_project(client, headers)
+        path = f"/v1/projects/{project_id}/claim-verifications"
+        key = str(uuid4())
+
+        async def _failing_commit() -> None:
+            raise RuntimeError("the database went away")
+
+        monkeypatch.setattr(db_session, "commit", _failing_commit)
+        with pytest.raises(RuntimeError, match="went away"):
+            await client.post(
+                path, json={"claim_text": "The sky is blue."}, headers=_verify_headers(headers, key)
+            )
+
+    # Nothing says the verdict was stored, and the key is free for the client's retry.
+    assert await idempotency_status(redis_client, path, key) is None
+
+
+@pytest.mark.parametrize("key", INVALID_KEYS)
+async def test_an_empty_or_oversized_idempotency_key_is_rejected_before_any_paid_call(
+    client_factory, auth_headers, stub_llm, db_session, key
+):
+    headers = auth_headers()
+    async with client_factory() as client:
+        project_id = await _create_project(client, headers)
+        await _seed_indexed_chunk(db_session, project_id)
+        path = f"/v1/projects/{project_id}/claim-verifications"
+
+        # Built by hand: `_verify_headers` swaps an empty key for a fresh UUID.
+        response = await client.post(
+            path,
+            json={"claim_text": "The sky is blue."},
+            headers={**headers, "Idempotency-Key": key},
+        )
+
+        assert response.status_code == 422
+        [error] = response.json()["error"]["details"]["field_errors"]
+        assert error["path"] == "header.idempotency-key"
+        assert stub_llm.calls == []  # no paid call was made for a request that was refused
+        listed = await client.get(path, headers=headers)
+        assert listed.json()["items"] == []
+
+
+async def test_an_idempotency_key_of_the_maximum_length_is_accepted(client_factory, auth_headers):
+    headers = auth_headers()
+    async with client_factory() as client:
+        project_id = await _create_project(client, headers)
+        response = await client.post(
+            f"/v1/projects/{project_id}/claim-verifications",
+            json={"claim_text": "No material yet."},
+            headers=_verify_headers(headers, "k" * 255),
+        )
+
+    assert response.status_code == 201, response.text

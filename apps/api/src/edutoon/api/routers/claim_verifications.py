@@ -3,10 +3,14 @@ verification against a project's indexed source material.
 
 ``project_id`` ownership is checked first on every route (rule 9: a project
 the caller doesn't own is a 404, never a 403). The POST requires an
-``Idempotency-Key`` (rule 8) and dedupes through ``services/idempotency.py``
-exactly like ``routers/projects.py``: a repeat of the same
-(caller, method, path, key) replays the original verdict instead of
-re-running the (paid) embedding + LLM round trip.
+``Idempotency-Key`` (rule 8; one to 255 characters, otherwise 422 - before any
+paid call is made) and dedupes through ``services/idempotency.py`` exactly like
+``routers/projects.py``: a repeat of the same (caller, method, path, key)
+replays the original verdict instead of re-running the (paid) embedding + LLM
+round trip. The verdict's transaction is committed before it is cached or
+returned (``commit=session.commit``); the session dependency would otherwise
+commit only after the response has been sent, and a failed commit would leave a
+cached verdict that was never stored.
 
 Rule 2 holds here as everywhere: this module reaches Redis, the embeddings
 provider and the LLM only through the ``api.dependencies`` injection seam,
@@ -19,10 +23,16 @@ from __future__ import annotations
 from typing import Annotated, Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, Request, status
+from fastapi import APIRouter, Depends, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from edutoon.api.dependencies import EmbeddingsDep, LLMDep, RedisDep, get_current_user
+from edutoon.api.dependencies import (
+    EmbeddingsDep,
+    IdempotencyKey,
+    LLMDep,
+    RedisDep,
+    get_current_user,
+)
 from edutoon.api.schemas.claim_verifications import (
     ClaimVerificationListResponse,
     ClaimVerificationResponse,
@@ -41,7 +51,6 @@ router = APIRouter(
 
 CurrentUser = Annotated[UserRecord, Depends(get_current_user)]
 Session = Annotated[AsyncSession, Depends(get_session)]
-IdempotencyKey = Annotated[str, Header()]
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
@@ -83,6 +92,7 @@ async def create_claim_verification(
         path=request.url.path,
         idempotency_key=idempotency_key,
         handler=_execute,
+        commit=session.commit,
     )
     return ClaimVerificationResponse.model_validate(response_body)
 
