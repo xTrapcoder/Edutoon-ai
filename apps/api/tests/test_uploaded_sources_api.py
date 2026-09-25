@@ -35,6 +35,7 @@ from edutoon.providers.cache import get_redis_client
 from edutoon.providers.storage import get_storage_client
 from edutoon.repositories import jobs as jobs_repo
 from edutoon.repositories import users as users_repo
+from tests.idempotency_helpers import INVALID_KEYS, idempotency_status
 
 TEST_ISSUER = "https://test.clerk.accounts.dev"
 IDEMPOTENCY_HEADERS = {"Idempotency-Key": "test-key-1"}
@@ -689,3 +690,92 @@ async def test_chunks_for_nonexistent_source_returns_404(client_factory, auth_he
         )
 
     assert response.status_code == 404
+
+
+# --- the Idempotency-Key header, and durability before the response --------------------
+
+
+async def test_an_upload_is_committed_before_its_result_is_cached_or_returned(
+    client_factory, auth_headers, db_session, redis_client, monkeypatch
+):
+    """The route commits for itself, before anything is cached: at the moment it does,
+    the dedupe record must still say "in_progress" - a cached "completed" would promise
+    work that a failed commit could still lose. (This module's session override also
+    commits once the response is out, so the spy sees a second call; only the first
+    is the route's own.)
+    """
+    headers = auth_headers()
+    async with client_factory() as client:
+        project_id = await _create_project(client, headers)
+        path = f"/v1/projects/{project_id}/sources"
+        key = str(uuid4())
+        seen_at_commit: list[str | None] = []
+        real_commit = db_session.commit
+
+        async def _spying_commit() -> None:
+            seen_at_commit.append(await idempotency_status(redis_client, path, key))
+            await real_commit()
+
+        monkeypatch.setattr(db_session, "commit", _spying_commit)
+        response = await client.post(
+            path, files=_pdf_file(), headers={**headers, "Idempotency-Key": key}
+        )
+
+    assert response.status_code == 201, response.text
+    assert seen_at_commit[0] == "in_progress"
+    assert await idempotency_status(redis_client, path, key) == "completed"
+
+
+async def test_a_commit_that_fails_leaves_no_cached_success_behind(
+    client_factory, auth_headers, db_session, redis_client, monkeypatch
+):
+    headers = auth_headers()
+    async with client_factory() as client:
+        project_id = await _create_project(client, headers)
+        path = f"/v1/projects/{project_id}/sources"
+        key = str(uuid4())
+
+        async def _failing_commit() -> None:
+            raise RuntimeError("the database went away")
+
+        monkeypatch.setattr(db_session, "commit", _failing_commit)
+        with pytest.raises(RuntimeError, match="went away"):
+            await client.post(path, files=_pdf_file(), headers={**headers, "Idempotency-Key": key})
+
+    # Nothing says the upload was done, and the key is free for the client's retry.
+    assert await idempotency_status(redis_client, path, key) is None
+
+
+@pytest.mark.parametrize("key", INVALID_KEYS)
+async def test_an_empty_or_oversized_idempotency_key_is_rejected_and_nothing_is_written(
+    client_factory, auth_headers, key
+):
+    headers = auth_headers()
+    async with client_factory() as client:
+        project_id = await _create_project(client, headers)
+        path = f"/v1/projects/{project_id}/sources"
+
+        response = await client.post(
+            path, files=_pdf_file(), headers={**headers, "Idempotency-Key": key}
+        )
+
+        assert response.status_code == 422
+        [error] = response.json()["error"]["details"]["field_errors"]
+        assert error["path"] == "header.idempotency-key"
+        listed = await client.get(path, headers=headers)
+        assert listed.json()["items"] == []
+        jobs = await client.get(f"/v1/projects/{project_id}/jobs", headers=headers)
+        assert jobs.json()["items"] == []
+
+
+async def test_an_idempotency_key_of_the_maximum_length_is_accepted(client_factory, auth_headers):
+    headers = auth_headers()
+    async with client_factory() as client:
+        project_id = await _create_project(client, headers)
+        response = await client.post(
+            f"/v1/projects/{project_id}/sources",
+            files=_pdf_file(),
+            headers={**headers, "Idempotency-Key": "k" * 255},
+        )
+
+    assert response.status_code == 201, response.text

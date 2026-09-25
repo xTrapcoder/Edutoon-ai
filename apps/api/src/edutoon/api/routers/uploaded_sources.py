@@ -3,12 +3,17 @@
 ``project_id`` ownership is checked first on every route (rule 9: a project
 the caller doesn't own looks exactly like one that doesn't exist - 404,
 never 403). The upload itself requires an ``Idempotency-Key`` header
-(rule 8) and dedupes through ``services/idempotency.py`` exactly like
-``routers/projects.py``: a repeat of the same (caller, method, path, key)
-replays the original response instead of re-uploading, while a real second
-upload of the same file content (a different key, same checksum) is turned
-into a 409 by the ``uq_uploaded_sources_project_id_checksum_sha256``
-constraint via ``core/errors.py``.
+(rule 8; one to 255 characters, otherwise 422) and dedupes through
+``services/idempotency.py`` exactly like ``routers/projects.py``: a repeat of
+the same (caller, method, path, key) replays the original response instead of
+re-uploading, while a real second upload of the same file content (a different
+key, same checksum) is turned into a 409 by the
+``uq_uploaded_sources_project_id_checksum_sha256`` constraint via
+``core/errors.py``. The upload's transaction is committed before its result is
+cached or returned (``commit=session.commit``); the session dependency would
+otherwise commit only after the response has been sent. The stored object's key
+is derived from the file's checksum, so a retry after a failed commit writes to
+the same key rather than leaving a second object behind.
 """
 
 from __future__ import annotations
@@ -16,11 +21,11 @@ from __future__ import annotations
 from typing import Annotated, Any, NoReturn
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Header, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, Request, UploadFile, status
 from fastapi.exceptions import RequestValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from edutoon.api.dependencies import RedisDep, StorageDep, get_current_user
+from edutoon.api.dependencies import IdempotencyKey, RedisDep, StorageDep, get_current_user
 from edutoon.api.schemas.source_chunks import SourceChunkListResponse, SourceChunkResponse
 from edutoon.api.schemas.uploaded_sources import (
     UploadedSourceListResponse,
@@ -40,7 +45,6 @@ router = APIRouter(prefix="/projects/{project_id}/sources", tags=["uploaded-sour
 
 CurrentUser = Annotated[UserRecord, Depends(get_current_user)]
 Session = Annotated[AsyncSession, Depends(get_session)]
-IdempotencyKey = Annotated[str, Header()]
 
 _ALLOWED_FORM_FIELDS = {"file"}
 _PDF_MAGIC_BYTES = b"%PDF"
@@ -136,6 +140,7 @@ async def upload_source(
         path=request.url.path,
         idempotency_key=idempotency_key,
         handler=_execute,
+        commit=session.commit,
     )
     return UploadedSourceResponse.model_validate(response_body)
 
