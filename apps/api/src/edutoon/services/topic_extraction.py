@@ -74,6 +74,7 @@ from edutoon.repositories import source_chunks as source_chunks_repo
 from edutoon.repositories import topic_citations as topic_citations_repo
 from edutoon.repositories.jobs import JobRecord
 from edutoon.repositories.project_topics import NewProjectTopic, ProjectTopicRecord
+from edutoon.repositories.projects import ProjectRecord
 from edutoon.services import audit_logs as audit_logs_service
 from edutoon.services import projects as projects_service
 
@@ -84,6 +85,15 @@ AUDIT_ACTION_ENQUEUED = "topics.extraction_enqueued"
 
 _USER_ORIGIN = project_topics_repo.USER_ORIGIN
 _REJECTED = "rejected"
+
+# A project's title, description and language are free text with no stored length
+# limit, and they reach the prompt *outside* the passage budget. Bounding what is
+# sent keeps the input size - and so the cost of one extraction - bounded by
+# settings and these constants whatever a project holds. It is prompt context
+# only: nothing stored is shortened.
+_BRIEF_SUBJECT_MAX_CHARS = 300
+_BRIEF_DESCRIPTION_MAX_CHARS = 2_000
+_BRIEF_LANGUAGE_MAX_CHARS = 35  # the longest well-formed BCP 47 tag
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,15 +179,7 @@ async def enqueue_topic_extraction(
     if existing_job is not None:
         return TopicExtractionEnqueued(job=existing_job, replayed=True)
 
-    await jobs_repo.lock_project_kind(session, project_id=project_id, kind=EXTRACT_TOPICS_JOB_KIND)
-    active = await jobs_repo.get_active_by_project_kind(
-        session, project_id=project_id, kind=EXTRACT_TOPICS_JOB_KIND
-    )
-    if active is not None:
-        raise ConflictError(
-            "Topic extraction is already queued or running for this project; "
-            "wait for it to finish."
-        )
+    await refuse_if_extraction_active(session, project_id=project_id)
 
     topics = await project_topics_repo.list_all_by_project(session, project_id)
     chunk_count = await source_chunks_repo.count_by_project(session, project_id)
@@ -207,6 +209,28 @@ async def enqueue_topic_extraction(
         context={"job_id": str(job.id), "replace": replace, "mode": mode},
     )
     return TopicExtractionEnqueued(job=job, replayed=False)
+
+
+async def refuse_if_extraction_active(session: AsyncSession, *, project_id: UUID) -> None:
+    """Take the project's extraction lock, then raise
+    :class:`~edutoon.core.errors.ConflictError` if an extraction is ``queued``
+    or ``running``.
+
+    The lock (``jobs.lock_project_kind``) is held to the end of the caller's
+    transaction, so whatever the caller goes on to write cannot interleave with
+    an extraction being enqueued - and an extraction that is already running is
+    refused here, rather than racing the caller's write. Used by
+    :func:`enqueue_topic_extraction` itself and by every topic edit that an
+    in-flight extraction would otherwise collide with.
+    """
+    await jobs_repo.lock_project_kind(session, project_id=project_id, kind=EXTRACT_TOPICS_JOB_KIND)
+    active = await jobs_repo.get_active_by_project_kind(
+        session, project_id=project_id, kind=EXTRACT_TOPICS_JOB_KIND
+    )
+    if active is not None:
+        raise ConflictError(
+            "Topic extraction is already queued or running for this project; wait for it to finish."
+        )
 
 
 async def _check_replace_rules(
@@ -316,9 +340,7 @@ async def _extract_and_persist(
     )
 
     draft, usage = await llm.extract_topics(
-        TopicBrief(
-            subject=project.title, description=project.description, language=project.language
-        ),
+        _brief_for(project),
         selection.passages,
         seeds,
         limits=limits,
@@ -352,6 +374,23 @@ async def _extract_and_persist(
     )
 
     return _result(tree=tree, selection=selection, replace=replace, usage=usage, model=llm.model)
+
+
+def _clip(text: str, max_chars: int) -> str:
+    """``text`` on one line and at most ``max_chars`` long, ending in an
+    ellipsis if it was cut.
+    """
+    text = " ".join(text.split())
+    return text if len(text) <= max_chars else text[: max_chars - 1].rstrip() + "…"
+
+
+def _brief_for(project: ProjectRecord) -> TopicBrief:
+    description = _clip(project.description or "", _BRIEF_DESCRIPTION_MAX_CHARS)
+    return TopicBrief(
+        subject=_clip(project.title, _BRIEF_SUBJECT_MAX_CHARS),
+        description=description or None,
+        language=_clip(project.language, _BRIEF_LANGUAGE_MAX_CHARS),
+    )
 
 
 def _first_free_root_position(topics: Sequence[ProjectTopicRecord]) -> int:

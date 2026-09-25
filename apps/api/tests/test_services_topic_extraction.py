@@ -1324,3 +1324,57 @@ async def test_uploading_a_pdf_still_indexes_it_but_never_starts_topic_extractio
         is None
     )
     assert await project_topics_repo.list_all_by_project(db_session, project.id) == []
+
+
+# --- the prompt's size does not depend on free-text project fields -----------------------
+
+
+async def test_an_enormous_project_title_and_description_cannot_inflate_the_prompt(
+    db_session, monkeypatch
+):
+    """A project's title and description are unbounded free text and reach the
+    prompt outside the passage budget, so the service clips what it sends. The
+    stored project is left exactly as it was.
+    """
+    owner = await users_repo.create(db_session, email=f"{uuid4()}@example.com")
+    project = await projects_repo.create(
+        db_session,
+        owner_id=owner.id,
+        title="T" * 50_000,
+        description="D" * 500_000,
+        source_type="pdf",
+        language="en-GB",
+    )
+    chunks = await _add_chunks(db_session, project, ["Plants make sugar."])
+    llm, create = _fake_llm(monkeypatch, [_topic("t1", "Sugar", evidence=(chunks[0].id,))])
+
+    job = await _extract(db_session, llm, owner, project)
+
+    assert job.status == "succeeded"
+    message = _user_message(create)
+    assert message.count("T") < 400
+    assert message.count("D") < 2_100  # the clipped description, and nothing else with a D
+    assert "…" in message
+    stored = await projects_repo.get_by_id(db_session, project.id)
+    assert stored is not None
+    assert len(stored.title) == 50_000 and len(stored.description or "") == 500_000
+
+
+async def test_an_ordinary_project_brief_is_sent_unchanged(db_session, monkeypatch):
+    owner = await users_repo.create(db_session, email=f"{uuid4()}@example.com")
+    project = await projects_repo.create(
+        db_session,
+        owner_id=owner.id,
+        title="How photosynthesis works",
+        description="A short explainer for year 9.",
+        source_type="pdf",
+    )
+    chunks = await _add_chunks(db_session, project, ["Plants make sugar."])
+    llm, create = _fake_llm(monkeypatch, [_topic("t1", "Sugar", evidence=(chunks[0].id,))])
+
+    await _extract(db_session, llm, owner, project)
+
+    message = _user_message(create)
+    assert "Subject: How photosynthesis works" in message
+    assert "Description: A short explainer for year 9." in message
+    assert "Language: en-GB" in message
