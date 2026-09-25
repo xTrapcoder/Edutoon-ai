@@ -213,7 +213,7 @@ def register_exception_handlers(app: FastAPI) -> None:
         # which would include the caller's submitted values verbatim (rule 10
         # still applies: unknown fields land here as `extra_forbidden`).
         return JSONResponse(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             content=_validation_error_body(exc),
         )
 
