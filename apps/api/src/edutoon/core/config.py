@@ -48,12 +48,13 @@ class Settings(BaseSettings):
     EMBEDDING_MODEL: str = "text-embedding-3-small"
     LLM_MODEL: str = "claude-sonnet-5"
 
-    # Script Generation Engine (SG-2). ``SCRIPT_LLM_MODEL`` is the name recorded
-    # on a script when it is queued (``services.scripts``); it does not choose the
-    # model that is called - the API and the worker each build one client from
-    # ``LLM_MODEL`` and use it for every task - so keep the two equal. Segment and
-    # claim caps bound a single generation's size and cost; words-per-minute
-    # converts a segment's word count into an estimated spoken duration.
+    # Script Generation Engine (SG-2). ``SCRIPT_LLM_MODEL`` is the model that
+    # writes scripts: the worker builds a second LLM client bound to it for the
+    # ``generate_script`` job, and the API queues a script for it. Claim judging
+    # and topic extraction keep using ``LLM_MODEL``. The script records the model
+    # its job actually ran with. Segment and claim caps bound a single
+    # generation's size and cost; words-per-minute converts a segment's word count
+    # into an estimated spoken duration.
     SCRIPT_LLM_MODEL: str = "claude-sonnet-5"
     MAX_SCRIPT_SEGMENTS: int = 12
     MAX_CLAIMS_PER_GENERATION: int = 40

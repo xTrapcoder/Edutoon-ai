@@ -9,6 +9,16 @@ uv run uvicorn edutoon.main:app --reload --port 8000
 
 Requires the environment variables listed in the repository root `.env.example`.
 
+## Mutating routes
+
+Every `POST` / `PATCH` / `DELETE` requires an `Idempotency-Key` header of 1 to 255
+characters (missing, empty or longer is `422`) and dedupes on it: a repeat of the same
+(caller, method, path, key) replays the first response instead of running again. Each
+handler commits its transaction *before* its result is cached or returned, so a `2xx` -
+and a replay of one - always means the change is stored, and a commit that fails leaves
+nothing cached. `tests/test_idempotent_routes_contract.py` fails for any mutating route
+that loses either guarantee.
+
 ## Job worker
 
 Routes only ever *enqueue* a `jobs` row (indexing, topic extraction, script
@@ -18,6 +28,12 @@ alongside the API (`make dev` starts both, plus the web app):
 ```bash
 uv run python -m edutoon.worker
 ```
+
+It builds two LLM clients from the same API key, one per model: `LLM_MODEL` for
+claim judging and topic extraction, and `SCRIPT_LLM_MODEL` for writing scripts. A
+`generate_script` job runs on the second, and the script it produces records the
+model that actually wrote it (a script is queued for the API's script client's model,
+and the job replaces that with the one it ran with if they differ).
 
 It polls for `queued` jobs, claims one at a time with
 `SELECT ... FOR UPDATE SKIP LOCKED` (safe with any number of worker
@@ -168,11 +184,12 @@ how a real provider behaves, and none of them is real-provider verification.
   them.** The check is repeated immediately before the delete, which narrows the
   window to milliseconds but does not close it. Nothing links scripts to topics
   yet; whatever does must take a lock shared with topic replacement.
-- **Only the topics routes commit before answering** and bound the `Idempotency-Key`
-  length. The older routes (projects, uploads, claim verification, scripts) still
-  commit when the request ends, after the response, and accept any key.
-- **`SCRIPT_LLM_MODEL` is only recorded.** Every model call uses `LLM_MODEL`; keep
-  the two equal or a script's recorded model will not be the one that wrote it.
+- **A retry after a failed commit repeats the work.** Every mutating route commits
+  before it caches its result, so a failed commit is never cached as a success - but
+  the client's retry then runs the handler again. For claim verification that
+  repeats the paid embedding and LLM call; for an upload, an object written just
+  before a failed commit stays in storage, and a retry overwrites it (its key is
+  derived from the file's checksum) rather than adding a second one.
 
 ## Clerk Local Setup
 
