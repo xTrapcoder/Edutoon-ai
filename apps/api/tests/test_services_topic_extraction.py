@@ -50,6 +50,11 @@ from edutoon.services import topic_extraction as service
 from edutoon.services import uploaded_sources as uploaded_sources_service
 from tests.leaky_errors import assert_clean, leaky_anthropic, leaky_db_error
 
+# Stands in for an external provider (OpenAI / Anthropic): these tests prove how our code
+# handles a response, never how a real provider behaves. See "Provider-mocked tests"
+# in apps/api/README.md.
+pytestmark = pytest.mark.provider_mocked
+
 MODEL = "claude-sonnet-5"
 
 
@@ -689,6 +694,35 @@ async def test_a_script_created_after_enqueue_still_blocks_replacement_at_run_ti
     assert "script" in job.error
     assert await _snapshot(db_session, project) == before
     create.assert_not_awaited()
+
+
+async def test_a_script_created_during_the_model_call_still_blocks_replacement(
+    db_session, monkeypatch
+):
+    """The model call can take minutes, so a script may be made from the topics
+    after every check made before it. The write step looks again, right before it
+    deletes anything, and the previous topics survive untouched.
+    """
+    owner, project, chunks, _seed_a, _ = await _first_successful_run(db_session, monkeypatch)
+    derived = next(t for t in await _topics(db_session, project) if t.origin != "user")
+    enqueued = await _enqueue(db_session, owner, project, replace=True)
+    before = await _snapshot(db_session, project)
+    llm, create = _fake_llm(monkeypatch, [_topic("t1", "Replacement", evidence=(chunks[0].id,))])
+    answer = create.return_value
+
+    async def _a_script_appears_then_the_model_answers(*args: Any, **kwargs: Any) -> Message:
+        await _add_script_referencing(db_session, project, derived)
+        return answer  # type: ignore[no-any-return]
+
+    create.side_effect = _a_script_appears_then_the_model_answers
+
+    job = await service.run_extract_topics_job(db_session, llm, job_id=enqueued.job.id)
+
+    create.assert_awaited_once()  # the earlier checks passed; only the last one caught it
+    assert job.status == "failed"
+    assert "script" in job.error
+    assert await _snapshot(db_session, project) == before
+    assert await project_topics_repo.get_by_id(db_session, derived.id) is not None
 
 
 async def test_another_projects_script_does_not_block_replacement(db_session, monkeypatch):

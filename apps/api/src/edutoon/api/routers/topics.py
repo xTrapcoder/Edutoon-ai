@@ -16,9 +16,12 @@ Four routes, in the order a user meets them:
 
 ``project_id`` ownership is checked first on every route (rule 9: a project the
 caller does not own is a 404, never a 403), and again for the nested
-``topic_id``. Every mutating route requires an ``Idempotency-Key`` (rule 8) and
-dedupes through ``services/idempotency.py`` exactly like ``routers/scripts.py``,
-and every request body forbids unknown fields (rule 10).
+``topic_id``. Every mutating route requires an ``Idempotency-Key`` (rule 8; one to
+255 characters) and dedupes through ``services/idempotency.py`` like
+``routers/scripts.py`` - with one difference: each handler's transaction is
+committed *before* its result is cached and returned (``commit=session.commit``),
+because the session dependency would otherwise commit only after the response has
+been sent. Every request body forbids unknown fields (rule 10).
 
 Rule 2 holds here as everywhere: Redis is reached only through the
 ``api.dependencies`` seam and all persistence goes through the services - never
@@ -30,10 +33,10 @@ from __future__ import annotations
 from typing import Annotated, Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, Request, status
+from fastapi import APIRouter, Depends, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from edutoon.api.dependencies import RedisDep, get_current_user
+from edutoon.api.dependencies import IdempotencyKey, RedisDep, get_current_user
 from edutoon.api.schemas.jobs import JobResponse
 from edutoon.api.schemas.topics import (
     TopicExtractionRequest,
@@ -52,7 +55,6 @@ router = APIRouter(prefix="/projects/{project_id}/topics", tags=["topics"])
 
 CurrentUser = Annotated[UserRecord, Depends(get_current_user)]
 Session = Annotated[AsyncSession, Depends(get_session)]
-IdempotencyKey = Annotated[str, Header()]
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
@@ -83,6 +85,7 @@ async def add_keywords(
         path=request.url.path,
         idempotency_key=idempotency_key,
         handler=_execute,
+        commit=session.commit,
     )
     return TopicListResponse.model_validate(response_body)
 
@@ -120,6 +123,7 @@ async def enqueue_extraction(
         path=request.url.path,
         idempotency_key=idempotency_key,
         handler=_execute,
+        commit=session.commit,
     )
     return JobResponse.model_validate(response_body)
 
@@ -166,5 +170,6 @@ async def update_topic(
         path=request.url.path,
         idempotency_key=idempotency_key,
         handler=_execute,
+        commit=session.commit,
     )
     return TopicResponse.model_validate(response_body)

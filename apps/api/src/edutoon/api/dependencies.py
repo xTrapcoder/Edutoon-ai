@@ -47,6 +47,18 @@ EmbeddingsDep = Annotated[Embeddings, Depends(get_embeddings)]
 LLMDep = Annotated[LLM, Depends(get_llm)]
 
 
+# The ``Idempotency-Key`` request header (rule 8), bounded on both sides:
+#
+# - Not empty. Every empty key from one caller to one route would share a single
+#   dedupe record, so a client that forgot to fill the header in would be served
+#   the first response for a day.
+# - At most 255 characters (a UUID is 36). ``jobs`` has a unique index on the key,
+#   and a btree entry over about 2.7 kB is refused by Postgres, which would reach
+#   the caller as an unexplained 500 rather than a 422.
+IDEMPOTENCY_KEY_MAX_CHARS = 255
+IdempotencyKey = Annotated[str, Header(min_length=1, max_length=IDEMPOTENCY_KEY_MAX_CHARS)]
+
+
 def _extract_bearer_token(authorization: str | None) -> str:
     if authorization is None:
         raise UnauthorizedError("Missing Authorization header.")

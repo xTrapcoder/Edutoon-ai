@@ -19,6 +19,16 @@ does not hash the request body. Reusing a key with a different payload still
 replays the first response rather than erroring: the ``Idempotency-Key`` is a
 per-request identity the *caller* is responsible for varying, not a checksum
 of the payload.
+
+**A replay promises the work happened, so the work must be durable first.**
+The request-scoped session (``db.session.get_session``) commits when its
+dependency exits, and the FastAPI in use (0.141) runs that *after* the response
+has been sent. A handler that only writes through such a session would therefore
+be cached as "completed" - and answered ``2xx`` - before its transaction commits,
+so a commit that then failed would leave a cached success for a write that never
+happened. A router whose handler writes to the database passes
+``commit=session.commit``: it runs straight after the handler, before anything is
+cached or returned.
 """
 
 from __future__ import annotations
@@ -49,6 +59,7 @@ async def run_with_idempotency(
     path: str,
     idempotency_key: str,
     handler: Callable[[], Awaitable[tuple[int, Any]]],
+    commit: Callable[[], Awaitable[None]] | None = None,
     lock_ttl_seconds: int = DEFAULT_LOCK_TTL_SECONDS,
     result_ttl_seconds: int = DEFAULT_RESULT_TTL_SECONDS,
 ) -> tuple[int, Any]:
@@ -58,6 +69,12 @@ async def run_with_idempotency(
     or replayed from a prior call with the same key. Raises
     :class:`IdempotencyInProgressError` if a concurrent duplicate is still
     being processed.
+
+    ``commit`` (optional) makes the handler's effects durable - for a
+    database-backed handler, ``session.commit``. It is awaited once ``handler``
+    has succeeded and *before* the result is cached or returned. If it raises,
+    the key is released like any other failure: nothing is cached and a retry
+    runs the handler afresh.
     """
     key = build_key(owner_id=owner_id, method=method, path=path, idempotency_key=idempotency_key)
 
@@ -75,6 +92,8 @@ async def run_with_idempotency(
 
     try:
         status_code, body = await handler()
+        if commit is not None:
+            await commit()
     except Exception:
         # Free the key immediately on failure so a genuine retry after an
         # error isn't stuck waiting out the lock TTL.

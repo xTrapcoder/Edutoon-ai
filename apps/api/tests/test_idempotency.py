@@ -9,6 +9,7 @@ other or with leftover state from a previous run.
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncIterator
 from typing import Any
 from uuid import uuid4
@@ -263,3 +264,138 @@ async def test_handler_error_releases_the_lock_for_an_immediate_retry(
     )
 
     assert result == (201, {"attempt": 2})
+
+
+# --- commit: the work is durable before the result is cached or returned ------------------
+
+
+async def _record_status(redis_client: Redis, *, owner_id: Any, path: str, key: str) -> str | None:
+    raw = await redis_client.get(
+        build_key(owner_id=owner_id, method="POST", path=path, idempotency_key=key)
+    )
+    return None if raw is None else str(json.loads(raw)["status"])
+
+
+async def test_commit_runs_after_the_handler_and_before_the_result_is_cached(
+    redis_client: Redis,
+) -> None:
+    """A replay promises the work happened, so the record must not say
+    "completed" while the work could still be lost: at the moment ``commit``
+    runs the key is still only "in_progress".
+    """
+    owner_id, key = uuid4(), str(uuid4())
+    events: list[str] = []
+
+    async def _handler() -> tuple[int, Any]:
+        events.append("handler")
+        return 201, {"id": "one"}
+
+    async def _commit() -> None:
+        status = await _record_status(redis_client, owner_id=owner_id, path="/x", key=key)
+        events.append(f"commit(record={status})")
+
+    result = await run_with_idempotency(
+        redis_client,
+        owner_id=owner_id,
+        method="POST",
+        path="/x",
+        idempotency_key=key,
+        handler=_handler,
+        commit=_commit,
+    )
+
+    assert result == (201, {"id": "one"})
+    assert events == ["handler", "commit(record=in_progress)"]
+    assert await _record_status(redis_client, owner_id=owner_id, path="/x", key=key) == "completed"
+
+
+async def test_a_failing_commit_caches_nothing_and_frees_the_key_for_a_retry(
+    redis_client: Redis,
+) -> None:
+    owner_id, key = uuid4(), str(uuid4())
+    handler_runs = 0
+
+    async def _handler() -> tuple[int, Any]:
+        nonlocal handler_runs
+        handler_runs += 1
+        return 201, {"run": handler_runs}
+
+    async def _failing_commit() -> None:
+        raise RuntimeError("the database went away")
+
+    with pytest.raises(RuntimeError, match="went away"):
+        await run_with_idempotency(
+            redis_client,
+            owner_id=owner_id,
+            method="POST",
+            path="/x",
+            idempotency_key=key,
+            handler=_handler,
+            commit=_failing_commit,
+        )
+
+    # Nothing claims the work was done, so a retry does it again rather than
+    # being handed a cached success for a write that never landed.
+    assert await _record_status(redis_client, owner_id=owner_id, path="/x", key=key) is None
+    retried = await run_with_idempotency(
+        redis_client,
+        owner_id=owner_id,
+        method="POST",
+        path="/x",
+        idempotency_key=key,
+        handler=_handler,
+    )
+    assert retried == (201, {"run": 2})
+
+
+async def test_commit_is_not_called_when_the_handler_fails(redis_client: Redis) -> None:
+    committed = False
+
+    async def _handler() -> tuple[int, Any]:
+        raise RuntimeError("boom")
+
+    async def _commit() -> None:
+        nonlocal committed
+        committed = True
+
+    with pytest.raises(RuntimeError, match="boom"):
+        await run_with_idempotency(
+            redis_client,
+            owner_id=uuid4(),
+            method="POST",
+            path="/x",
+            idempotency_key=str(uuid4()),
+            handler=_handler,
+            commit=_commit,
+        )
+
+    assert committed is False
+
+
+async def test_a_replay_neither_reruns_the_handler_nor_commits_again(redis_client: Redis) -> None:
+    owner_id, key = uuid4(), str(uuid4())
+    commits = 0
+
+    async def _handler() -> tuple[int, Any]:
+        return 201, {"id": "one"}
+
+    async def _commit() -> None:
+        nonlocal commits
+        commits += 1
+
+    async def _call() -> tuple[int, Any]:
+        return await run_with_idempotency(
+            redis_client,
+            owner_id=owner_id,
+            method="POST",
+            path="/x",
+            idempotency_key=key,
+            handler=_handler,
+            commit=_commit,
+        )
+
+    first = await _call()
+    second = await _call()
+
+    assert first == second
+    assert commits == 1

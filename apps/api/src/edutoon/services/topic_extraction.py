@@ -299,15 +299,23 @@ async def _check_replace_rules(
     job runs, because the project can change in between.
     """
     if replace:
-        if await project_topics_repo.is_referenced_by_scripts(session, project_id):
-            raise ConflictError(
-                "A script already references this project's topics, so they cannot be "
-                "replaced. Generate a new script from the current topics instead."
-            )
+        await _refuse_if_scripts_reference_topics(session, project_id)
     elif _derived(topics):
         raise ConflictError(
             "Topics have already been extracted for this project. Run the extraction "
             "again with replace to overwrite the derived topics (your own topics are kept)."
+        )
+
+
+async def _refuse_if_scripts_reference_topics(session: AsyncSession, project_id: UUID) -> None:
+    """Deleting a topic a script points at would silently cut that link
+    (``script_segments.topic_id`` is ``ON DELETE SET NULL``), so replacing is
+    refused once any script does.
+    """
+    if await project_topics_repo.is_referenced_by_scripts(session, project_id):
+        raise ConflictError(
+            "A script already references this project's topics, so they cannot be "
+            "replaced. Generate a new script from the current topics instead."
         )
 
 
@@ -490,6 +498,14 @@ async def _persist(
     propagates, so the last successful topic set is left exactly as it was.
     """
     async with session.begin_nested():
+        if replace:
+            # Checked once more, right before the delete: the model call above can
+            # take minutes, and a script may have been made from these topics in
+            # the meantime. This narrows that window to the statements below; it
+            # cannot close it without a lock shared with script creation (which
+            # nothing yet links to topics).
+            await _refuse_if_scripts_reference_topics(session, project_id)
+
         # Evidence is rebuilt wholesale from this run (it also covers user
         # topics, whose citations come from the latest extraction).
         await topic_citations_repo.delete_by_project(session, project_id)

@@ -14,6 +14,7 @@ call is ever made, but the whole pipeline behind the endpoints is genuine.
 
 from __future__ import annotations
 
+import json
 import time
 from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime, timedelta
@@ -46,6 +47,11 @@ from edutoon.repositories.source_chunks import NewSourceChunk
 from edutoon.services import audit_logs as audit_logs_service
 from edutoon.services import topic_extraction as topic_extraction_service
 from tests.leaky_errors import assert_clean, leaky_anthropic
+
+# Stands in for an external provider (OpenAI / Anthropic): these tests prove how our code
+# handles a response, never how a real provider behaves. See "Provider-mocked tests"
+# in apps/api/README.md.
+pytestmark = pytest.mark.provider_mocked
 
 TEST_ISSUER = "https://test.clerk.accounts.dev"
 MODEL = "claude-sonnet-5"
@@ -1393,3 +1399,129 @@ async def test_a_failed_extraction_shows_the_client_a_safe_message_in_the_job_li
     assert body["status"] == "failed"
     assert body["error"] == provider_errors.NOT_AUTHORISED
     assert_clean(response.text)  # the whole body, not just the error field
+
+
+# =========================================================================================
+# The Idempotency-Key header, and durability before the response
+# =========================================================================================
+
+# One request per mutating route, built from a project id and a topic id.
+_MUTATIONS: dict[str, Callable[[str, str], tuple[str, str, dict[str, Any] | None]]] = {
+    "keywords": lambda p, t: ("POST", f"/v1/projects/{p}/topics", {"keywords": ["Chlorophyll"]}),
+    "extraction": lambda p, t: ("POST", f"/v1/projects/{p}/topics/extraction", None),
+    "patch": lambda p, t: ("PATCH", f"/v1/projects/{p}/topics/{t}", {"status": "rejected"}),
+}
+
+
+@pytest.fixture
+async def redis_client():
+    client = get_redis_client(get_settings().REDIS_URL)
+    yield client
+    await client.aclose()
+
+
+async def _idempotency_status(redis_client, path: str, key: str) -> str | None:
+    """The status of the dedupe record for ``key`` on ``path`` (whichever owner
+    made it - a test's key is a fresh UUID), or ``None`` if there is none.
+    """
+    matches = [name async for name in redis_client.scan_iter(match=f"idempotency:*:{path}:{key}")]
+    if not matches:
+        return None
+    [name] = matches
+    return json.loads(await redis_client.get(name))["status"]  # type: ignore[no-any-return]
+
+
+async def _project_with_a_topic(client: httpx.AsyncClient, headers: dict[str, str]):
+    project_id = await _create_project(client, headers)
+    [topic] = await _add_keywords(client, headers, project_id, ["Photosynthesis"])
+    return project_id, topic["id"]
+
+
+@pytest.mark.parametrize("route", _MUTATIONS)
+async def test_a_mutation_is_committed_before_its_result_is_cached_or_returned(
+    client_factory, auth_headers, db_session, redis_client, monkeypatch, route
+):
+    """The request-scoped session only commits once FastAPI has sent the
+    response, so the router commits for itself: at the moment it does, the dedupe
+    record must still say "in_progress" - a cached "completed" would promise work
+    that a failed commit could still lose.
+    """
+    headers = auth_headers()
+    async with client_factory() as client:
+        project_id, topic_id = await _project_with_a_topic(client, headers)
+        method, path, body = _MUTATIONS[route](project_id, topic_id)
+        key = str(uuid4())
+        seen_at_commit: list[str | None] = []
+        real_commit = db_session.commit
+
+        async def _spying_commit() -> None:
+            seen_at_commit.append(await _idempotency_status(redis_client, path, key))
+            await real_commit()
+
+        monkeypatch.setattr(db_session, "commit", _spying_commit)
+        response = await client.request(method, path, json=body, headers=_headers(headers, key))
+
+    assert response.status_code in (200, 201, 202), response.text
+    assert seen_at_commit == ["in_progress"]
+    assert await _idempotency_status(redis_client, path, key) == "completed"
+
+
+@pytest.mark.parametrize("route", _MUTATIONS)
+async def test_a_commit_that_fails_leaves_no_cached_success_behind(
+    client_factory, auth_headers, db_session, redis_client, monkeypatch, route
+):
+    headers = auth_headers()
+    async with client_factory() as client:
+        project_id, topic_id = await _project_with_a_topic(client, headers)
+        method, path, body = _MUTATIONS[route](project_id, topic_id)
+        key = str(uuid4())
+
+        async def _failing_commit() -> None:
+            raise RuntimeError("the database went away")
+
+        monkeypatch.setattr(db_session, "commit", _failing_commit)
+        with pytest.raises(RuntimeError, match="went away"):
+            await client.request(method, path, json=body, headers=_headers(headers, key))
+
+    # Nothing says the work was done, and the key is free for the client's retry.
+    assert await _idempotency_status(redis_client, path, key) is None
+
+
+@pytest.mark.parametrize("route", _MUTATIONS)
+@pytest.mark.parametrize("key", ["", "k" * 256, "k" * 3_000])
+async def test_an_empty_or_oversized_idempotency_key_is_rejected_and_nothing_is_written(
+    client_factory, auth_headers, route, key
+):
+    """An empty key would make all of a caller's requests to one route share a
+    dedupe record, and one over ~2.7 kB cannot be indexed by ``jobs`` - which
+    used to surface as a 500.
+    """
+    headers = auth_headers()
+    async with client_factory() as client:
+        project_id, topic_id = await _project_with_a_topic(client, headers)
+        before = await _topics(client, headers, project_id)
+        method, path, body = _MUTATIONS[route](project_id, topic_id)
+
+        response = await client.request(
+            method, path, json=body, headers={**headers, "Idempotency-Key": key}
+        )
+
+        assert response.status_code == 422
+        [error] = response.json()["error"]["details"]["field_errors"]
+        assert error["path"] == "header.idempotency-key"
+        assert await _topics(client, headers, project_id) == before
+        jobs = await client.get(f"/v1/projects/{project_id}/jobs", headers=headers)
+        assert jobs.json()["items"] == []
+
+
+async def test_an_idempotency_key_of_the_maximum_length_is_accepted(client_factory, auth_headers):
+    headers = auth_headers()
+    async with client_factory() as client:
+        project_id, _ = await _project_with_a_topic(client, headers)
+        response = await client.post(
+            f"/v1/projects/{project_id}/topics",
+            json={"keywords": ["Chlorophyll"]},
+            headers=_headers(headers, "k" * 255),
+        )
+
+    assert response.status_code == 201, response.text
