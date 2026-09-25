@@ -27,6 +27,7 @@ from edutoon.main import create_app
 from edutoon.providers import clerk
 from edutoon.providers.cache import get_redis_client
 from edutoon.repositories import users as users_repo
+from tests.idempotency_helpers import INVALID_KEYS, idempotency_status
 
 TEST_ISSUER = "https://test.clerk.accounts.dev"
 IDEMPOTENCY_HEADERS = {"Idempotency-Key": "test-key-1"}
@@ -508,3 +509,108 @@ async def test_concurrent_duplicate_post_returns_409(db_session):
     conflict = response_a if response_a.status_code == 409 else response_b
     assert conflict.json()["error"]["code"] == "idempotency_in_progress"
     assert len(list_resp.json()["items"]) == 1
+
+
+# --- the Idempotency-Key header, and durability before the response --------------------
+
+# One request per mutating route, built from an existing project's id.
+_MUTATIONS: dict[str, Callable[[str], tuple[str, str, dict[str, object] | None]]] = {
+    "create": lambda project_id: ("POST", "/v1/projects", _create_payload(title="A second one")),
+    "update": lambda project_id: ("PATCH", f"/v1/projects/{project_id}", {"title": "Renamed"}),
+    "delete": lambda project_id: ("DELETE", f"/v1/projects/{project_id}", None),
+}
+
+
+async def _a_project(client: httpx.AsyncClient, headers: dict[str, str]) -> str:
+    response = await client.post(
+        "/v1/projects", json=_create_payload(), headers={**headers, "Idempotency-Key": str(uuid4())}
+    )
+    assert response.status_code == 201
+    return response.json()["id"]  # type: ignore[no-any-return]
+
+
+@pytest.mark.parametrize("route", _MUTATIONS)
+async def test_a_mutation_is_committed_before_its_result_is_cached_or_returned(
+    client_factory, auth_headers, db_session, redis_client, monkeypatch, route
+):
+    """The request-scoped session only commits once FastAPI has sent the response, so
+    the router commits for itself: at the moment it does, the dedupe record must still
+    say "in_progress" - a cached "completed" would promise work a failed commit could
+    still lose.
+    """
+    headers = auth_headers()
+    async with client_factory() as client:
+        project_id = await _a_project(client, headers)
+        method, path, body = _MUTATIONS[route](project_id)
+        key = str(uuid4())
+        seen_at_commit: list[str | None] = []
+        real_commit = db_session.commit
+
+        async def _spying_commit() -> None:
+            seen_at_commit.append(await idempotency_status(redis_client, path, key))
+            await real_commit()
+
+        monkeypatch.setattr(db_session, "commit", _spying_commit)
+        response = await client.request(
+            method, path, json=body, headers={**headers, "Idempotency-Key": key}
+        )
+
+    assert response.status_code in (200, 201, 204), response.text
+    assert seen_at_commit == ["in_progress"]
+    assert await idempotency_status(redis_client, path, key) == "completed"
+
+
+@pytest.mark.parametrize("route", _MUTATIONS)
+async def test_a_commit_that_fails_leaves_no_cached_success_behind(
+    client_factory, auth_headers, db_session, redis_client, monkeypatch, route
+):
+    headers = auth_headers()
+    async with client_factory() as client:
+        project_id = await _a_project(client, headers)
+        method, path, body = _MUTATIONS[route](project_id)
+        key = str(uuid4())
+
+        async def _failing_commit() -> None:
+            raise RuntimeError("the database went away")
+
+        monkeypatch.setattr(db_session, "commit", _failing_commit)
+        with pytest.raises(RuntimeError, match="went away"):
+            await client.request(
+                method, path, json=body, headers={**headers, "Idempotency-Key": key}
+            )
+
+    # Nothing says the work was done, and the key is free for the client's retry.
+    assert await idempotency_status(redis_client, path, key) is None
+
+
+@pytest.mark.parametrize("route", _MUTATIONS)
+@pytest.mark.parametrize("key", INVALID_KEYS)
+async def test_an_empty_or_oversized_idempotency_key_is_rejected_and_nothing_is_written(
+    client_factory, auth_headers, route, key
+):
+    headers = auth_headers()
+    async with client_factory() as client:
+        project_id = await _a_project(client, headers)
+        before = (await client.get("/v1/projects", headers=headers)).json()
+        method, path, body = _MUTATIONS[route](project_id)
+
+        response = await client.request(
+            method, path, json=body, headers={**headers, "Idempotency-Key": key}
+        )
+
+        assert response.status_code == 422
+        [error] = response.json()["error"]["details"]["field_errors"]
+        assert error["path"] == "header.idempotency-key"
+        assert (await client.get("/v1/projects", headers=headers)).json() == before
+
+
+async def test_an_idempotency_key_of_the_maximum_length_is_accepted(client_factory, auth_headers):
+    headers = auth_headers()
+    async with client_factory() as client:
+        response = await client.post(
+            "/v1/projects",
+            json=_create_payload(),
+            headers={**headers, "Idempotency-Key": "k" * 255},
+        )
+
+    assert response.status_code == 201, response.text

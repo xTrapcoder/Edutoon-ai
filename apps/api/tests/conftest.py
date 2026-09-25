@@ -42,6 +42,7 @@ from sqlalchemy.ext.asyncio import (  # noqa: E402
 )
 
 from edutoon.core.config import get_settings  # noqa: E402
+from edutoon.providers.cache import Redis, get_redis_client  # noqa: E402
 
 
 @pytest.fixture
@@ -65,3 +66,11 @@ async def db_session() -> AsyncIterator[AsyncSession]:
             yield session
         await trans.rollback()
     await engine.dispose()
+
+
+@pytest.fixture
+async def redis_client() -> AsyncIterator[Redis]:
+    """The local Redis the idempotency dedupe records live in, on its own connection."""
+    client = get_redis_client(get_settings().REDIS_URL)
+    yield client
+    await client.aclose()

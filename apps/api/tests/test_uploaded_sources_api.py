@@ -24,6 +24,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey, RSAPublicKey
 from fpdf import FPDF
+from sqlalchemy import select
 
 from edutoon.api.dependencies import get_current_user
 from edutoon.core.config import get_settings
@@ -480,6 +481,14 @@ async def test_concurrent_duplicate_upload_returns_409(db_session):
                 headers={"Idempotency-Key": str(uuid4())},
             )
             project_id = project_resp.json()["id"]
+
+            # The project route commits before it answers, which leaves the shared
+            # session with no transaction open. Both requests below read the project
+            # on this one session before the idempotency lock, and two coroutines
+            # cannot each start a transaction on it at once - so start it here. (In
+            # production every request has its own session; this is only the test's
+            # deliberate sharing.)
+            await db_session.execute(select(1))
 
             response_a, response_b = await asyncio.gather(
                 client.post(

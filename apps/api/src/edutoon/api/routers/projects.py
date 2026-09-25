@@ -1,10 +1,14 @@
 """``/v1/projects`` - the first authenticated, ownership-scoped resource API.
 
 Every mutating route (POST/PATCH/DELETE) requires an ``Idempotency-Key``
-header (rule 8) and actually deduplicates against it via
-``services/idempotency.py``: a repeat of the same (caller, method, path, key)
-replays the original response instead of re-running the handler, and a
-genuine concurrent duplicate gets 409.
+header (rule 8; one to 255 characters, otherwise 422) and actually
+deduplicates against it via ``services/idempotency.py``: a repeat of the same
+(caller, method, path, key) replays the original response instead of re-running
+the handler, and a genuine concurrent duplicate gets 409. Each handler's
+transaction is committed before its result is cached or returned
+(``commit=session.commit``): the session dependency would otherwise commit only
+after the response has been sent, so a failed commit could leave a cached
+success for a write that never happened.
 """
 
 from __future__ import annotations
@@ -12,10 +16,10 @@ from __future__ import annotations
 from typing import Annotated, Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, Request, status
+from fastapi import APIRouter, Depends, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from edutoon.api.dependencies import RedisDep, get_current_user
+from edutoon.api.dependencies import IdempotencyKey, RedisDep, get_current_user
 from edutoon.api.schemas.projects import (
     ProjectCreateRequest,
     ProjectListResponse,
@@ -32,7 +36,6 @@ router = APIRouter(prefix="/projects", tags=["projects"])
 
 CurrentUser = Annotated[UserRecord, Depends(get_current_user)]
 Session = Annotated[AsyncSession, Depends(get_session)]
-IdempotencyKey = Annotated[str, Header()]
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
@@ -64,6 +67,7 @@ async def create_project(
         path=request.url.path,
         idempotency_key=idempotency_key,
         handler=_execute,
+        commit=session.commit,
     )
     return ProjectResponse.model_validate(response_body)
 
@@ -119,6 +123,7 @@ async def update_project(
         path=request.url.path,
         idempotency_key=idempotency_key,
         handler=_execute,
+        commit=session.commit,
     )
     return ProjectResponse.model_validate(response_body)
 
@@ -145,4 +150,5 @@ async def delete_project(
         path=request.url.path,
         idempotency_key=idempotency_key,
         handler=_execute,
+        commit=session.commit,
     )
