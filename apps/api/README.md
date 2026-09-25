@@ -11,9 +11,9 @@ Requires the environment variables listed in the repository root `.env.example`.
 
 ## Job worker
 
-Routes only ever *enqueue* a `jobs` row (indexing, script generation); a
-separate worker process claims and executes them. Run it alongside the API
-(`make dev` starts both, plus the web app):
+Routes only ever *enqueue* a `jobs` row (indexing, topic extraction, script
+generation); a separate worker process claims and executes them. Run it
+alongside the API (`make dev` starts both, plus the web app):
 
 ```bash
 uv run python -m edutoon.worker
@@ -27,6 +27,70 @@ existing `services.*.run_*_job` function handles it
 marked `failed` with a clear error rather than stalling forever. Stop it
 with Ctrl-C (or `SIGTERM`); it finishes whatever job it's already claimed
 before exiting.
+
+## Topic understanding
+
+Before any claim is verified or script written, the project needs an outline of
+what the video should cover. Topics come from the uploaded PDF, from keywords
+the user types, or both, and each topic records where it came from:
+
+| `origin`    | Meaning                                                        | Evidence            |
+| ----------- | -------------------------------------------------------------- | ------------------- |
+| `source`    | Extracted from the uploaded material                           | at least one page   |
+| `user`      | Typed in by the user (a keyword)                               | optional            |
+| `suggested` | Proposed by the model with no material behind it (keywords only) | none — unverified   |
+
+A topic's `summary` and `keywords` are labels for review, **not verified
+claims**: facts only reach a script through claim verification. Topics are a
+tree (a topic, its subtopics, …); hierarchy and reading order are the only
+relationships between them.
+
+| Route                                                  | What it does |
+| ------------------------------------------------------ | ------------ |
+| `POST /v1/projects/{id}/topics`                        | `201`. Store the user's keywords as `accepted` topics. No model call. |
+| `POST /v1/projects/{id}/topics/extraction`             | `202` with the queued `extract_topics` job. Optional body `{"replace": true}`. |
+| `GET /v1/projects/{id}/topics`                         | The outline in reading order, each topic with its `evidence` (source, chunk, page range). Not paginated. |
+| `PATCH /v1/projects/{id}/topics/{topic_id}`            | The review step: `status` (`proposed` / `accepted` / `rejected`), and `title` / `summary` wording. |
+
+Every mutating route requires an `Idempotency-Key`, rejects unknown body fields
+with `422`, and returns `404` for a project or topic the caller does not own.
+Progress and the outcome of an extraction are on `GET /v1/projects/{id}/jobs`.
+
+**How an extraction runs.** The worker reads the project's parsed pages, picks a
+deterministic, whole-document sample that fits `TOPIC_INPUT_BUDGET_CHARS`, makes
+**one** model call, validates the result against the rules in
+`domain/topic_tree.py` (only pages the model was actually shown may be cited;
+model-proposed topics that cite nothing are dropped whenever there was material;
+every user keyword survives verbatim; origins are decided by the rules, never by
+the model), then writes the topics in one savepoint. The job result reports
+`mode` (`pdf`, `keywords` or `pdf_keywords`), `topic_count`, `chunks_total`,
+`chunks_used`, `truncated` (the model saw only part of the document),
+`dropped_uncited`, token counts and the model used.
+
+- **Explicit only.** Uploading a PDF never starts an extraction; the caller asks.
+- **One at a time.** A second request while one is queued or running is `409`.
+- **Re-running.** Once topics have been extracted, `409` unless `replace` is
+  true. `replace` deletes only the *derived* topics (`source` / `suggested`); the
+  user's own topics keep their rows and wording. It is refused (`409`) if any
+  script already references the project's topics.
+- **Failure is safe.** A failed extraction ends the job as `failed` and leaves
+  the previous topics and evidence exactly as they were. Retry with a new
+  `Idempotency-Key` — a repeat of the old key replays the failed job.
+- **Editing during a run.** Adding keywords and changing a title or summary are
+  refused (`409`) while an extraction is queued or running; accepting or
+  rejecting a topic is always allowed.
+
+Settings (all optional, defaults in the repository root `.env.example`):
+`TOPIC_INPUT_BUDGET_CHARS` (the cost control), `MAX_TOPICS_PER_EXTRACTION`
+(also the cap on a project's own keywords), `MAX_TOPIC_DEPTH`,
+`MAX_TOPIC_TITLE_CHARS`, `MAX_TOPIC_SUMMARY_CHARS`, `MAX_TOPIC_KEYWORDS`,
+`MAX_TOPIC_KEYWORD_CHARS`, `MAX_TOPIC_EVIDENCE`. They use `LLM_MODEL` — there is
+no separate topic model. Extraction needs `ANTHROPIC_API_KEY`; the test suite
+never calls the network (it replaces `messages.create` on a real client), so the
+prompt in `providers/llm.py` has not yet been tried against a live model.
+
+**Not built yet:** turning topics into candidate claims. Claims are still typed
+in by hand, so a script's facts do not yet flow from the topic outline.
 
 ## Clerk Local Setup
 

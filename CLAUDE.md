@@ -56,22 +56,34 @@ unsupported claims ever reach the script or the screen.
 - Async SQLAlchemy throughout (`asyncpg`). The engine lives in
   `edutoon.db.database`; sessions come from `edutoon.db.session.get_session`.
 - Schema is defined **only** by hand-written Alembic migrations in
-  `apps/api/alembic/versions` (raw SQL via `op.execute`). No ORM models exist
-  yet — `Base` in `edutoon.db.base` is an empty declarative base kept for the
-  naming convention and Alembic's `target_metadata`.
+  `apps/api/alembic/versions` (raw SQL via `op.execute`). No ORM models exist —
+  `Base` in `edutoon.db.base` is an empty declarative base kept for the
+  naming convention and Alembic's `target_metadata`; repositories use the Core
+  `Table` mirrors in `edutoon.db.tables`.
 - Migrations connect via `DATABASE_DIRECT_URL` (never the pooled URL).
-- Helper functions (migration 0001): `uuid_generate_v7()` for time-ordered
-  UUID PKs, `set_updated_at()` BEFORE-UPDATE trigger, `reject_mutation()`
-  append-only guard.
-- Tables: `users`, `projects`, `jobs`, `project_topics`, `uploaded_sources`,
-  `source_chunks` (pgvector `vector(1536)` + HNSW cosine + trigram GIN),
-  `audit_logs` (append-only, no FKs — loose UUID references).
+- Helper functions (migration 0001, 0008): `uuid_generate_v7()` for
+  time-ordered, monotonic UUID PKs, `set_updated_at()` BEFORE-UPDATE trigger,
+  `reject_mutation()` append-only guard.
+- Tables: `users`, `projects`, `jobs`, `uploaded_sources`, `source_chunks`
+  (pgvector `vector(1536)` + HNSW cosine + trigram GIN), `audit_logs`
+  (append-only, no FKs — loose UUID references), `claim_verifications` +
+  `claim_citations`, `scripts` + `script_segments` + `script_segment_claims`,
+  and — Phase 5 — `project_topics` (a tree; `origin` is `source` / `user` /
+  `suggested`, plus `keywords`) and `topic_citations` (topic → source chunk,
+  cascading, regenerable).
 
 ## Current phase
 
-**Phase 2 — database foundation.** Async SQLAlchemy plumbing + Alembic +
-migrations 0001–0005. Still **no** business logic: no pipeline, evidence,
-script, voice, render or auth code.
+**Phase 5 — topic understanding.** Delivered so far: auth, projects, PDF
+upload and parsing, the Evidence Engine (claim verification), script generation
+and approval, the background worker, and topic extraction — topics from a PDF,
+from the user's keywords, or both, each with cited source pages
+(migrations 0001–0009; API in `apps/api/README.md`, "Topic understanding").
+
+Not built yet: turning topics into candidate claims, voice/TTS, animation,
+rendering and the front end. Real-provider verification (OpenAI/Anthropic) is
+on hold until API keys are available — every test mocks the network call, so
+the prompts have not been tried against a live model.
 
 ## Commands
 
@@ -92,8 +104,9 @@ make lint            # lint TypeScript and Python
 apps/
   web/        Next.js 15 front end
   api/        FastAPI service (uv, src/edutoon)
-    src/edutoon/db/       engine, session factory, declarative base
-    alembic/              migration environment + versions/0001..0005
+    src/edutoon/          api/ (routers, schemas) · services/ · domain/ (pure) ·
+                          repositories/ · providers/ · worker/ · db/ · core/
+    alembic/              migration environment + versions/0001..0009
   parser/     PDF/topic parser — not yet initialised
   render/     Remotion render worker — not yet initialised
 packages/
