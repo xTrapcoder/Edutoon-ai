@@ -12,10 +12,14 @@ could not produce a fully sourced script. Approving a reviewed draft is
 ``project_id`` ownership is checked first on every route (rule 9: a project
 the caller doesn't own is a 404, never a 403), and again for the nested
 ``script_id`` on the detail and approval routes. Both mutating routes require
-an ``Idempotency-Key`` (rule 8) and dedupe through ``services/idempotency.py``
-exactly like ``routers/projects.py``: a repeat of the same
-(caller, method, path, key) replays the original response instead of queuing
-a second generation or re-running the approval.
+an ``Idempotency-Key`` (rule 8; one to 255 characters, otherwise 422) and dedupe
+through ``services/idempotency.py`` exactly like ``routers/projects.py``: a
+repeat of the same (caller, method, path, key) replays the original response
+instead of queuing a second generation or re-running the approval. Each
+handler's transaction is committed before its result is cached or returned
+(``commit=session.commit``): the session dependency would otherwise commit only
+after the response has been sent, and a failed commit would leave a cached
+"queued" or "approved" for something that was never stored.
 
 Rule 2 holds here as everywhere: this module reaches Redis only through the
 ``api.dependencies`` injection seam and all persistence goes through
@@ -27,10 +31,10 @@ from __future__ import annotations
 from typing import Annotated, Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, Request, status
+from fastapi import APIRouter, Depends, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from edutoon.api.dependencies import RedisDep, get_current_user
+from edutoon.api.dependencies import IdempotencyKey, RedisDep, get_current_user
 from edutoon.api.schemas.scripts import (
     ScriptDetailResponse,
     ScriptGenerateRequest,
@@ -48,7 +52,6 @@ router = APIRouter(prefix="/projects/{project_id}/scripts", tags=["scripts"])
 
 CurrentUser = Annotated[UserRecord, Depends(get_current_user)]
 Session = Annotated[AsyncSession, Depends(get_session)]
-IdempotencyKey = Annotated[str, Header()]
 
 
 @router.post("", status_code=status.HTTP_202_ACCEPTED)
@@ -85,6 +88,7 @@ async def enqueue_script_generation(
         path=request.url.path,
         idempotency_key=idempotency_key,
         handler=_execute,
+        commit=session.commit,
     )
     return ScriptResponse.model_validate(response_body)
 
@@ -159,5 +163,6 @@ async def approve_script(
         path=request.url.path,
         idempotency_key=idempotency_key,
         handler=_execute,
+        commit=session.commit,
     )
     return ScriptResponse.model_validate(response_body)

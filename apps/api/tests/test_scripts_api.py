@@ -48,6 +48,7 @@ from edutoon.repositories import users as users_repo
 from edutoon.repositories.claim_verifications import NewClaimCitation
 from edutoon.repositories.source_chunks import NewSourceChunk
 from edutoon.services import scripts as scripts_service
+from tests.idempotency_helpers import INVALID_KEYS, idempotency_status
 
 # Stands in for an external provider (OpenAI / Anthropic): these tests prove how our code
 # handles a response, never how a real provider behaves. See "Provider-mocked tests"
@@ -622,3 +623,103 @@ async def test_concurrent_enqueue_duplicate_returns_409(db_session):
         await app.state.redis.aclose()
 
     assert sorted((first.status_code, second.status_code)) == [202, 409]
+
+
+# --- the Idempotency-Key header, and durability before the response --------------------
+
+
+async def _ready_to_post(route: str, client, db_session, headers, monkeypatch) -> str:
+    """The path of a mutating route with everything it needs already in place:
+    for ``enqueue`` a project with a verified claim; for ``approve`` a drafted script.
+    """
+    if route == "enqueue":
+        project_id = await _create_project(client, headers)
+        await _add_supported_claims(db_session, project_id, ["A verified fact."])
+        return f"/v1/projects/{project_id}/scripts"
+    project_id, script_id, _claims = await _drafted_project(
+        client, db_session, headers, monkeypatch
+    )
+    return f"/v1/projects/{project_id}/scripts/{script_id}/approval"
+
+
+@pytest.mark.parametrize("route", ["enqueue", "approve"])
+async def test_a_mutation_is_committed_before_its_result_is_cached_or_returned(
+    client_factory, auth_headers, db_session, redis_client, monkeypatch, route
+):
+    """The route commits for itself, before anything is cached: at the moment it does,
+    the dedupe record must still say "in_progress" - a cached "completed" would promise
+    work that a failed commit could still lose.
+    """
+    headers = auth_headers()
+    async with client_factory() as client:
+        path = await _ready_to_post(route, client, db_session, headers, monkeypatch)
+        key = str(uuid4())
+        seen_at_commit: list[str | None] = []
+        real_commit = db_session.commit
+
+        async def _spying_commit() -> None:
+            seen_at_commit.append(await idempotency_status(redis_client, path, key))
+            await real_commit()
+
+        monkeypatch.setattr(db_session, "commit", _spying_commit)
+        response = await client.post(path, headers=_headers(headers, key))
+
+    assert response.status_code in (200, 202), response.text
+    assert seen_at_commit == ["in_progress"]
+    assert await idempotency_status(redis_client, path, key) == "completed"
+
+
+@pytest.mark.parametrize("route", ["enqueue", "approve"])
+async def test_a_commit_that_fails_leaves_no_cached_success_behind(
+    client_factory, auth_headers, db_session, redis_client, monkeypatch, route
+):
+    headers = auth_headers()
+    async with client_factory() as client:
+        path = await _ready_to_post(route, client, db_session, headers, monkeypatch)
+        key = str(uuid4())
+
+        async def _failing_commit() -> None:
+            raise RuntimeError("the database went away")
+
+        monkeypatch.setattr(db_session, "commit", _failing_commit)
+        with pytest.raises(RuntimeError, match="went away"):
+            await client.post(path, headers=_headers(headers, key))
+
+    # Nothing says the work was done, and the key is free for the client's retry.
+    assert await idempotency_status(redis_client, path, key) is None
+
+
+@pytest.mark.parametrize("route", ["enqueue", "approve"])
+@pytest.mark.parametrize("key", INVALID_KEYS)
+async def test_an_empty_or_oversized_idempotency_key_is_rejected_and_nothing_is_written(
+    client_factory, auth_headers, db_session, monkeypatch, route, key
+):
+    headers = auth_headers()
+    async with client_factory() as client:
+        path = await _ready_to_post(route, client, db_session, headers, monkeypatch)
+        project_path = path.split("/scripts")[0]
+        scripts_before = (await client.get(f"{project_path}/scripts", headers=headers)).json()
+        jobs_before = (await client.get(f"{project_path}/jobs", headers=headers)).json()
+
+        response = await client.post(path, headers={**headers, "Idempotency-Key": key})
+
+        assert response.status_code == 422
+        [error] = response.json()["error"]["details"]["field_errors"]
+        assert error["path"] == "header.idempotency-key"
+        scripts_after = (await client.get(f"{project_path}/scripts", headers=headers)).json()
+        jobs_after = (await client.get(f"{project_path}/jobs", headers=headers)).json()
+        assert (scripts_after, jobs_after) == (scripts_before, jobs_before)
+
+
+async def test_an_idempotency_key_of_the_maximum_length_is_accepted(
+    client_factory, auth_headers, db_session
+):
+    headers = auth_headers()
+    async with client_factory() as client:
+        project_id = await _create_project(client, headers)
+        await _add_supported_claims(db_session, project_id, ["A verified fact."])
+        response = await client.post(
+            f"/v1/projects/{project_id}/scripts", headers=_headers(headers, "k" * 255)
+        )
+
+    assert response.status_code == 202, response.text
