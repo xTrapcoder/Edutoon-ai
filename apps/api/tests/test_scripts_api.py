@@ -49,6 +49,11 @@ from edutoon.repositories.claim_verifications import NewClaimCitation
 from edutoon.repositories.source_chunks import NewSourceChunk
 from edutoon.services import scripts as scripts_service
 
+# Stands in for an external provider (OpenAI / Anthropic): these tests prove how our code
+# handles a response, never how a real provider behaves. See "Provider-mocked tests"
+# in apps/api/README.md.
+pytestmark = pytest.mark.provider_mocked
+
 TEST_ISSUER = "https://test.clerk.accounts.dev"
 SCRIPT_MODEL = "claude-sonnet-5"
 

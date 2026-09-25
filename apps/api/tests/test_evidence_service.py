@@ -34,6 +34,11 @@ from edutoon.services import evidence as evidence_service
 from edutoon.services import job_errors
 from tests.leaky_errors import assert_clean, leaky_openai
 
+# Stands in for an external provider (OpenAI / Anthropic): these tests prove how our code
+# handles a response, never how a real provider behaves. See "Provider-mocked tests"
+# in apps/api/README.md.
+pytestmark = pytest.mark.provider_mocked
+
 MODEL = "text-embedding-3-small"
 LLM_MODEL = "claude-sonnet-5"
 

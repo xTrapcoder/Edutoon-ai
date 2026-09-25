@@ -28,6 +28,11 @@ from edutoon.providers.llm import LLMResponseError
 from edutoon.services import job_errors
 from tests.leaky_errors import LEAKY_BODY, assert_clean, request, response
 
+# Stands in for an external provider (OpenAI / Anthropic): these tests prove how our code
+# handles a response, never how a real provider behaves. See "Provider-mocked tests"
+# in apps/api/README.md.
+pytestmark = pytest.mark.provider_mocked
+
 # --- provider errors: chosen by kind and status, never by text -------------------------
 
 

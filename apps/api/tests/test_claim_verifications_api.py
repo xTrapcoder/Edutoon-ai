@@ -36,6 +36,11 @@ from edutoon.repositories import source_chunks as source_chunks_repo
 from edutoon.repositories import uploaded_sources as uploaded_sources_repo
 from edutoon.repositories.source_chunks import NewSourceChunk
 
+# Stands in for an external provider (OpenAI / Anthropic): these tests prove how our code
+# handles a response, never how a real provider behaves. See "Provider-mocked tests"
+# in apps/api/README.md.
+pytestmark = pytest.mark.provider_mocked
+
 TEST_ISSUER = "https://test.clerk.accounts.dev"
 IDEMPOTENCY_HEADERS = {"Idempotency-Key": "test-key-1"}
 

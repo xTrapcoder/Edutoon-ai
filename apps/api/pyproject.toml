@@ -43,6 +43,10 @@ packages = ["src/edutoon"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["src"]
+addopts = "--strict-markers"
+markers = [
+    "provider_mocked: stands in for an external AI provider (OpenAI / Anthropic) with a fake client, a patched network call or a simulated error. Proves how our code handles a response, never how a real provider behaves.",
+]
 
 [tool.mypy]
 python_version = "3.12"

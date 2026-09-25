@@ -29,6 +29,11 @@ from edutoon.domain.topic import SourcePassage, TopicDraft, TopicLimits, TopicSe
 from edutoon.domain.topic_tree import validate_and_build
 from edutoon.providers.llm import LLM, LLMResponseError, TokenUsage, TopicBrief
 
+# Stands in for an external provider (OpenAI / Anthropic): these tests prove how our code
+# handles a response, never how a real provider behaves. See "Provider-mocked tests"
+# in apps/api/README.md.
+pytestmark = pytest.mark.provider_mocked
+
 MODEL = "claude-sonnet-5"
 
 LIMITS = TopicLimits(

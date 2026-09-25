@@ -59,6 +59,11 @@ from edutoon.worker.dispatch import JOB_HANDLERS, WorkerProviders
 from edutoon.worker.runner import process_one_job
 from tests.leaky_errors import assert_clean, leaky_anthropic, leaky_db_error
 
+# Stands in for an external provider (OpenAI / Anthropic): these tests prove how our code
+# handles a response, never how a real provider behaves. See "Provider-mocked tests"
+# in apps/api/README.md.
+pytestmark = pytest.mark.provider_mocked
+
 EMBEDDING_MODEL = "text-embedding-3-small"
 LLM_MODEL = "claude-sonnet-5"
 

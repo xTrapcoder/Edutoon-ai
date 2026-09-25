@@ -12,11 +12,17 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import AsyncMock
 
+import pytest
 from openai import AsyncOpenAI
 from openai.types import CreateEmbeddingResponse, Embedding
 from openai.types.create_embedding_response import Usage
 
 from edutoon.providers.embeddings import Embeddings, get_embeddings_client
+
+# Stands in for an external provider (OpenAI / Anthropic): these tests prove how our code
+# handles a response, never how a real provider behaves. See "Provider-mocked tests"
+# in apps/api/README.md.
+pytestmark = pytest.mark.provider_mocked
 
 MODEL = "text-embedding-3-small"
 
