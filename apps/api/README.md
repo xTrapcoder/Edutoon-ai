@@ -65,9 +65,12 @@ relationships between them.
 | `GET /v1/projects/{id}/topics`                         | The outline in reading order, each topic with its `evidence` (source, chunk, page range). Not paginated. |
 | `PATCH /v1/projects/{id}/topics/{topic_id}`            | The review step: `status` (`proposed` / `accepted` / `rejected`), and `title` / `summary` wording. |
 
-Every mutating route requires an `Idempotency-Key`, rejects unknown body fields
-with `422`, and returns `404` for a project or topic the caller does not own.
-Progress and the outcome of an extraction are on `GET /v1/projects/{id}/jobs`.
+Every mutating route requires an `Idempotency-Key` (1 to 255 characters; an empty
+or longer one is `422`), rejects unknown body fields with `422`, and returns `404`
+for a project or topic the caller does not own. The write is committed *before*
+the response is sent and before an idempotent replay is cached, so a `2xx` - and a
+replay of one - always means the change is stored. Progress and the outcome of an
+extraction are on `GET /v1/projects/{id}/jobs`.
 
 **How an extraction runs.** The worker reads the project's parsed pages, picks a
 deterministic, whole-document sample that fits `TOPIC_INPUT_BUDGET_CHARS`, makes
@@ -101,7 +104,10 @@ the model), then writes the topics in one savepoint. The job result reports
   live worker holds it: a running handler keeps its job's row locked until it
   finishes, so a slow model call is never mistaken for a dead worker. Nothing is
   left half-written, since an extraction's writes are one transaction. Until the
-  next such request the abandoned job still shows as `running` in the job list.
+  next such request the abandoned job still shows as `running` in the job list -
+  and a crash holds the project's keyword and wording edits (`409`) for up to
+  `TOPIC_EXTRACTION_STALE_AFTER_SECONDS` (an hour by default) before it can be
+  recovered.
 
 Settings (all optional, defaults in the repository root `.env.example`):
 `TOPIC_INPUT_BUDGET_CHARS` (the cost control), `MAX_TOPICS_PER_EXTRACTION`
@@ -115,6 +121,58 @@ prompt in `providers/llm.py` has not yet been tried against a live model.
 
 **Not built yet:** turning topics into candidate claims. Claims are still typed
 in by hand, so a script's facts do not yet flow from the topic outline.
+
+## Testing, and what is not yet verified against a real provider
+
+```bash
+uv run pytest                          # everything (needs `make up`: Postgres and Redis)
+uv run pytest -m "not provider_mocked" # nothing that involves an AI provider
+uv run pytest -m provider_mocked       # only the tests that stand in for one
+```
+
+**No test calls OpenAI or Anthropic.** A test that involves a provider replaces
+its network call (`messages.create` / `embeddings.create`), hands the code a fake
+client, or builds the SDK's error objects offline, and carries
+`pytest.mark.provider_mocked` (`tests/test_provider_mocked_labelling.py` keeps that
+label true in both directions). Such a test proves how *our* code handles a
+response - parsing, validation, persistence, error messages. It says nothing about
+how a real provider behaves, and none of them is real-provider verification.
+
+**Pending real-provider verification when company API keys become available:**
+
+1. **Keys and models.** That the keys authenticate and that `LLM_MODEL` and
+   `EMBEDDING_MODEL` (and the `claude-sonnet-5` default) are available to the
+   accounts.
+2. **Keywords-only extraction** against a live model.
+3. **Long-PDF extraction:** how much of a real document the
+   `TOPIC_INPUT_BUDGET_CHARS` sample covers, and the quality of the citations.
+4. **`scripts/smoke_test_phase4.py`**, run unmodified, against the real providers.
+5. **Real behaviour:** the response shape and quality of the prompt in
+   `providers/llm.py`, latency, token use against the output-token allowance
+   (`_topics_max_tokens`), and that a real provider error maps to the message
+   `providers/errors.py` gives it (for example, that an unavailable model is a `404`).
+
+## Known limitations
+
+- **No way to cancel a job.** An extraction queued while no worker is running holds
+  the project's keyword and wording edits (`409`) until a worker takes it.
+- **Only extraction jobs are recovered after a worker crash.** An abandoned
+  `build_evidence` or `generate_script` job stays `running`.
+- **No retries.** A failed job is run again by a new request with a new key.
+- **One model call over a budgeted sample.** A long document is sampled evenly
+  (`truncated` says so), not read in windows; an outline the model returns that is
+  too deep or has too many topics fails the extraction rather than being trimmed.
+- **No per-user rate limit or quota** on extraction: each `replace` run costs a
+  model call. Credits come with the ledger, in a later phase.
+- **Replacing topics is guarded, not locked, against a script that references
+  them.** The check is repeated immediately before the delete, which narrows the
+  window to milliseconds but does not close it. Nothing links scripts to topics
+  yet; whatever does must take a lock shared with topic replacement.
+- **Only the topics routes commit before answering** and bound the `Idempotency-Key`
+  length. The older routes (projects, uploads, claim verification, scripts) still
+  commit when the request ends, after the response, and accept any key.
+- **`SCRIPT_LLM_MODEL` is only recorded.** Every model call uses `LLM_MODEL`; keep
+  the two equal or a script's recorded model will not be the one that wrote it.
 
 ## Clerk Local Setup
 

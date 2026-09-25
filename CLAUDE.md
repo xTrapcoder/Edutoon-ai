@@ -74,16 +74,25 @@ unsupported claims ever reach the script or the screen.
 
 ## Current phase
 
-**Phase 5 — topic understanding.** Delivered so far: auth, projects, PDF
-upload and parsing, the Evidence Engine (claim verification), script generation
-and approval, the background worker, and topic extraction — topics from a PDF,
-from the user's keywords, or both, each with cited source pages
-(migrations 0001–0009; API in `apps/api/README.md`, "Topic understanding").
+**Phase 5 — topic understanding: code-complete for everything that can be
+verified without provider credentials** (final provider-independent review done;
+checkpoint tag `phase5-code-complete`). Delivered: auth, projects, PDF upload and
+parsing, the Evidence Engine (claim verification), script generation and approval,
+the background worker, and topic extraction — topics from a PDF, from the user's
+keywords, or both, each with cited source pages (migrations 0001–0009; API in
+`apps/api/README.md`, "Topic understanding").
+
+**Pending real-provider verification when company API keys become available**
+(nothing below is verified; see `apps/api/README.md`, "Testing, and what is not yet
+verified against a real provider"): the keys and model availability
+(`LLM_MODEL`, `EMBEDDING_MODEL`), keywords-only extraction, long-PDF extraction,
+`apps/api/scripts/smoke_test_phase4.py` run unmodified, and the real quality,
+latency and token behaviour of the prompts. No test calls a provider; those that
+involve one carry `pytest.mark.provider_mocked`.
 
 Not built yet: turning topics into candidate claims, voice/TTS, animation,
-rendering and the front end. Real-provider verification (OpenAI/Anthropic) is
-on hold until API keys are available — every test mocks the network call, so
-the prompts have not been tried against a live model.
+rendering and the front end. **Phase 6 has not started and needs the owner's
+explicit approval.**
 
 ## Commands
 
