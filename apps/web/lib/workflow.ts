@@ -4,8 +4,10 @@ import { isActiveJob, latestJobOfKind } from '@/lib/jobs';
 /**
  * Where a project is in its journey, worked out from what the API actually returns.
  *
- * The API's own `projects.status` is not used: nothing moves it off `draft`. The stage comes from
- * the project's sources, topics, jobs and scripts instead, so it is always what is really stored.
+ * The API's `projects.status` (draft / processing / ready / failed / archived) is only a coarse
+ * roll-up of the pipeline's latest outcome. It cannot say *which* step a project is at - topics
+ * extracted, script drafted, script approved - so the stage comes from the project's sources,
+ * topics, jobs and scripts instead, so it is always what is really stored.
  * Pass what you have; a missing list is treated as "not known yet" and never as "empty".
  */
 

@@ -67,6 +67,64 @@ To support another language, add it to `src/edutoon/domain/generation_settings.p
 it a writing style in `providers/llm.py` (`test_every_supported_language_has_a_writing_style`
 fails until it has one) and widen `ck_projects_language` in a new migration.
 
+## Project status
+
+`projects.status` is a roll-up of where the project's pipeline has got to. Nobody sets it -
+a request that sends a `status` is a `422` - it follows the work done for the project, and
+`edutoon.domain.project_status` is the one place that says how:
+
+| Status       | Meaning                                                                                         |
+| ------------ | ----------------------------------------------------------------------------------------------- |
+| `draft`      | Nothing has run yet. Every project starts here.                                                 |
+| `processing` | A job for the project is `queued` or `running`.                                                 |
+| `ready`      | Nothing is in flight and the most recent outcome was a success.                                 |
+| `failed`     | Nothing is in flight and the most recent outcome was a failure: a job failed, or a PDF could not be read. |
+| `archived`   | Set aside by its owner. The pipeline never moves a project out of it.                           |
+
+It describes the **latest outcome**, so it changes with the work: a `failed` project becomes
+`processing` when retried and `ready` when the retry succeeds; a `ready` one becomes
+`processing` the moment more work is queued. "Latest" is the most recently *finished* thing
+(a job's `finished_at`, or the time a PDF failed to parse), and a `cancelled` job is not an
+outcome. The rule ignores which job it is, so a stage added later needs no change to it.
+
+`repositories.projects.refresh_status` recomputes it, in the same transaction as the change
+that caused it, whenever a job is queued or ends (`repositories.jobs`: create, a terminal
+update, crash recovery) and whenever an uploaded PDF fails to parse
+(`repositories.uploaded_sources`). Those are the only writers of job and source state, so the
+API, the worker and recovery all move it without a call site to forget. Moving a job to
+`running` does not refresh it (nothing it looks at changes), which also keeps the project row
+lock out of a model call's transaction.
+
+- A project that already existed when this was added keeps `draft` until its next job is
+  queued or ends; there is no backfill.
+- A PDF that could not be read makes a project `failed` until something finishes after it -
+  the status describes the pipeline, not whether the project is still usable (topics from an
+  earlier PDF are untouched).
+- The status says nothing about what is stored: scripts and topics have their own statuses.
+
+## Deleting a project
+
+`DELETE /v1/projects/{id}` removes the project and, through `ON DELETE CASCADE`, its sources,
+topics, jobs, claims and scripts. It also removes the PDFs the project uploaded from object
+storage, which the rows only pointed at. The order matters, because the database is the record
+of what exists:
+
+1. The deletion is committed first (with the idempotent response, as for every mutating route).
+2. Only then are the files removed, one by one, by `services.projects.remove_stored_files`.
+
+So a deletion that fails or rolls back leaves its files in place, and a project is never left
+pointing at a file that is gone. A file that cannot be removed (storage down) is logged as
+`project.file_cleanup_failed` with its bucket and key and does not fail the request - the
+project is deleted either way, and the log line is what to clean up by hand. A replay of the
+same request removes nothing twice.
+
+Only files inside the project's own storage prefix (`projects/{project_id}/`, see
+`domain.source_storage`) are removed, and only the exact objects its rows name - nothing is
+found by listing a prefix, and a row that points anywhere else is skipped and logged
+(`project.file_cleanup_skipped`). Another project's identical PDF is a different object.
+Known limit: if the process dies between the commit and the cleanup, the files are orphaned; an
+upload racing a deletion of the same project can leave one too.
+
 ## Job worker
 
 Routes only ever *enqueue* a `jobs` row (indexing, topic extraction, script
@@ -269,6 +327,22 @@ both), so set them up before running `make dev`.
    CLERK_ISSUER=https://your-app-name-12.clerk.accounts.dev
    CLERK_JWKS_URL=https://your-app-name-12.clerk.accounts.dev/.well-known/jwks.json
    ```
+
+6. **Give the web app the same instance.** Copy the **Publishable key** and **Secret key**
+   from the same page into `apps/web/.env.local` (`NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` and
+   `CLERK_SECRET_KEY`; the file is git-ignored - copy `.env.local.example` if it is missing).
+   Keep the secret key out of chat, commits and screenshots.
+7. **Check it.** From `apps/api`:
+   ```bash
+   uv run python scripts/check_clerk.py
+   ```
+   It reads both env files and says in words what is wrong: a placeholder left in, keys from
+   different Clerk instances, a test key paired with a live one, an unreachable JWKS URL. It
+   never prints a secret. Then sign in through the web app; a dashboard that loads (rather
+   than "Your session has ended") means the API accepted the token. To see *why* a token is
+   rejected - expired, wrong issuer, missing `email` claim - pipe one in without putting it on
+   a command line: `await window.Clerk.session.getToken()` in the signed-in app's browser
+   console, then `uv run python scripts/check_clerk.py --token-stdin` and paste it.
 
 Neither value is a secret key — they're derived from your instance's public
 Frontend API URL, safe to share within the team (just not worth committing,

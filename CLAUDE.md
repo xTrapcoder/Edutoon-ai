@@ -76,6 +76,11 @@ unsupported claims ever reach the script or the screen.
   `target_duration_ms` (integer milliseconds, 1 to 60 minutes) - with their
   vocabulary and limits in `edutoon.domain.generation_settings` (migrations
   0010, 0011).
+- `projects.status` is derived, never set by a client: `edutoon.domain.project_status` is the
+  rule and `projects.refresh_status` applies it whenever a job is queued or ends or a PDF fails
+  to parse (`apps/api/README.md`, "Project status"). Deleting a project removes its uploaded PDFs
+  from object storage after the deletion commits (`services.projects.remove_stored_files`;
+  "Deleting a project").
 
 ## Current phase
 
@@ -95,9 +100,15 @@ verified against a real provider"): the keys and model availability
 latency and token behaviour of the prompts. No test calls a provider; those that
 involve one carry `pytest.mark.provider_mocked`.
 
-Not built yet: turning topics into candidate claims, voice/TTS, animation,
-rendering and the front end. **Phase 6 has not started and needs the owner's
-explicit approval.**
+**The web front end is built** (`apps/web`, see its README): landing, Clerk sign-in,
+dashboard, project list, create-project wizard, project workspace, topic review with
+evidence, script review and approval. It uses only what the API does today, so the Script
+step shows "Verification required" until a project has a supported claim (nothing yet
+turns topics into claims). Real Clerk sign-in is **unverified** - the Clerk keys are
+placeholders - as are the real providers.
+
+Not built yet: turning topics into candidate claims, voice/TTS, animation, rendering.
+**Phase 6 has not started and needs the owner's explicit approval.**
 
 ## Commands
 
@@ -108,15 +119,22 @@ make migrate         # alembic upgrade head
 make migrate-create name="..."   # new migration
 make migrate-down    # alembic downgrade -1
 make history         # migration history + current revision
-make test            # run the test suites
+make test            # run the test suites (API and web)
 make lint            # lint TypeScript and Python
+make contracts       # regenerate packages/contracts (openapi.json + TypeScript types) after an API change
+make contracts-check # fail if the committed contract is stale
 ```
+
+The web app needs **Node >= 22** (`.nvmrc`, `engines`) and pnpm through Corepack. API shapes
+in TypeScript are generated from the API's OpenAPI document (`@edutoon/contracts`); never
+hand-write one. `apps/web/README.md` has the rules the front end holds to, and how to run
+its dev-only UI QA mode (mock API and Clerk stub, never enabled in a build).
 
 ## Layout
 
 ```
 apps/
-  web/        Next.js 15 front end
+  web/        Next.js 15 front end (README.md explains it)
   api/        FastAPI service (uv, src/edutoon)
     src/edutoon/          api/ (routers, schemas) · services/ · domain/ (pure) ·
                           repositories/ · providers/ · worker/ · db/ · core/
@@ -125,7 +143,7 @@ apps/
   render/     Remotion render worker — not yet initialised
 packages/
   config/     shared TS config (@edutoon/config)
-  contracts/  shared TS contracts/types (@edutoon/contracts)
+  contracts/  API contract: openapi.json + generated TS types (@edutoon/contracts)
 infra/
   docker/     container bootstrap (Postgres init SQL, etc.)
 ```

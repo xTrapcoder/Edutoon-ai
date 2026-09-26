@@ -83,9 +83,10 @@ test-support/             UI QA tooling (mock API, Clerk stub) - never part of a
 
 ### Project stage
 
-`projects.status` never changes from `draft` in the API today, so the stage is derived
-(`lib/workflow.ts`) from the project's sources, topics, jobs and scripts. A project _list_ row fetches
-two small lists (jobs and scripts) per row shown. If the list grows, a server-side stage on
+`projects.status` is a coarse roll-up of the pipeline (draft, processing, ready, failed, archived; see
+"Project status" in `apps/api/README.md`). It cannot say which step a project is at, so the stage is
+derived (`lib/workflow.ts`) from the project's sources, topics, jobs and scripts. A project _list_ row
+fetches two small lists (jobs and scripts) per row shown. If the list grows, a server-side stage on
 `GET /v1/projects` would remove those requests; that is a backend change and has not been made.
 
 ## The script step, and what the API does not do yet
