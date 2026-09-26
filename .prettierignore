@@ -4,3 +4,5 @@ dist
 .turbo
 pnpm-lock.yaml
 apps/api
+packages/contracts/openapi.json
+packages/contracts/src/schema.d.ts

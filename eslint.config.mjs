@@ -11,6 +11,9 @@ export default tseslint.config(
       '**/.next/**',
       '**/dist/**',
       '**/.turbo/**',
+      // Generated: Next.js rewrites next-env.d.ts, openapi-typescript writes the contract types.
+      '**/next-env.d.ts',
+      'packages/contracts/src/schema.d.ts',
       'apps/api/**',
       'apps/parser/**',
       'apps/render/**',
