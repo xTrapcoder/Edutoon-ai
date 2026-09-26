@@ -48,6 +48,7 @@ worker: ## Run the background job worker on its own (polls jobs, dispatches to e
 
 test: ## Run the test suites
 	cd apps/api && uv run pytest
+	pnpm --filter @edutoon/web test
 
 contracts: ## Regenerate the API contract (openapi.json) and the TypeScript types generated from it
 	cd apps/api && uv run python scripts/export_openapi.py
