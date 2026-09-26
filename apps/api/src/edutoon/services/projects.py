@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 from uuid import UUID
 
+import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from edutoon.core.errors import NotFoundError
@@ -14,8 +16,14 @@ from edutoon.domain.generation_settings import (
     Language,
     Orientation,
 )
+from edutoon.domain.source_storage import belongs_to_project
+from edutoon.providers.storage import Storage
 from edutoon.repositories import projects as projects_repo
+from edutoon.repositories import uploaded_sources as uploaded_sources_repo
 from edutoon.repositories.projects import ProjectRecord as ProjectRecord
+from edutoon.repositories.uploaded_sources import StorageLocation as StorageLocation
+
+log = structlog.get_logger()
 
 
 async def create_project(
@@ -81,7 +89,60 @@ async def update_project(
     return project
 
 
-async def delete_project(session: AsyncSession, *, project_id: UUID, owner_id: UUID) -> None:
+async def delete_project(
+    session: AsyncSession, *, project_id: UUID, owner_id: UUID
+) -> list[StorageLocation]:
+    """Delete the project and everything the database holds under it (sources, topics, jobs,
+    scripts - all ``ON DELETE CASCADE``), and return where its uploaded files were stored.
+
+    The files themselves are **not** touched here. Removing them is a separate step,
+    :func:`remove_stored_files`, that the caller runs *after* this deletion is committed: the
+    database is the record of what exists, so it must be the thing that changes first. The
+    other order risks a project whose deletion fails or rolls back but whose PDF is already
+    gone; this order can at worst leave an orphaned file, which harms no one.
+
+    Raises :class:`~edutoon.core.errors.NotFoundError` if the project is missing or not owned
+    (rule 9). The deletion is scoped to the owner, so a caller who does not own the project
+    deletes nothing, and no file locations are returned for anyone to remove.
+    """
+    files = await uploaded_sources_repo.list_storage_locations(session, project_id)
     deleted = await projects_repo.delete(session, project_id=project_id, owner_id=owner_id)
     if not deleted:
         raise NotFoundError(f"Project {project_id} not found.")
+    return files
+
+
+async def remove_stored_files(
+    storage: Storage, *, project_id: UUID, files: Sequence[StorageLocation]
+) -> None:
+    """Remove a deleted project's uploaded files from object storage. Never raises.
+
+    Called after the project's deletion has been committed, so the project is gone whatever
+    happens here. Each file is removed on its own: one that cannot be removed is logged (with
+    its bucket and key, so it can be cleaned up by hand) and does not stop the rest. Removing
+    an object that is already gone succeeds, so running this twice is harmless.
+
+    Only files inside the project's own storage prefix are touched (``belongs_to_project``):
+    a row that somehow points elsewhere is skipped and logged, never deleted. Nothing is ever
+    found by listing a prefix; only the exact objects this project's rows named are removed.
+    """
+    for file in files:
+        if not belongs_to_project(file.key, project_id):
+            log.warning(
+                "project.file_cleanup_skipped",
+                project_id=str(project_id),
+                bucket=file.bucket,
+                key=file.key,
+                reason="outside the project's storage prefix",
+            )
+            continue
+        try:
+            await storage.delete_object(bucket=file.bucket, key=file.key)
+        except Exception as exc:  # noqa: BLE001 - cleanup after a committed delete must not fail it
+            log.warning(
+                "project.file_cleanup_failed",
+                project_id=str(project_id),
+                bucket=file.bucket,
+                key=file.key,
+                error=str(exc),
+            )

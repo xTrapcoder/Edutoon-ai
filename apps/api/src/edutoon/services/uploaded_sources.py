@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from edutoon.core.errors import NotFoundError
 from edutoon.core.pagination import Page
+from edutoon.domain.source_storage import source_storage_key
 from edutoon.providers import pdf
 from edutoon.providers.storage import Storage
 from edutoon.repositories import uploaded_sources as uploaded_sources_repo
@@ -50,7 +51,7 @@ async def upload_source(
     downstream.
     """
     checksum = hashlib.sha256(content).hexdigest()
-    storage_key = f"projects/{project_id}/{checksum}.pdf"
+    storage_key = source_storage_key(project_id, checksum)
 
     await storage.put_object(
         bucket=bucket, key=storage_key, body=content, content_type=content_type

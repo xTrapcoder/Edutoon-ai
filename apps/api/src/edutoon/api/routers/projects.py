@@ -19,7 +19,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from edutoon.api.dependencies import IdempotencyKey, RedisDep, get_current_user
+from edutoon.api.dependencies import IdempotencyKey, RedisDep, StorageDep, get_current_user
 from edutoon.api.schemas.projects import (
     ProjectCreateRequest,
     ProjectListResponse,
@@ -30,6 +30,7 @@ from edutoon.core.pagination import DEFAULT_PAGE_SIZE
 from edutoon.db.session import get_session
 from edutoon.services import idempotency as idempotency_service
 from edutoon.services import projects as projects_service
+from edutoon.services.projects import StorageLocation
 from edutoon.services.users import UserRecord
 
 router = APIRouter(prefix="/projects", tags=["projects"])
@@ -137,11 +138,16 @@ async def delete_project(
     current_user: CurrentUser,
     session: Session,
     redis: RedisDep,
+    storage: StorageDep,
     idempotency_key: IdempotencyKey,
 ) -> None:
+    stored_files: list[StorageLocation] = []
+
     async def _execute() -> tuple[int, Any]:
-        await projects_service.delete_project(
-            session, project_id=project_id, owner_id=current_user.id
+        stored_files.extend(
+            await projects_service.delete_project(
+                session, project_id=project_id, owner_id=current_user.id
+            )
         )
         return status.HTTP_204_NO_CONTENT, None
 
@@ -153,4 +159,11 @@ async def delete_project(
         idempotency_key=idempotency_key,
         handler=_execute,
         commit=session.commit,
+    )
+
+    # Only now - the deletion is committed - are the project's uploaded files removed. A replay
+    # of this request does not run ``_execute``, so ``stored_files`` is empty and nothing is
+    # removed twice; a failure to remove a file is logged, never surfaced (the project is gone).
+    await projects_service.remove_stored_files(
+        storage, project_id=project_id, files=stored_files
     )

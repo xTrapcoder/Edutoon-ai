@@ -26,6 +26,7 @@ from edutoon.db.session import get_session
 from edutoon.main import create_app
 from edutoon.providers import clerk
 from edutoon.providers.cache import get_redis_client
+from edutoon.providers.storage import get_storage_client
 from edutoon.repositories import users as users_repo
 from tests.idempotency_helpers import INVALID_KEYS, idempotency_status
 
@@ -75,10 +76,16 @@ async def client_factory(db_session) -> AsyncIterator[Callable[[], httpx.AsyncCl
         yield db_session
 
     app.dependency_overrides[get_session] = _session_override
-    # ASGITransport never runs the app's lifespan, so app.state.redis - which
-    # the idempotency dependency reads - is set here exactly as lifespan()
-    # would have set it.
-    app.state.redis = get_redis_client(get_settings().REDIS_URL)
+    # ASGITransport never runs the app's lifespan, so app.state.redis and app.state.storage
+    # - which the idempotency dependency and the delete route (it removes the project's
+    # uploaded files) read - are set here exactly as lifespan() would have set them.
+    settings = get_settings()
+    app.state.redis = get_redis_client(settings.REDIS_URL)
+    app.state.storage = get_storage_client(
+        endpoint_url=settings.STORAGE_ENDPOINT_URL,
+        access_key_id=settings.STORAGE_ACCESS_KEY_ID,
+        secret_access_key=settings.STORAGE_SECRET_ACCESS_KEY,
+    )
 
     def _make() -> httpx.AsyncClient:
         return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")

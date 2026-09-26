@@ -43,7 +43,8 @@ export function DeleteProjectCard({ project }: { project: Project }) {
           <div>
             <h2 className="text-[15px] font-semibold text-ink-950">Delete this project</h2>
             <p className="mt-0.5 text-sm text-ink-500">
-              Removes the project and its topics, scripts and activity. This cannot be undone.
+              Removes the project, its uploaded PDF, topics, scripts and activity. This cannot be
+              undone.
             </p>
           </div>
           <Button
@@ -80,7 +81,7 @@ export function DeleteProjectCard({ project }: { project: Project }) {
           </Alert>
         ) : (
           <p className="text-sm text-ink-600">
-            Its topics, scripts and activity are deleted with it.
+            Its uploaded PDF, topics, scripts and activity are deleted with it.
           </p>
         )}
       </Modal>
