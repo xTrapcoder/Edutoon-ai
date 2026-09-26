@@ -9,6 +9,15 @@ uv run uvicorn edutoon.main:app --reload --port 8000
 
 Requires the environment variables listed in the repository root `.env.example`.
 
+## API contract for the front end
+
+`scripts/export_openapi.py` writes this API's OpenAPI document to
+`packages/contracts/openapi.json`, and the web app generates its TypeScript types from that
+file (`make contracts`; `make contracts-check` fails if it is stale). It only builds the app
+object - it needs no database, Redis, Clerk or provider keys. Note that the document still
+declares FastAPI's default `{"detail": ...}` body for 422s, while the API actually answers with
+`{"error": {"code", "message", "details"?}}`; clients should read errors from the latter.
+
 ## Mutating routes
 
 Every `POST` / `PATCH` / `DELETE` requires an `Idempotency-Key` header of 1 to 255

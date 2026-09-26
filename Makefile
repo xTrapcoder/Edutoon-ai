@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help install up down reset migrate migrate-create migrate-down history seed dev worker test lint format typecheck
+.PHONY: help install up down reset migrate migrate-create migrate-down history seed dev worker test lint format typecheck contracts contracts-check
 
 help: ## List available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -48,6 +48,15 @@ worker: ## Run the background job worker on its own (polls jobs, dispatches to e
 
 test: ## Run the test suites
 	cd apps/api && uv run pytest
+
+contracts: ## Regenerate the API contract (openapi.json) and the TypeScript types generated from it
+	cd apps/api && uv run python scripts/export_openapi.py
+	pnpm --filter @edutoon/contracts generate
+
+contracts-check: ## Fail if the committed API contract or generated types are stale
+	cd apps/api && uv run python scripts/export_openapi.py --check
+	pnpm --filter @edutoon/contracts generate
+	git diff --exit-code -- packages/contracts
 
 # Python is type-checked on the package (`src`) only - that is what [tool.mypy] in
 # apps/api/pyproject.toml targets. `mypy .` also strict-checks the test suite,
