@@ -45,7 +45,7 @@ LIMITS = TopicLimits(
     max_keyword_chars=20,
     max_evidence_per_topic=3,
 )
-BRIEF = TopicBrief(subject="How photosynthesis works")
+BRIEF = TopicBrief(subject="How photosynthesis works", language="en-IN")
 
 
 # --- builders -------------------------------------------------------------------------
@@ -453,6 +453,33 @@ async def test_a_seed_link_to_a_user_topic_that_was_not_supplied_is_dropped(monk
     draft, _ = await _extract(llm, seeds=seeds)
 
     assert [n.seed_ref for n in draft.nodes] == ["s1", None]
+
+
+@pytest.mark.parametrize(
+    ("language", "asked_for", "not_asked_for"),
+    [
+        ("en-IN", "Indian English", "British English"),
+        ("en-GB", "British English", "Indian English"),
+    ],
+)
+async def test_the_request_asks_for_the_language_the_brief_names(
+    monkeypatch, language, asked_for, not_asked_for
+):
+    llm, create = _llm(monkeypatch, {"topics": []})
+
+    await _extract(
+        llm,
+        seeds=[TopicSeed(ref="s1", title="Chlorophyll")],
+        brief=TopicBrief(subject="Plants", language=language),
+    )
+
+    message = _user_message(create)
+    assert f"Language: {language}" in message
+    assert asked_for in message
+    assert not_asked_for not in message
+    # The system prompt is not tied to a language: it defers to the request's own lines.
+    system = _request(create)["system"]
+    assert "British English" not in system and "Indian English" not in system
 
 
 # --- PDF only ------------------------------------------------------------------------------

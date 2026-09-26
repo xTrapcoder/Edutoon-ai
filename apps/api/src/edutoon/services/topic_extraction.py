@@ -99,14 +99,13 @@ STALE_EXTRACTION_ERROR = (
 _USER_ORIGIN = project_topics_repo.USER_ORIGIN
 _REJECTED = "rejected"
 
-# A project's title, description and language are free text with no stored length
-# limit, and they reach the prompt *outside* the passage budget. Bounding what is
-# sent keeps the input size - and so the cost of one extraction - bounded by
-# settings and these constants whatever a project holds. It is prompt context
-# only: nothing stored is shortened.
+# A project's title and description are free text with no stored length limit, and
+# they reach the prompt *outside* the passage budget. Bounding what is sent keeps
+# the input size - and so the cost of one extraction - bounded by settings and these
+# constants whatever a project holds. It is prompt context only: nothing stored is
+# shortened. (The language is one of a few supported tags, so it needs no bound.)
 _BRIEF_SUBJECT_MAX_CHARS = 300
 _BRIEF_DESCRIPTION_MAX_CHARS = 2_000
-_BRIEF_LANGUAGE_MAX_CHARS = 35  # the longest well-formed BCP 47 tag
 
 
 @dataclass(frozen=True, slots=True)
@@ -453,7 +452,7 @@ def _brief_for(project: ProjectRecord) -> TopicBrief:
     return TopicBrief(
         subject=_clip(project.title, _BRIEF_SUBJECT_MAX_CHARS),
         description=description or None,
-        language=_clip(project.language, _BRIEF_LANGUAGE_MAX_CHARS),
+        language=project.language,
     )
 
 

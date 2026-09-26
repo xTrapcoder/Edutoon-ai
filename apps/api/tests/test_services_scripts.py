@@ -76,10 +76,10 @@ def _llm_raising(monkeypatch: Any, exc: Exception) -> LLM:
     return llm
 
 
-async def _make_project(db_session, *, title: str = "Photosynthesis"):
+async def _make_project(db_session, *, title: str = "Photosynthesis", **project_fields: Any):
     owner = await users_repo.create(db_session, email=f"{uuid4()}@example.com")
     project = await projects_repo.create(
-        db_session, owner_id=owner.id, title=title, source_type="pdf"
+        db_session, owner_id=owner.id, title=title, source_type="pdf", **project_fields
     )
     return owner, project
 
@@ -285,6 +285,41 @@ async def test_run_produces_a_draft_from_the_supported_claims(db_session, monkey
         db_session, project_id=project.id, script_segment_id=segments[1].id
     )
     assert [c.claim_verification_id for c in second_links] == [claims[0].id]
+
+
+@pytest.mark.parametrize(
+    ("language", "asked_for", "not_asked_for"),
+    [
+        ("en-IN", "Indian English", "British English"),
+        ("en-GB", "British English", "Indian English"),
+    ],
+)
+async def test_run_writes_the_script_in_the_projects_own_language(
+    db_session, monkeypatch, language, asked_for, not_asked_for
+):
+    """The stored ``projects.language`` is the only thing that picks the language: it
+    flows project -> service -> ``ScriptBrief`` -> the prompt the client really sends.
+    """
+    owner, project = await _make_project(db_session, language=language)
+    claims = await _add_supported_claims(db_session, project, ["Plants convert light to energy."])
+    enq = await scripts_service.enqueue_script_generation(
+        db_session, project_id=project.id, owner_id=owner.id, idempotency_key="language-key"
+    )
+    llm = _fake_llm(
+        monkeypatch,
+        [{"narration_text": "Plants turn light into energy.", "claim_ids": [str(claims[0].id)]}],
+    )
+    create = llm._client.messages.create  # the double _fake_llm put on the real client
+
+    job = await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
+
+    assert job.status == "succeeded"
+    request = create.await_args.kwargs
+    content = request["messages"][0]["content"]
+    assert f"Language: {language}" in content
+    assert asked_for in content
+    assert not_asked_for not in content
+    assert "British English" not in request["system"]
 
 
 async def test_run_marks_job_and_script_failed_on_a_provider_error(db_session, monkeypatch):

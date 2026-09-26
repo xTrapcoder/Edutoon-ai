@@ -33,6 +33,7 @@ from typing import Literal, cast
 from anthropic import AsyncAnthropic
 from anthropic.types import MessageParam, ToolChoiceToolParam, ToolParam, ToolUseBlock
 
+from edutoon.domain.generation_settings import Language
 from edutoon.domain.script import ScriptDraft, ScriptSegmentDraft
 from edutoon.domain.topic import (
     InputMode,
@@ -107,6 +108,33 @@ def _format_passages(passages: list[Passage]) -> str:
     return "\n\n".join(f"[{passage.id}]\n{passage.content}" for passage in passages)
 
 
+# --- Writing language (script composition and topic extraction) ----------------
+
+# How each supported project language is put to the model. The project's stored
+# ``language`` is the only input: it selects one of these fixed sentences, and the
+# system prompts point at the request's "Writing style" line instead of naming a
+# language themselves, so no prompt is tied to a single one. Every language in
+# ``domain.generation_settings.SUPPORTED_LANGUAGES`` must have an entry (a test
+# holds that), so adding a language cannot silently fall back to another.
+_LANGUAGE_STYLE: dict[Language, str] = {
+    "en-IN": (
+        "Write in Indian English, using British spelling as is standard in India, "
+        "in clear language appropriate for Indian students."
+    ),
+    "en-GB": "Write in British English.",
+}
+
+
+def _language_lines(language: Language) -> list[str]:
+    """The ``Language`` and ``Writing style`` lines a request carries. Raises
+    ``ValueError`` for a language with no style, before any API call is made.
+    """
+    style = _LANGUAGE_STYLE.get(language)
+    if style is None:
+        raise ValueError(f"No writing style is defined for language {language!r}.")
+    return [f"Language: {language}", f"Writing style: {style}"]
+
+
 # --- Script composition (SG-2) -----------------------------------------------
 
 _SCRIPT_TOOL_NAME = "submit_script"
@@ -119,7 +147,8 @@ _SCRIPT_SYSTEM_PROMPT = (
     "a single spoken passage. For every segment, list the ids of the claims "
     "that segment's narration draws on. A purely connective segment - an "
     "introduction, or a hand-off between topics - that asserts no fact of its "
-    "own may list no claim ids. Write in British English."
+    "own may list no claim ids. Write in the language and style given by the "
+    "request's Language and Writing style lines."
 )
 
 _SCRIPT_TOOL: ToolParam = {
@@ -174,11 +203,14 @@ class Claim:
 
 @dataclass(frozen=True, slots=True)
 class ScriptBrief:
-    """What the script should cover and how it should sound. Only ``topic``
-    is required; the optional fields are added to the prompt when present.
+    """What the script should cover and how it should sound. ``topic`` and
+    ``language`` are required - ``language`` is the project's stored language and
+    has no default, so a caller cannot forget it and get another language's
+    wording; the optional fields are added to the prompt when present.
     """
 
     topic: str
+    language: Language
     audience: str | None = None
     tone: str | None = None
     target_duration_ms: int | None = None
@@ -195,7 +227,7 @@ def _format_claims(claims: list[Claim]) -> str:
 
 
 def _format_brief(brief: ScriptBrief) -> str:
-    lines = [f"Topic: {brief.topic}"]
+    lines = [f"Topic: {brief.topic}", *_language_lines(brief.language)]
     if brief.audience:
         lines.append(f"Audience: {brief.audience}")
     if brief.tone:
@@ -310,7 +342,7 @@ Rules for every mode
 - Stay within the limits given. Prefer fewer, well-chosen topics to many thin ones.
 - evidence_chunk_ids may contain only ids of passages supplied in the user message, copied exactly as shown in the square brackets. Never invent, alter or guess an id. If you are not sure a passage supports a topic, do not cite it.
 - Summaries and keywords describe the topic and are unverified. Use only the supplied material and user topics; add nothing from outside them, and never present a summary as established fact.
-- Write titles, summaries and keywords in the language given (British English for en-GB).
+- Write titles, summaries and keywords in the language and style given by the Language and Writing style lines of the request.
 
 MODE pdf (passages only)
 - Every topic you return must cite at least one supplied passage in evidence_chunk_ids. Leave out any topic you cannot cite; never pad the outline.
@@ -440,14 +472,15 @@ def _topics_max_tokens(limits: TopicLimits) -> int:
 
 @dataclass(frozen=True, slots=True)
 class TopicBrief:
-    """What the outline is for. Only ``subject`` is required; ``description``
-    is added to the prompt when present. ``language`` is the language the
-    titles, summaries and keywords are written in.
+    """What the outline is for. ``subject`` and ``language`` are required;
+    ``description`` is added to the prompt when present. ``language`` is the
+    project's stored language, the one the titles, summaries and keywords are
+    written in; it has no default, so a caller cannot forget it.
     """
 
     subject: str
+    language: Language
     description: str | None = None
-    language: str = "en-GB"
 
 
 def _format_pages(passage: SourcePassage) -> str:
@@ -494,7 +527,7 @@ def _format_topic_request(
     header = [f"Subject: {brief.subject}"]
     if brief.description:
         header.append(f"Description: {brief.description}")
-    header.append(f"Language: {brief.language}")
+    header.extend(_language_lines(brief.language))
     header.append(f"Mode: {mode}")
     header.append(_format_topic_limits(limits))
 

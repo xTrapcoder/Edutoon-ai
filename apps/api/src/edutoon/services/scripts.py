@@ -228,7 +228,7 @@ async def _generate_and_attach(
     claims = [Claim(id=str(v.id), text=v.claim_text) for v in citeable]
     supported_claim_ids = {v.id for v in citeable}
 
-    brief = ScriptBrief(topic=project.title)
+    brief = ScriptBrief(topic=project.title, language=project.language)
     draft, usage = await llm.compose_script(
         brief,
         claims,

@@ -39,9 +39,9 @@ def test_the_minimum_is_positive_so_zero_and_negative_durations_are_out_of_range
     assert 0 < gs.MIN_TARGET_DURATION_MS < gs.MAX_TARGET_DURATION_MS
 
 
-def test_the_defaults_are_horizontal_en_gb_and_five_minutes() -> None:
+def test_the_defaults_are_horizontal_en_in_and_five_minutes() -> None:
     assert gs.DEFAULT_ORIENTATION == "horizontal"
-    assert gs.DEFAULT_LANGUAGE == "en-GB"
+    assert gs.DEFAULT_LANGUAGE == "en-IN"
     assert gs.DEFAULT_TARGET_DURATION_MS == 300_000
 
 

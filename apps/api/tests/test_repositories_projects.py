@@ -21,7 +21,7 @@ async def test_create_and_get_by_id(db_session):
 
     assert project.owner_id == owner.id
     assert project.status == "draft"
-    assert project.language == "en-GB"
+    assert project.language == "en-IN"
     assert await projects_repo.get_by_id(db_session, project.id) == project
 
 
@@ -102,12 +102,12 @@ async def test_create_without_settings_takes_the_defaults(db_session):
 
     assert project.orientation == "horizontal"
     assert project.target_duration_ms == 300_000
-    assert project.language == "en-GB"
+    assert project.language == "en-IN"
     stored = await _stored_settings(db_session, project.id)
     assert (stored.orientation, stored.target_duration_ms, stored.language) == (
         "horizontal",
         300_000,
-        "en-GB",
+        "en-IN",
     )
 
 
@@ -119,20 +119,20 @@ async def test_create_persists_the_settings_it_is_given(db_session):
         owner_id=owner.id,
         title="Portrait explainer",
         source_type="pdf",
-        language="en-IN",
+        language="en-GB",
         orientation="vertical",
         target_duration_ms=1_800_000,
     )
 
     assert project.orientation == "vertical"
     assert project.target_duration_ms == 1_800_000
-    assert project.language == "en-IN"
+    assert project.language == "en-GB"
     assert await projects_repo.get_by_id(db_session, project.id) == project
     stored = await _stored_settings(db_session, project.id)
     assert (stored.orientation, stored.target_duration_ms, stored.language) == (
         "vertical",
         1_800_000,
-        "en-IN",
+        "en-GB",
     )
 
 
@@ -167,21 +167,21 @@ async def test_update_persists_every_setting_together(db_session):
         owner_id=owner.id,
         orientation="vertical",
         target_duration_ms=3_600_000,
-        language="en-IN",
+        language="en-GB",
     )
 
     assert updated is not None
     assert (updated.orientation, updated.target_duration_ms, updated.language) == (
         "vertical",
         3_600_000,
-        "en-IN",
+        "en-GB",
     )
     assert await projects_repo.get_by_id_for_owner(db_session, project.id, owner.id) == updated
     stored = await _stored_settings(db_session, project.id)
     assert (stored.orientation, stored.target_duration_ms, stored.language) == (
         "vertical",
         3_600_000,
-        "en-IN",
+        "en-GB",
     )
 
 

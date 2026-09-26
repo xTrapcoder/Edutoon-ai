@@ -71,9 +71,11 @@ unsupported claims ever reach the script or the screen.
   and — Phase 5 — `project_topics` (a tree; `origin` is `source` / `user` /
   `suggested`, plus `keywords`) and `topic_citations` (topic → source chunk,
   cascading, regenerable). `projects` also carries the generation settings later
-  phases read - `language`, `orientation` and `target_duration_ms` (integer
-  milliseconds, 1 to 60 minutes) - with their vocabulary and limits in
-  `edutoon.domain.generation_settings` (migration 0010).
+  phases read - `language` (`en-IN` by default, `en-GB` also supported; it selects
+  the writing style of the script and topic prompts), `orientation` and
+  `target_duration_ms` (integer milliseconds, 1 to 60 minutes) - with their
+  vocabulary and limits in `edutoon.domain.generation_settings` (migrations
+  0010, 0011).
 
 ## Current phase
 
@@ -82,7 +84,7 @@ verified without provider credentials** (final provider-independent review done;
 checkpoint tag `phase5-code-complete`). Delivered: auth, projects, PDF upload and
 parsing, the Evidence Engine (claim verification), script generation and approval,
 the background worker, and topic extraction — topics from a PDF, from the user's
-keywords, or both, each with cited source pages (migrations 0001–0010; API in
+keywords, or both, each with cited source pages (migrations 0001–0011; API in
 `apps/api/README.md`, "Topic understanding").
 
 **Pending real-provider verification when company API keys become available**
@@ -118,7 +120,7 @@ apps/
   api/        FastAPI service (uv, src/edutoon)
     src/edutoon/          api/ (routers, schemas) · services/ · domain/ (pure) ·
                           repositories/ · providers/ · worker/ · db/ · core/
-    alembic/              migration environment + versions/0001..0010
+    alembic/              migration environment + versions/0001..0011
   parser/     PDF/topic parser — not yet initialised
   render/     Remotion render worker — not yet initialised
 packages/

@@ -1417,7 +1417,40 @@ async def test_an_ordinary_project_brief_is_sent_unchanged(db_session, monkeypat
     message = _user_message(create)
     assert "Subject: How photosynthesis works" in message
     assert "Description: A short explainer for year 9." in message
-    assert "Language: en-GB" in message
+    assert "Language: en-IN" in message  # the default: this project named none
+
+
+@pytest.mark.parametrize(
+    ("language", "asked_for", "not_asked_for"),
+    [
+        ("en-IN", "Indian English", "British English"),
+        ("en-GB", "British English", "Indian English"),
+    ],
+)
+async def test_the_prompt_is_written_for_the_projects_own_language(
+    db_session, monkeypatch, language, asked_for, not_asked_for
+):
+    """The stored ``projects.language`` is the only thing that picks the language the
+    topics are asked to be written in - it flows project -> service -> prompt.
+    """
+    owner = await users_repo.create(db_session, email=f"{uuid4()}@example.com")
+    project = await projects_repo.create(
+        db_session,
+        owner_id=owner.id,
+        title="How photosynthesis works",
+        source_type="pdf",
+        language=language,
+    )
+    chunks = await _add_chunks(db_session, project, ["Plants make sugar."])
+    llm, create = _fake_llm(monkeypatch, [_topic("t1", "Sugar", evidence=(chunks[0].id,))])
+
+    job = await _extract(db_session, llm, owner, project)
+
+    assert job.status == "succeeded"
+    message = _user_message(create)
+    assert f"Language: {language}" in message
+    assert asked_for in message
+    assert not_asked_for not in message
 
 
 # --- what the owner is told when a job fails -----------------------------------------------

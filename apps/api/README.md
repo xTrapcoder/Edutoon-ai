@@ -22,8 +22,8 @@ that loses either guarantee.
 ## Project generation settings
 
 A project carries three settings that later phases (scene planning, narration,
-rendering) read to decide what to produce. They are columns on `projects` (migration
-`0010`), sent on `POST /v1/projects` and `PATCH /v1/projects/{id}` and returned by every
+rendering) read to decide what to produce. They are columns on `projects` (migrations
+`0010` and `0011`), sent on `POST /v1/projects` and `PATCH /v1/projects/{id}` and returned by every
 route that returns a project (`GET` one, `GET` the list, and both writes). Omit them on
 create and a project gets the defaults, so a client written before they existed keeps
 working; omit one on update and it is left as it is.
@@ -32,7 +32,7 @@ working; omit one on update and it is left as it is.
 | -------------------- | ------- | -------------------------------------------------- | -------------------- |
 | `orientation`        | string  | `horizontal` (landscape), `vertical` (portrait)    | `horizontal`         |
 | `target_duration_ms` | integer | `60000` to `3600000` inclusive (1 to 60 minutes)   | `300000` (5 minutes) |
-| `language`           | string  | `en-GB`, `en-IN` (an IETF BCP 47 tag)              | `en-GB`              |
+| `language`           | string  | `en-IN`, `en-GB` (an IETF BCP 47 tag)              | `en-IN`              |
 
 The duration is in milliseconds like every duration here, so it compares directly with a
 script's `estimated_duration_ms`. It must be a real integer: `"180000"`, `180000.0`,
@@ -41,12 +41,22 @@ script's `estimated_duration_ms`. It must be a real integer: `"180000"`, `180000
 `CHECK` constraints in the database, so nothing that skips the API can store a value the
 code does not expect.
 
-`language` is the column that already existed (it feeds topic extraction), now
-constrained; `en-GB` stays supported because every existing project holds it and it is
-the default. Migration `0010` resets any existing row holding some other value to
-`en-GB` (nothing ever acted on one); `downgrade` cannot restore it. To support another
-language, add it to `src/edutoon/domain/generation_settings.py` and widen
-`ck_projects_language` in a new migration - nothing else names a language.
+`language` is the column that already existed, now constrained. `en-IN` is the default
+(migration `0011` changes only the column default, so no existing row is rewritten);
+`en-GB` stays supported, and every project created while it was the default keeps it.
+Migration `0010` reset any row holding some other, never-validated value to `en-GB`;
+`downgrade` cannot restore it.
+
+**The stored language is what the model is asked to write in.** `projects.language` is
+the only source (never inferred from a user's text): the script job puts it on the
+`ScriptBrief`, topic extraction puts it on the `TopicBrief`, and both prompts carry a
+`Language:` line and a fixed `Writing style:` line for it (`en-IN`: Indian English, with
+British spelling, for Indian students; `en-GB`: British English). The system prompts name
+no language. The brief types have no default language, so a caller cannot forget it.
+
+To support another language, add it to `src/edutoon/domain/generation_settings.py`, give
+it a writing style in `providers/llm.py` (`test_every_supported_language_has_a_writing_style`
+fails until it has one) and widen `ck_projects_language` in a new migration.
 
 ## Job worker
 

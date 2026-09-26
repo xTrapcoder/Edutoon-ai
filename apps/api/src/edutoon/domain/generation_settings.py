@@ -20,11 +20,13 @@ can reach a CHECK.
 codebase (rule 5), so a target compares directly with a script's
 ``estimated_duration_ms``. It runs from one minute to sixty.
 
-**Language** is an IETF BCP 47 tag drawn from :data:`SUPPORTED_LANGUAGES`. To
-support another, add it here and widen ``ck_projects_language`` in a new
-migration; nothing else names a language. ``en-GB`` stays supported because it
-is the value every project held before this migration and the default for a
-caller that does not choose.
+**Language** is an IETF BCP 47 tag drawn from :data:`SUPPORTED_LANGUAGES`, and
+``en-IN`` is the default. To support another, add it here, widen
+``ck_projects_language`` in a new migration, and give it a writing style in
+``providers.llm`` (a test fails until it has one); nothing else names a language.
+``en-GB`` stays supported because every project created before ``en-IN`` became the
+default holds it. The language is what the script and topic prompts are written
+for - the stored value is the only source, never guessed from a user's text.
 """
 
 from __future__ import annotations
@@ -62,8 +64,8 @@ MAX_TARGET_DURATION_MS: Final = 60 * MS_PER_MINUTE
 
 # --- defaults ----------------------------------------------------------------------
 # What a project gets when its creator says nothing. The column defaults in
-# migration 0010 must agree; a test holds them to it.
+# migrations 0010 and 0011 must agree; a test holds them to it.
 
 DEFAULT_ORIENTATION: Final[Orientation] = ORIENTATION_HORIZONTAL
-DEFAULT_LANGUAGE: Final[Language] = LANGUAGE_EN_GB
+DEFAULT_LANGUAGE: Final[Language] = LANGUAGE_EN_IN
 DEFAULT_TARGET_DURATION_MS: Final = 5 * MS_PER_MINUTE

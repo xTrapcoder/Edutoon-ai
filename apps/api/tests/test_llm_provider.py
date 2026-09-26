@@ -15,6 +15,8 @@ import pytest
 from anthropic import AsyncAnthropic
 from anthropic.types import Message, ToolUseBlock, Usage
 
+import edutoon.providers.llm as llm_module
+from edutoon.domain.generation_settings import SUPPORTED_LANGUAGES
 from edutoon.providers.llm import (
     LLM,
     Claim,
@@ -138,7 +140,7 @@ def test_llm_model_property_reflects_construction():
 
 # --- compose_script (SG-2) -------------------------------------------------------
 
-BRIEF = ScriptBrief(topic="Photosynthesis", audience="GCSE students")
+BRIEF = ScriptBrief(topic="Photosynthesis", language="en-GB", audience="GCSE students")
 CLAIMS = [
     Claim(id="cl1", text="Plants convert light energy into chemical energy."),
     Claim(id="cl2", text="Chlorophyll absorbs mostly red and blue light."),
@@ -442,6 +444,7 @@ async def test_compose_script_puts_optional_brief_fields_in_the_prompt(monkeypat
     await llm.compose_script(
         ScriptBrief(
             topic="Photosynthesis",
+            language="en-IN",
             audience="GCSE students",
             tone="curious",
             target_duration_ms=90_000,
@@ -458,3 +461,65 @@ async def test_compose_script_puts_optional_brief_fields_in_the_prompt(monkeypat
     assert "curious" in content
     assert "90000" in content
     assert "[cl1]" in content and "[cl2]" in content
+
+
+# --- the language a script is written in --------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("language", "asked_for", "not_asked_for"),
+    [
+        ("en-IN", "Indian English", "British English"),
+        ("en-GB", "British English", "Indian English"),
+    ],
+)
+async def test_compose_script_asks_for_the_language_the_brief_names(
+    monkeypatch, language, asked_for, not_asked_for
+):
+    llm, create = _llm_for_script(
+        monkeypatch,
+        {"title": "T", "segments": [{"narration_text": "x.", "claim_ids": ["cl1"]}]},
+    )
+
+    await llm.compose_script(
+        ScriptBrief(topic="Photosynthesis", language=language),
+        CLAIMS,
+        max_segments=12,
+        max_claims=40,
+        words_per_minute=150,
+    )
+
+    request = create.await_args.kwargs
+    content = request["messages"][0]["content"]
+    assert f"Language: {language}" in content
+    assert asked_for in content
+    assert not_asked_for not in content
+    # The system prompt is not tied to a language: it defers to the request's own lines.
+    assert "British English" not in request["system"]
+    assert "Indian English" not in request["system"]
+
+
+def test_every_supported_language_has_a_writing_style():
+    """Adding a language to the domain without saying how to write it must fail here,
+    not fall back to some other language in production.
+    """
+    assert set(llm_module._LANGUAGE_STYLE) == SUPPORTED_LANGUAGES
+
+
+async def test_compose_script_rejects_a_language_with_no_style_without_calling_the_api(
+    monkeypatch,
+):
+    llm, create = _llm_for_script(
+        monkeypatch,
+        {"title": "T", "segments": [{"narration_text": "x.", "claim_ids": ["cl1"]}]},
+    )
+
+    with pytest.raises(ValueError, match="fr-FR"):
+        await llm.compose_script(
+            ScriptBrief(topic="Photosynthesis", language="fr-FR"),  # type: ignore[arg-type]
+            CLAIMS,
+            max_segments=12,
+            max_claims=40,
+            words_per_minute=150,
+        )
+    create.assert_not_called()

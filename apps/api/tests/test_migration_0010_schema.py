@@ -1,4 +1,4 @@
-"""Migration 0010's schema, checked against the live catalogue.
+"""Migration 0010's schema (and 0011's language default), checked against the live catalogue.
 
 The repositories deliberately turn any ``IntegrityError`` into a
 ``ConflictError``, which hides *which* constraint fired. These tests go around
@@ -7,8 +7,8 @@ itself - not merely in the API schemas a future caller might skip - and each
 expectation is taken from :mod:`edutoon.domain.generation_settings`, so the
 database and the code cannot quietly disagree about what a setting may hold.
 
-The upgrade and downgrade themselves are in
-``test_migration_0010_upgrade_downgrade.py``.
+The upgrades and downgrades themselves are in
+``test_migration_0010_upgrade_downgrade.py`` and ``test_migration_0011_language_default.py``.
 """
 
 from __future__ import annotations
@@ -85,12 +85,12 @@ async def test_target_duration_is_a_non_null_bigint_column_of_milliseconds(db_se
     assert column.column_default == str(gs.DEFAULT_TARGET_DURATION_MS)
 
 
-async def test_language_stays_a_non_null_text_column_defaulting_to_en_gb(db_session):
+async def test_language_stays_a_non_null_text_column_and_now_defaults_to_en_in(db_session):
     column = await _column(db_session, "language")
 
     assert column.data_type == "text"
     assert column.is_nullable == "NO"
-    assert "'en-GB'" in column.column_default
+    assert "'en-IN'" in column.column_default
 
 
 # --- defaults --------------------------------------------------------------------------

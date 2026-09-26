@@ -111,7 +111,7 @@ async def test_create_get_list_update_delete_round_trip(client_factory, auth_hea
         assert created["title"] == "My video"
         assert created["source_type"] == "topic"
         assert created["status"] == "draft"
-        assert created["language"] == "en-GB"
+        assert created["language"] == "en-IN"
         project_id = created["id"]
 
         get_resp = await client.get(f"/v1/projects/{project_id}", headers=headers)
@@ -700,7 +700,7 @@ async def test_a_project_created_without_settings_gets_the_defaults(client_facto
     for project in (created, fetched):
         assert project["orientation"] == "horizontal"
         assert project["target_duration_ms"] == 300_000
-        assert project["language"] == "en-GB"
+        assert project["language"] == "en-IN"
 
 
 async def test_the_exact_payload_existing_callers_send_still_works(client_factory, auth_headers):
@@ -722,7 +722,7 @@ async def test_the_exact_payload_existing_callers_send_still_works(client_factor
     assert body["source_type"] == "pdf"
     assert body["description"] == "As before"
     assert body["status"] == "draft"
-    assert body["language"] == "en-GB"
+    assert body["language"] == "en-IN"
     assert {"id", "owner_id", "created_at", "updated_at"} <= body.keys()
 
 
@@ -787,14 +787,14 @@ async def test_all_three_settings_can_be_given_together(client_factory, auth_hea
 
     async with client_factory() as client:
         response = await _create(
-            client, headers, orientation="vertical", language="en-IN", target_duration_ms=900_000
+            client, headers, orientation="vertical", language="en-GB", target_duration_ms=900_000
         )
 
     assert response.status_code == 201
     body = response.json()
     assert (body["orientation"], body["language"], body["target_duration_ms"]) == (
         "vertical",
-        "en-IN",
+        "en-GB",
         900_000,
     )
 
@@ -840,7 +840,7 @@ async def test_create_rejects_an_unsupported_language(client_factory, auth_heade
 
 async def test_a_replayed_create_returns_the_same_settings(client_factory, auth_headers):
     headers = {**auth_headers(), "Idempotency-Key": str(uuid4())}
-    payload = _create_payload(orientation="vertical", language="en-IN", target_duration_ms=120_000)
+    payload = _create_payload(orientation="vertical", language="en-GB", target_duration_ms=120_000)
 
     async with client_factory() as client:
         first = await client.post("/v1/projects", json=payload, headers=headers)
@@ -863,7 +863,7 @@ async def test_list_returns_each_projects_settings(client_factory, auth_headers)
     assert (item["orientation"], item["target_duration_ms"], item["language"]) == (
         "vertical",
         _MIN_MS,
-        "en-GB",
+        "en-IN",
     )
 
 
@@ -874,7 +874,7 @@ async def test_list_returns_each_projects_settings(client_factory, auth_headers)
     ("field", "value"),
     [
         ("orientation", "vertical"),
-        ("language", "en-IN"),
+        ("language", "en-GB"),
         ("target_duration_ms", 1_200_000),
         ("target_duration_ms", _MIN_MS),
         ("target_duration_ms", _MAX_MS),
@@ -908,14 +908,14 @@ async def test_update_changes_all_three_settings_at_once(client_factory, auth_he
             client,
             headers,
             created["id"],
-            {"orientation": "vertical", "language": "en-IN", "target_duration_ms": 2_700_000},
+            {"orientation": "vertical", "language": "en-GB", "target_duration_ms": 2_700_000},
         )
         fetched = await client.get(f"/v1/projects/{created['id']}", headers=headers)
 
     assert response.status_code == 200
     for project in (response.json(), fetched.json()):
         assert project["orientation"] == "vertical"
-        assert project["language"] == "en-IN"
+        assert project["language"] == "en-GB"
         assert project["target_duration_ms"] == 2_700_000
         assert project["title"] == created["title"]
 
@@ -929,7 +929,7 @@ async def test_a_title_only_update_leaves_the_settings_alone(client_factory, aut
                 client,
                 headers,
                 orientation="vertical",
-                language="en-IN",
+                language="en-GB",
                 target_duration_ms=600_000,
             )
         ).json()
@@ -940,7 +940,7 @@ async def test_a_title_only_update_leaves_the_settings_alone(client_factory, aut
     assert body["title"] == "Renamed"
     assert (body["orientation"], body["language"], body["target_duration_ms"]) == (
         "vertical",
-        "en-IN",
+        "en-GB",
         600_000,
     )
 
