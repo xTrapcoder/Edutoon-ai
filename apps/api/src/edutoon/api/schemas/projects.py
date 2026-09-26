@@ -25,10 +25,10 @@ from edutoon.domain.generation_settings import (
     Language,
     Orientation,
 )
+from edutoon.domain.project_status import ProjectStatus
 from edutoon.services.projects import ProjectRecord
 
 SourceType = Literal["pdf", "topic"]
-ProjectStatus = Literal["draft", "processing", "ready", "failed", "archived"]
 
 # ``strict`` so only a real integer is a duration: ``"180000"``, ``180000.0`` and
 # ``true`` are all refused rather than coerced.

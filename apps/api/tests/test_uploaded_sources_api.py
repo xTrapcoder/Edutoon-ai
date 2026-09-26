@@ -239,6 +239,48 @@ async def test_a_failed_parse_does_not_enqueue_an_indexing_job(
     assert job is None
 
 
+async def _project_status(client, headers, project_id) -> str:
+    response = await client.get(f"/v1/projects/{project_id}", headers=headers)
+    assert response.status_code == 200
+    return response.json()["status"]  # type: ignore[no-any-return]
+
+
+async def test_a_readable_upload_makes_the_project_processing_while_it_is_indexed(
+    client_factory, auth_headers
+):
+    """Parsing succeeded, so a ``build_evidence`` job is queued: the pipeline is running."""
+    headers = auth_headers()
+
+    async with client_factory() as client:
+        project_id = await _create_project(client, headers)
+        assert await _project_status(client, headers, project_id) == "draft"
+
+        await client.post(
+            f"/v1/projects/{project_id}/sources",
+            files=_pdf_file(),
+            headers={**headers, **IDEMPOTENCY_HEADERS},
+        )
+
+        assert await _project_status(client, headers, project_id) == "processing"
+
+
+async def test_an_unreadable_upload_fails_the_project_since_it_has_no_job_to_say_so(
+    client_factory, auth_headers
+):
+    headers = auth_headers()
+
+    async with client_factory() as client:
+        project_id = await _create_project(client, headers)
+
+        await client.post(
+            f"/v1/projects/{project_id}/sources",
+            files=_pdf_file(_CORRUPT_PDF),
+            headers={**headers, **IDEMPOTENCY_HEADERS},
+        )
+
+        assert await _project_status(client, headers, project_id) == "failed"
+
+
 # --- ownership isolation (rule 9: not-owned -> 404, never 403) -------------------
 
 

@@ -525,6 +525,22 @@ async def test_enqueue_extraction_returns_202_with_a_queued_job(client_factory, 
     assert body["result"] is None
 
 
+async def test_enqueue_extraction_makes_the_project_processing(client_factory, auth_headers):
+    headers = auth_headers()
+    async with client_factory() as client:
+        project_id = await _create_project(client, headers)
+        await _add_keywords(client, headers, project_id, ["Photosynthesis"])
+        before = await client.get(f"/v1/projects/{project_id}", headers=headers)
+        await client.post(
+            f"/v1/projects/{project_id}/topics/extraction", headers=_headers(headers)
+        )
+        after = await client.get(f"/v1/projects/{project_id}", headers=headers)
+
+    # Adding the person's own keywords is not pipeline work; queueing the extraction is.
+    assert before.json()["status"] == "draft"
+    assert after.json()["status"] == "processing"
+
+
 async def test_enqueue_extraction_passes_replace_through_to_the_job(
     client_factory, auth_headers, db_session
 ):

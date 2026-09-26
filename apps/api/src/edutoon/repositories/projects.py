@@ -5,14 +5,14 @@ from datetime import datetime
 from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, literal, select, union_all
 from sqlalchemy.engine import CursorResult, RowMapping
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from edutoon.core.errors import raise_conflict_from_integrity_error
 from edutoon.core.pagination import Page, paginate_rows
-from edutoon.db.tables import projects
+from edutoon.db.tables import jobs, projects, uploaded_sources
 from edutoon.domain.generation_settings import (
     DEFAULT_LANGUAGE,
     DEFAULT_ORIENTATION,
@@ -20,6 +20,11 @@ from edutoon.domain.generation_settings import (
     Language,
     Orientation,
 )
+from edutoon.domain.project_status import Outcome, ProjectStatus, derive_project_status
+
+# A job in either of these states is still in flight (same meaning as
+# ``repositories.jobs.ACTIVE_STATUSES``, which imports this module and so cannot be imported here).
+_IN_FLIGHT_JOB_STATUSES = ("queued", "running")
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,3 +142,76 @@ async def list_by_owner(
         session, stmt, table=projects, limit=limit, cursor=cursor
     )
     return Page(items=[_from_row(row) for row in rows], next_cursor=next_cursor)
+
+
+async def refresh_status(session: AsyncSession, *, project_id: UUID) -> str | None:
+    """Recompute ``project_id``'s status from its pipeline and store it if it changed.
+
+    The rule is :func:`edutoon.domain.project_status.derive_project_status`; this reads its
+    two inputs and applies the answer. Returns the project's status afterwards, or ``None``
+    if there is no such project (for example, it was deleted while its last job ran).
+
+    Called from ``repositories.jobs`` and ``repositories.uploaded_sources`` at the moments the
+    pipeline's state changes - a job is queued or ends, a PDF fails to parse - so the status
+    moves in the same transaction as the change that caused it, on every path (an API
+    request, the worker, crash recovery) and for every job kind, with no call site to forget.
+
+    The project row is locked (``FOR NO KEY UPDATE``) for the read-decide-write, so two
+    transactions refreshing at once take turns: whichever runs second sees everything the
+    first committed and decides on that. It is a lock that does not block anything that only
+    references the project (inserting a job, a topic, a source), and callers only reach here
+    at the *end* of a piece of work - never while a model call is in progress - so it is held
+    for moments.
+    """
+    row = (
+        await session.execute(
+            select(projects.c.status)
+            .where(projects.c.id == project_id)
+            .with_for_update(key_share=True)
+        )
+    ).one_or_none()
+    if row is None:
+        return None
+    current: str = row[0]
+
+    active_jobs = (
+        await session.execute(
+            select(func.count())
+            .select_from(jobs)
+            .where(jobs.c.project_id == project_id, jobs.c.status.in_(_IN_FLIGHT_JOB_STATUSES))
+        )
+    ).scalar_one()
+
+    # Everything that has finished, as (how it ended, when). A ``cancelled`` job is not an
+    # outcome. An uploaded PDF that could not be read is one, and it has no job of its own.
+    finished = union_all(
+        select(
+            jobs.c.status.label("outcome"),
+            func.coalesce(jobs.c.finished_at, jobs.c.updated_at).label("at"),
+        ).where(jobs.c.project_id == project_id, jobs.c.status.in_(("succeeded", "failed"))),
+        select(
+            literal("failed").label("outcome"),
+            uploaded_sources.c.updated_at.label("at"),
+        ).where(uploaded_sources.c.project_id == project_id, uploaded_sources.c.status == "failed"),
+    ).subquery()
+    # On an exact tie the failure wins: better to say "failed" once too often than to hide it.
+    latest: Outcome | None = (
+        await session.execute(
+            select(finished.c.outcome)
+            .order_by(finished.c.at.desc(), finished.c.outcome.asc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+    derived: ProjectStatus = derive_project_status(
+        current=current,  # type: ignore[arg-type]  # a CHECK constraint keeps it to ProjectStatus
+        active_jobs=active_jobs,
+        latest_outcome=latest,
+    )
+    if derived != current:
+        # ``set_updated_at`` bumps ``updated_at`` with the change, which is right: the
+        # project's state really did just change. An unchanged status writes nothing.
+        await session.execute(
+            projects.update().where(projects.c.id == project_id).values(status=derived)
+        )
+    return derived

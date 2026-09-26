@@ -13,6 +13,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from edutoon.core.errors import raise_conflict_from_integrity_error
 from edutoon.core.pagination import Page, paginate_rows
 from edutoon.db.tables import jobs
+from edutoon.repositories import projects as projects_repo
+
+# A job in one of these states has ended and will not run again. Reaching one is a moment the
+# owning project's status is recomputed (see ``projects.refresh_status``); moving to ``running``
+# is not, because it changes nothing the status looks at.
+TERMINAL_STATUSES: tuple[str, ...] = ("succeeded", "failed", "cancelled")
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,13 +88,20 @@ async def create(
         result = await session.execute(stmt)
     except IntegrityError as exc:
         raise_conflict_from_integrity_error(exc)
-    return _from_row(result.mappings().one())
+    job = _from_row(result.mappings().one())
+    # A new job means work is in flight: the project is now ``processing``.
+    await projects_repo.refresh_status(session, project_id=job.project_id)
+    return job
 
 
 async def update(session: AsyncSession, *, job_id: UUID, **fields: Any) -> JobRecord | None:
     """Partial update for status-transition writes (queued -> running ->
     succeeded/failed). Returns ``None`` if the job doesn't exist. An empty
     ``fields`` is a no-op read, mirroring ``projects.update``.
+
+    A write that ends the job (``succeeded`` / ``failed`` / ``cancelled``) also recomputes
+    its project's status, in the same transaction. Every handler, the worker and crash
+    recovery end jobs through here, so none of them has to remember to.
     """
     if not fields:
         return await get_by_id(session, job_id)
@@ -99,7 +112,12 @@ async def update(session: AsyncSession, *, job_id: UUID, **fields: Any) -> JobRe
     except IntegrityError as exc:
         raise_conflict_from_integrity_error(exc)
     row = result.mappings().one_or_none()
-    return _from_row(row) if row is not None else None
+    if row is None:
+        return None
+    job = _from_row(row)
+    if fields.get("status") in TERMINAL_STATUSES:
+        await projects_repo.refresh_status(session, project_id=job.project_id)
+    return job
 
 
 async def get_by_id(session: AsyncSession, job_id: UUID) -> JobRecord | None:
@@ -254,5 +272,8 @@ async def fail_stale_running(
         .returning(*jobs.c)
     )
     rows = (await session.execute(stmt)).mappings().all()
+    if rows:
+        # These jobs just ended (as failures), so the project may no longer be ``processing``.
+        await projects_repo.refresh_status(session, project_id=project_id)
     return sorted((_from_row(row) for row in rows), key=lambda job: (job.created_at, str(job.id)))
 

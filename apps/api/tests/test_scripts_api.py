@@ -277,6 +277,19 @@ async def test_enqueue_returns_202_with_a_pending_script(client_factory, auth_he
     assert body["estimated_duration_ms"] is None
 
 
+async def test_enqueue_makes_the_project_processing(client_factory, auth_headers, db_session):
+    headers = auth_headers()
+
+    async with client_factory() as client:
+        project_id = await _create_project(client, headers)
+        await _add_supported_claims(db_session, project_id, ["A verified fact."])
+        await client.post(f"/v1/projects/{project_id}/scripts", headers=_headers(headers))
+
+        project = await client.get(f"/v1/projects/{project_id}", headers=headers)
+
+    assert project.json()["status"] == "processing"
+
+
 @pytest.mark.parametrize("script_llm_model", ["script-model-y"])
 async def test_enqueue_queues_the_script_for_the_script_clients_model(
     client_factory, auth_headers, db_session

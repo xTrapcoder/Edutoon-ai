@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from edutoon.core.errors import raise_conflict_from_integrity_error
 from edutoon.core.pagination import Page, paginate_rows
 from edutoon.db.tables import uploaded_sources
+from edutoon.repositories import projects as projects_repo
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,6 +33,14 @@ class UploadedSourceRecord:
     status: str
     created_at: datetime
     updated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class StorageLocation:
+    """Where one uploaded file is kept in object storage."""
+
+    bucket: str
+    key: str
 
 
 def _from_row(row: RowMapping) -> UploadedSourceRecord:
@@ -114,6 +123,9 @@ async def update(
     """Scoped partial update (e.g. ``status``/``page_count`` after parsing).
     Returns ``None`` if the source doesn't exist or belongs to a different
     project - same rule-9 shape as :func:`get_by_id_for_project`.
+
+    A PDF that fails to parse has no job to record the failure, so moving a source to
+    ``failed`` recomputes its project's status here, in the same transaction.
     """
     if not fields:
         return await get_by_id_for_project(session, source_id, project_id)
@@ -129,7 +141,24 @@ async def update(
     except IntegrityError as exc:
         raise_conflict_from_integrity_error(exc)
     row = result.mappings().one_or_none()
-    return _from_row(row) if row is not None else None
+    if row is None:
+        return None
+    source = _from_row(row)
+    if fields.get("status") == "failed":
+        await projects_repo.refresh_status(session, project_id=source.project_id)
+    return source
+
+
+async def list_storage_locations(session: AsyncSession, project_id: UUID) -> list[StorageLocation]:
+    """Where every file uploaded to ``project_id`` is stored, whatever its status (a PDF that
+    could not be parsed is still stored). Not paginated: it is a project's whole set, for
+    cleaning up after it.
+    """
+    stmt = select(uploaded_sources.c.storage_bucket, uploaded_sources.c.storage_key).where(
+        uploaded_sources.c.project_id == project_id
+    )
+    rows = (await session.execute(stmt)).all()
+    return [StorageLocation(bucket=bucket, key=key) for bucket, key in rows]
 
 
 async def get_by_checksum(

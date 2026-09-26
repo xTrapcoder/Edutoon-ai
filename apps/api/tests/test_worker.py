@@ -641,6 +641,95 @@ async def test_a_crashing_handler_still_ends_the_job_failed_with_a_safe_message(
     assert_clean(finished.error)
 
 
+# --- the project's status follows the worker ---------------------------------------------
+#
+# ``projects.status`` is recomputed whenever a job is queued or ends (see
+# ``test_project_status_lifecycle.py`` for the rule). What matters here is that the
+# worker's own writes - success, a handled failure, an unhandled kind, a crash - all reach it.
+
+
+async def _status_of(db_session: AsyncSession, project) -> str:
+    fresh = await projects_repo.get_by_id(db_session, project.id)
+    assert fresh is not None
+    return fresh.status
+
+
+async def test_a_project_is_processing_until_the_worker_finishes_its_job_then_ready(
+    db_session, worker_sessionmaker, monkeypatch
+):
+    project = await _make_project(db_session)
+    source = await _make_source_with_chunks(db_session, project, num_chunks=1)
+    await evidence_service.enqueue_indexing_job(
+        db_session, project_id=project.id, source_id=source.id
+    )
+    await db_session.commit()
+    assert await _status_of(db_session, project) == "processing"
+
+    providers = WorkerProviders(
+        embeddings=_fake_embeddings(monkeypatch), llm=_idle_llm(), script_llm=_idle_llm()
+    )
+    await process_one_job(worker_sessionmaker, providers)
+
+    assert await _status_of(db_session, project) == "ready"
+
+
+async def test_a_handled_provider_failure_leaves_the_project_failed(
+    db_session, worker_sessionmaker
+):
+    project = await _make_project(db_session)
+    source = await _make_source_with_chunks(db_session, project, num_chunks=1)
+    await evidence_service.enqueue_indexing_job(
+        db_session, project_id=project.id, source_id=source.id
+    )
+    await db_session.commit()
+
+    client = AsyncOpenAI(api_key="sk-test-not-a-real-key")
+
+    async def _boom(**_kwargs):
+        raise RuntimeError("openai is unreachable")
+
+    client.embeddings.create = _boom  # type: ignore[method-assign]
+    providers = WorkerProviders(
+        embeddings=Embeddings(client, model=EMBEDDING_MODEL),
+        llm=_idle_llm(),
+        script_llm=_idle_llm(),
+    )
+
+    await process_one_job(worker_sessionmaker, providers)
+
+    assert await _status_of(db_session, project) == "failed"
+
+
+async def test_a_job_kind_with_no_handler_leaves_the_project_failed(
+    db_session, worker_sessionmaker
+):
+    project = await _make_project(db_session)
+    await jobs_repo.create(db_session, project_id=project.id, kind="render_video")
+    await db_session.commit()
+    assert await _status_of(db_session, project) == "processing"
+
+    await process_one_job(worker_sessionmaker, _idle_providers())
+
+    assert await _status_of(db_session, project) == "failed"
+
+
+async def test_a_crashing_handler_leaves_the_project_failed_not_stuck_processing(
+    db_session, worker_sessionmaker, monkeypatch
+):
+    project = await _make_project(db_session)
+    await jobs_repo.create(db_session, project_id=project.id, kind="extract_topics")
+    await db_session.commit()
+
+    async def crashes(session, providers, job_id):
+        raise RuntimeError("the connection dropped")
+
+    monkeypatch.setitem(JOB_HANDLERS, "extract_topics", crashes)
+
+    await process_one_job(worker_sessionmaker, _idle_providers())
+
+    assert await _status_of(db_session, project) == "failed"
+
+
 # --- real concurrency: FOR UPDATE SKIP LOCKED actually prevents a double claim -----
 
 
