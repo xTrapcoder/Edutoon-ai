@@ -13,6 +13,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from edutoon.core.errors import raise_conflict_from_integrity_error
 from edutoon.core.pagination import Page, paginate_rows
 from edutoon.db.tables import projects
+from edutoon.domain.generation_settings import (
+    DEFAULT_LANGUAGE,
+    DEFAULT_ORIENTATION,
+    DEFAULT_TARGET_DURATION_MS,
+    Language,
+    Orientation,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,7 +30,9 @@ class ProjectRecord:
     description: str | None
     source_type: str
     status: str
-    language: str
+    language: Language
+    orientation: Orientation
+    target_duration_ms: int
     created_at: datetime
     updated_at: datetime
 
@@ -37,6 +46,8 @@ def _from_row(row: RowMapping) -> ProjectRecord:
         source_type=row["source_type"],
         status=row["status"],
         language=row["language"],
+        orientation=row["orientation"],
+        target_duration_ms=row["target_duration_ms"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
@@ -49,7 +60,9 @@ async def create(
     title: str,
     source_type: str,
     description: str | None = None,
-    language: str = "en-GB",
+    language: Language = DEFAULT_LANGUAGE,
+    orientation: Orientation = DEFAULT_ORIENTATION,
+    target_duration_ms: int = DEFAULT_TARGET_DURATION_MS,
 ) -> ProjectRecord:
     stmt = (
         projects.insert()
@@ -59,6 +72,8 @@ async def create(
             source_type=source_type,
             description=description,
             language=language,
+            orientation=orientation,
+            target_duration_ms=target_duration_ms,
         )
         .returning(*projects.c)
     )

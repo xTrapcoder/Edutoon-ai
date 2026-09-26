@@ -55,6 +55,8 @@ async def create_project(
             source_type=body.source_type,
             description=body.description,
             language=body.language,
+            orientation=body.orientation,
+            target_duration_ms=body.target_duration_ms,
         )
         return status.HTTP_201_CREATED, ProjectResponse.from_record(project).model_dump(
             mode="json"

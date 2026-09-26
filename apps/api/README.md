@@ -19,6 +19,35 @@ and a replay of one - always means the change is stored, and a commit that fails
 nothing cached. `tests/test_idempotent_routes_contract.py` fails for any mutating route
 that loses either guarantee.
 
+## Project generation settings
+
+A project carries three settings that later phases (scene planning, narration,
+rendering) read to decide what to produce. They are columns on `projects` (migration
+`0010`), sent on `POST /v1/projects` and `PATCH /v1/projects/{id}` and returned by every
+route that returns a project (`GET` one, `GET` the list, and both writes). Omit them on
+create and a project gets the defaults, so a client written before they existed keeps
+working; omit one on update and it is left as it is.
+
+| Field                | Type    | Allowed                                            | Default              |
+| -------------------- | ------- | -------------------------------------------------- | -------------------- |
+| `orientation`        | string  | `horizontal` (landscape), `vertical` (portrait)    | `horizontal`         |
+| `target_duration_ms` | integer | `60000` to `3600000` inclusive (1 to 60 minutes)   | `300000` (5 minutes) |
+| `language`           | string  | `en-GB`, `en-IN` (an IETF BCP 47 tag)              | `en-GB`              |
+
+The duration is in milliseconds like every duration here, so it compares directly with a
+script's `estimated_duration_ms`. It must be a real integer: `"180000"`, `180000.0`,
+`true`, zero, a negative, or anything outside the range is a `422`, as is an unknown
+`orientation` or `language` or an explicit `null` on update. The same limits are
+`CHECK` constraints in the database, so nothing that skips the API can store a value the
+code does not expect.
+
+`language` is the column that already existed (it feeds topic extraction), now
+constrained; `en-GB` stays supported because every existing project holds it and it is
+the default. Migration `0010` resets any existing row holding some other value to
+`en-GB` (nothing ever acted on one); `downgrade` cannot restore it. To support another
+language, add it to `src/edutoon/domain/generation_settings.py` and widen
+`ck_projects_language` in a new migration - nothing else names a language.
+
 ## Job worker
 
 Routes only ever *enqueue* a `jobs` row (indexing, topic extraction, script

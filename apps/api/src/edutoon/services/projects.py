@@ -7,6 +7,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from edutoon.core.errors import NotFoundError
 from edutoon.core.pagination import Page
+from edutoon.domain.generation_settings import (
+    DEFAULT_LANGUAGE,
+    DEFAULT_ORIENTATION,
+    DEFAULT_TARGET_DURATION_MS,
+    Language,
+    Orientation,
+)
 from edutoon.repositories import projects as projects_repo
 from edutoon.repositories.projects import ProjectRecord as ProjectRecord
 
@@ -18,7 +25,9 @@ async def create_project(
     title: str,
     source_type: str,
     description: str | None = None,
-    language: str = "en-GB",
+    language: Language = DEFAULT_LANGUAGE,
+    orientation: Orientation = DEFAULT_ORIENTATION,
+    target_duration_ms: int = DEFAULT_TARGET_DURATION_MS,
 ) -> ProjectRecord:
     return await projects_repo.create(
         session,
@@ -27,6 +36,8 @@ async def create_project(
         source_type=source_type,
         description=description,
         language=language,
+        orientation=orientation,
+        target_duration_ms=target_duration_ms,
     )
 
 

@@ -2,21 +2,43 @@
 
 ``source_type``/``status`` are ``Literal`` types mirroring the ``CHECK``
 constraints in migration 0002 exactly, so an invalid value is rejected as a
-422 here rather than reaching the database as a raw constraint violation.
+422 here rather than reaching the database as a raw constraint violation. The
+generation settings (``language``, ``orientation``, ``target_duration_ms``) work
+the same way against migration 0010, with their vocabulary and limits taken from
+:mod:`edutoon.domain.generation_settings`.
 """
 
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from edutoon.domain.generation_settings import (
+    DEFAULT_LANGUAGE,
+    DEFAULT_ORIENTATION,
+    DEFAULT_TARGET_DURATION_MS,
+    MAX_TARGET_DURATION_MS,
+    MIN_TARGET_DURATION_MS,
+    Language,
+    Orientation,
+)
 from edutoon.services.projects import ProjectRecord
 
 SourceType = Literal["pdf", "topic"]
 ProjectStatus = Literal["draft", "processing", "ready", "failed", "archived"]
+
+# ``strict`` so only a real integer is a duration: ``"180000"``, ``180000.0`` and
+# ``true`` are all refused rather than coerced.
+TargetDurationMs = Annotated[
+    int, Field(strict=True, ge=MIN_TARGET_DURATION_MS, le=MAX_TARGET_DURATION_MS)
+]
+
+# The generation settings are NOT NULL in the schema, so an explicit ``null`` for
+# one is rejected on update instead of reaching the database.
+_NOT_NULL_FIELDS = ("title", "language", "orientation", "target_duration_ms")
 
 
 def _not_blank(value: str | None) -> str | None:
@@ -31,7 +53,9 @@ class ProjectCreateRequest(BaseModel):
     title: str
     source_type: SourceType
     description: str | None = None
-    language: str = "en-GB"
+    language: Language = DEFAULT_LANGUAGE
+    orientation: Orientation = DEFAULT_ORIENTATION
+    target_duration_ms: TargetDurationMs = DEFAULT_TARGET_DURATION_MS
 
     @field_validator("title")
     @classmethod
@@ -45,18 +69,20 @@ class ProjectUpdateRequest(BaseModel):
     the request body reach the service - see ``model_dump(exclude_unset=True)``
     in the router - so omitting a field leaves it untouched, while
     explicitly sending ``null`` for a nullable field (``description``)
-    clears it. ``title``/``language`` are ``NOT NULL`` in the schema, so an
-    explicit ``null`` for either is rejected here rather than reaching the
-    database.
+    clears it. ``title`` and the generation settings are ``NOT NULL`` in the
+    schema, so an explicit ``null`` for any of them is rejected here rather than
+    reaching the database.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     title: str | None = None
     description: str | None = None
-    language: str | None = None
+    language: Language | None = None
+    orientation: Orientation | None = None
+    target_duration_ms: TargetDurationMs | None = None
 
-    @field_validator("title", "language")
+    @field_validator("title")
     @classmethod
     def _not_blank_when_given(cls, value: str | None) -> str | None:
         _not_blank(value)
@@ -64,7 +90,7 @@ class ProjectUpdateRequest(BaseModel):
 
     @model_validator(mode="after")
     def _reject_explicit_null_for_not_null_columns(self) -> ProjectUpdateRequest:
-        for name in ("title", "language"):
+        for name in _NOT_NULL_FIELDS:
             if name in self.model_fields_set and getattr(self, name) is None:
                 raise ValueError(f"{name} cannot be null - omit it to leave it unchanged.")
         return self
@@ -79,7 +105,9 @@ class ProjectResponse(BaseModel):
     description: str | None
     source_type: SourceType
     status: ProjectStatus
-    language: str
+    language: Language
+    orientation: Orientation
+    target_duration_ms: int
     created_at: datetime
     updated_at: datetime
 

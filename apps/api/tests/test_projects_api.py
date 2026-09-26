@@ -614,3 +614,436 @@ async def test_an_idempotency_key_of_the_maximum_length_is_accepted(client_facto
         )
 
     assert response.status_code == 201, response.text
+
+
+# --- generation settings (orientation / target_duration_ms / language) -----------------
+
+_MIN_MS = 60_000
+_MAX_MS = 3_600_000
+
+_INVALID_DURATIONS = [
+    pytest.param(0, id="zero"),
+    pytest.param(-1, id="negative-one"),
+    pytest.param(-_MIN_MS, id="negative-minimum"),
+    pytest.param(_MIN_MS - 1, id="one-millisecond-under-the-minimum"),
+    pytest.param(_MAX_MS + 1, id="one-millisecond-over-the-maximum"),
+    pytest.param(61 * _MIN_MS, id="sixty-one-minutes"),
+    pytest.param(10**15, id="absurdly-large"),
+    pytest.param("180000", id="numeric-string"),
+    pytest.param("three minutes", id="text"),
+    pytest.param(180_000.5, id="fractional"),
+    pytest.param(180_000.0, id="integral-float"),
+    pytest.param(True, id="boolean-true"),
+    pytest.param(False, id="boolean-false"),
+    pytest.param(None, id="null"),
+    pytest.param([180_000], id="list"),
+    pytest.param({"minutes": 3}, id="object"),
+]
+_INVALID_ORIENTATIONS = [
+    pytest.param("square", id="unsupported"),
+    pytest.param("landscape", id="synonym"),
+    pytest.param("Horizontal", id="wrong-case"),
+    pytest.param("", id="empty"),
+    pytest.param(None, id="null"),
+    pytest.param(1, id="number"),
+    pytest.param(["horizontal"], id="list"),
+]
+_INVALID_LANGUAGES = [
+    pytest.param("fr-FR", id="unsupported"),
+    pytest.param("en", id="bare-language"),
+    pytest.param("en-US", id="unsupported-english"),
+    pytest.param("en_IN", id="underscore"),
+    pytest.param("en-in", id="lowercase-region"),
+    pytest.param("EN-IN", id="uppercase"),
+    pytest.param("", id="empty"),
+    pytest.param(None, id="null"),
+    pytest.param(1, id="number"),
+]
+
+
+def _without_null(params):
+    """PATCH refuses an explicit ``null`` in the model-level validator (error path
+    ``body``, not ``body.<field>``), so it is tested on its own below.
+    """
+    return [param for param in params if param.values[0] is not None]
+
+
+def _field_error_paths(response: httpx.Response) -> list[str]:
+    error = response.json()["error"]
+    assert error["code"] == "VALIDATION_ERROR"
+    return [entry["path"] for entry in error["details"]["field_errors"]]
+
+
+async def _create(client, headers, **overrides):
+    return await client.post(
+        "/v1/projects",
+        json=_create_payload(**overrides),
+        headers={**headers, "Idempotency-Key": str(uuid4())},
+    )
+
+
+async def _patch(client, headers, project_id, body):
+    return await client.patch(
+        f"/v1/projects/{project_id}",
+        json=body,
+        headers={**headers, "Idempotency-Key": str(uuid4())},
+    )
+
+
+async def test_a_project_created_without_settings_gets_the_defaults(client_factory, auth_headers):
+    headers = auth_headers()
+
+    async with client_factory() as client:
+        created = (await _create(client, headers)).json()
+        fetched = (await client.get(f"/v1/projects/{created['id']}", headers=headers)).json()
+
+    for project in (created, fetched):
+        assert project["orientation"] == "horizontal"
+        assert project["target_duration_ms"] == 300_000
+        assert project["language"] == "en-GB"
+
+
+async def test_the_exact_payload_existing_callers_send_still_works(client_factory, auth_headers):
+    """Backwards compatibility: the request body from before generation settings
+    existed is still a valid request, and everything it used to return is still there.
+    """
+    headers = auth_headers()
+
+    async with client_factory() as client:
+        response = await client.post(
+            "/v1/projects",
+            json={"title": "My video", "source_type": "pdf", "description": "As before"},
+            headers={**headers, "Idempotency-Key": str(uuid4())},
+        )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["title"] == "My video"
+    assert body["source_type"] == "pdf"
+    assert body["description"] == "As before"
+    assert body["status"] == "draft"
+    assert body["language"] == "en-GB"
+    assert {"id", "owner_id", "created_at", "updated_at"} <= body.keys()
+
+
+@pytest.mark.parametrize("orientation", ["horizontal", "vertical"])
+async def test_each_orientation_is_accepted_and_persisted(
+    client_factory, auth_headers, orientation
+):
+    headers = auth_headers()
+
+    async with client_factory() as client:
+        response = await _create(client, headers, orientation=orientation)
+        fetched = await client.get(f"/v1/projects/{response.json()['id']}", headers=headers)
+
+    assert response.status_code == 201
+    assert response.json()["orientation"] == orientation
+    assert fetched.json()["orientation"] == orientation
+
+
+@pytest.mark.parametrize("language", ["en-IN", "en-GB"])
+async def test_each_supported_language_is_accepted_and_persisted(
+    client_factory, auth_headers, language
+):
+    headers = auth_headers()
+
+    async with client_factory() as client:
+        response = await _create(client, headers, language=language)
+        fetched = await client.get(f"/v1/projects/{response.json()['id']}", headers=headers)
+
+    assert response.status_code == 201
+    assert response.json()["language"] == language
+    assert fetched.json()["language"] == language
+
+
+@pytest.mark.parametrize(
+    "duration",
+    [
+        pytest.param(_MIN_MS, id="minimum-one-minute"),
+        pytest.param(_MIN_MS + 1, id="just-over-the-minimum"),
+        pytest.param(90_000, id="ninety-seconds"),
+        pytest.param(300_000, id="five-minutes"),
+        pytest.param(1_800_000, id="thirty-minutes"),
+        pytest.param(_MAX_MS - 1, id="just-under-the-maximum"),
+        pytest.param(_MAX_MS, id="maximum-sixty-minutes"),
+    ],
+)
+async def test_a_target_duration_within_one_to_sixty_minutes_is_accepted_and_persisted(
+    client_factory, auth_headers, duration
+):
+    headers = auth_headers()
+
+    async with client_factory() as client:
+        response = await _create(client, headers, target_duration_ms=duration)
+        fetched = await client.get(f"/v1/projects/{response.json()['id']}", headers=headers)
+
+    assert response.status_code == 201
+    assert response.json()["target_duration_ms"] == duration
+    assert fetched.json()["target_duration_ms"] == duration
+
+
+async def test_all_three_settings_can_be_given_together(client_factory, auth_headers):
+    headers = auth_headers()
+
+    async with client_factory() as client:
+        response = await _create(
+            client, headers, orientation="vertical", language="en-IN", target_duration_ms=900_000
+        )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert (body["orientation"], body["language"], body["target_duration_ms"]) == (
+        "vertical",
+        "en-IN",
+        900_000,
+    )
+
+
+@pytest.mark.parametrize("duration", _INVALID_DURATIONS)
+async def test_create_rejects_an_invalid_target_duration(client_factory, auth_headers, duration):
+    headers = auth_headers()
+
+    async with client_factory() as client:
+        response = await _create(client, headers, target_duration_ms=duration)
+        listed = await client.get("/v1/projects", headers=headers)
+
+    assert response.status_code == 422
+    assert _field_error_paths(response) == ["body.target_duration_ms"]
+    assert listed.json()["items"] == []  # nothing was written
+
+
+@pytest.mark.parametrize("orientation", _INVALID_ORIENTATIONS)
+async def test_create_rejects_an_unsupported_orientation(client_factory, auth_headers, orientation):
+    headers = auth_headers()
+
+    async with client_factory() as client:
+        response = await _create(client, headers, orientation=orientation)
+        listed = await client.get("/v1/projects", headers=headers)
+
+    assert response.status_code == 422
+    assert _field_error_paths(response) == ["body.orientation"]
+    assert listed.json()["items"] == []
+
+
+@pytest.mark.parametrize("language", _INVALID_LANGUAGES)
+async def test_create_rejects_an_unsupported_language(client_factory, auth_headers, language):
+    headers = auth_headers()
+
+    async with client_factory() as client:
+        response = await _create(client, headers, language=language)
+        listed = await client.get("/v1/projects", headers=headers)
+
+    assert response.status_code == 422
+    assert _field_error_paths(response) == ["body.language"]
+    assert listed.json()["items"] == []
+
+
+async def test_a_replayed_create_returns_the_same_settings(client_factory, auth_headers):
+    headers = {**auth_headers(), "Idempotency-Key": str(uuid4())}
+    payload = _create_payload(orientation="vertical", language="en-IN", target_duration_ms=120_000)
+
+    async with client_factory() as client:
+        first = await client.post("/v1/projects", json=payload, headers=headers)
+        second = await client.post("/v1/projects", json=payload, headers=headers)
+
+    assert first.status_code == second.status_code == 201
+    assert first.json() == second.json()
+    assert second.json()["orientation"] == "vertical"
+    assert second.json()["target_duration_ms"] == 120_000
+
+
+async def test_list_returns_each_projects_settings(client_factory, auth_headers):
+    headers = auth_headers()
+
+    async with client_factory() as client:
+        await _create(client, headers, orientation="vertical", target_duration_ms=_MIN_MS)
+        listed = await client.get("/v1/projects", headers=headers)
+
+    [item] = listed.json()["items"]
+    assert (item["orientation"], item["target_duration_ms"], item["language"]) == (
+        "vertical",
+        _MIN_MS,
+        "en-GB",
+    )
+
+
+# --- updating the settings ---------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("orientation", "vertical"),
+        ("language", "en-IN"),
+        ("target_duration_ms", 1_200_000),
+        ("target_duration_ms", _MIN_MS),
+        ("target_duration_ms", _MAX_MS),
+    ],
+)
+async def test_update_changes_one_setting_and_leaves_the_others(
+    client_factory, auth_headers, field, value
+):
+    headers = auth_headers()
+
+    async with client_factory() as client:
+        created = (await _create(client, headers)).json()
+
+        response = await _patch(client, headers, created["id"], {field: value})
+        fetched = await client.get(f"/v1/projects/{created['id']}", headers=headers)
+
+    assert response.status_code == 200
+    expected = {key: value_ for key, value_ in created.items() if key != "updated_at"}
+    expected[field] = value
+    for project in (response.json(), fetched.json()):
+        assert {key: v for key, v in project.items() if key != "updated_at"} == expected
+
+
+async def test_update_changes_all_three_settings_at_once(client_factory, auth_headers):
+    headers = auth_headers()
+
+    async with client_factory() as client:
+        created = (await _create(client, headers)).json()
+
+        response = await _patch(
+            client,
+            headers,
+            created["id"],
+            {"orientation": "vertical", "language": "en-IN", "target_duration_ms": 2_700_000},
+        )
+        fetched = await client.get(f"/v1/projects/{created['id']}", headers=headers)
+
+    assert response.status_code == 200
+    for project in (response.json(), fetched.json()):
+        assert project["orientation"] == "vertical"
+        assert project["language"] == "en-IN"
+        assert project["target_duration_ms"] == 2_700_000
+        assert project["title"] == created["title"]
+
+
+async def test_a_title_only_update_leaves_the_settings_alone(client_factory, auth_headers):
+    headers = auth_headers()
+
+    async with client_factory() as client:
+        created = (
+            await _create(
+                client,
+                headers,
+                orientation="vertical",
+                language="en-IN",
+                target_duration_ms=600_000,
+            )
+        ).json()
+
+        response = await _patch(client, headers, created["id"], {"title": "Renamed"})
+
+    body = response.json()
+    assert body["title"] == "Renamed"
+    assert (body["orientation"], body["language"], body["target_duration_ms"]) == (
+        "vertical",
+        "en-IN",
+        600_000,
+    )
+
+
+@pytest.mark.parametrize("duration", _without_null(_INVALID_DURATIONS))
+async def test_update_rejects_an_invalid_target_duration_and_changes_nothing(
+    client_factory, auth_headers, duration
+):
+    headers = auth_headers()
+
+    async with client_factory() as client:
+        created = (await _create(client, headers, target_duration_ms=600_000)).json()
+
+        response = await _patch(client, headers, created["id"], {"target_duration_ms": duration})
+        fetched = await client.get(f"/v1/projects/{created['id']}", headers=headers)
+
+    assert response.status_code == 422
+    assert _field_error_paths(response) == ["body.target_duration_ms"]
+    assert fetched.json() == created
+
+
+@pytest.mark.parametrize("orientation", _without_null(_INVALID_ORIENTATIONS))
+async def test_update_rejects_an_unsupported_orientation_and_changes_nothing(
+    client_factory, auth_headers, orientation
+):
+    headers = auth_headers()
+
+    async with client_factory() as client:
+        created = (await _create(client, headers)).json()
+
+        response = await _patch(client, headers, created["id"], {"orientation": orientation})
+        fetched = await client.get(f"/v1/projects/{created['id']}", headers=headers)
+
+    assert response.status_code == 422
+    assert _field_error_paths(response) == ["body.orientation"]
+    assert fetched.json() == created
+
+
+@pytest.mark.parametrize("language", _without_null(_INVALID_LANGUAGES))
+async def test_update_rejects_an_unsupported_language_and_changes_nothing(
+    client_factory, auth_headers, language
+):
+    headers = auth_headers()
+
+    async with client_factory() as client:
+        created = (await _create(client, headers)).json()
+
+        response = await _patch(client, headers, created["id"], {"language": language})
+        fetched = await client.get(f"/v1/projects/{created['id']}", headers=headers)
+
+    assert response.status_code == 422
+    assert _field_error_paths(response) == ["body.language"]
+    assert fetched.json() == created
+
+
+@pytest.mark.parametrize("field", ["orientation", "language", "target_duration_ms"])
+async def test_update_rejects_an_explicit_null_for_a_setting_and_changes_nothing(
+    client_factory, auth_headers, field
+):
+    """The settings are ``NOT NULL``: omit one to leave it unchanged, ``null`` is refused."""
+    headers = auth_headers()
+
+    async with client_factory() as client:
+        created = (await _create(client, headers)).json()
+
+        response = await _patch(client, headers, created["id"], {field: None})
+        fetched = await client.get(f"/v1/projects/{created['id']}", headers=headers)
+
+    assert response.status_code == 422
+    assert f"{field} cannot be null" in response.text
+    assert fetched.json() == created
+
+
+async def test_one_invalid_setting_stops_a_valid_one_in_the_same_update(
+    client_factory, auth_headers
+):
+    headers = auth_headers()
+
+    async with client_factory() as client:
+        created = (await _create(client, headers)).json()
+
+        response = await _patch(
+            client,
+            headers,
+            created["id"],
+            {"orientation": "vertical", "target_duration_ms": _MAX_MS + 1},
+        )
+        fetched = await client.get(f"/v1/projects/{created['id']}", headers=headers)
+
+    assert response.status_code == 422
+    assert fetched.json()["orientation"] == "horizontal"  # the valid half was not applied
+
+
+async def test_a_project_owned_by_someone_else_cannot_have_its_settings_changed(
+    client_factory, auth_headers
+):
+    owner_headers = auth_headers()
+
+    async with client_factory() as client:
+        created = (await _create(client, owner_headers)).json()
+
+        response = await _patch(client, auth_headers(), created["id"], {"orientation": "vertical"})
+        fetched = await client.get(f"/v1/projects/{created['id']}", headers=owner_headers)
+
+    assert response.status_code == 404
+    assert fetched.json()["orientation"] == "horizontal"

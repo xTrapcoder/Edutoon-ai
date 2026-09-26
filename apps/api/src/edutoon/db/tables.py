@@ -44,6 +44,8 @@ projects = sa.Table(
     sa.Column("source_type", sa.Text, nullable=False),
     sa.Column("status", sa.Text, nullable=False),
     sa.Column("language", sa.Text, nullable=False),
+    sa.Column("orientation", sa.Text, nullable=False),
+    sa.Column("target_duration_ms", sa.BigInteger, nullable=False),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
 )
