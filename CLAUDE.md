@@ -78,6 +78,10 @@ unsupported claims ever reach the script or the screen.
   0010, 0011). Migration 0012 (Phase 6) adds `claim_verifications.topic_id`
   (nullable, `ON DELETE SET NULL` — which topic a claim was extracted for; `NULL`
   for one typed in by hand) and widens `ck_jobs_kind` to add `extract_claims`.
+  Migration 0013 (Phase 7) narrows `uq_scripts_project_id_active` to `draft` /
+  `approved` only — a `pending` generation no longer supersedes the previous
+  `approved` script until it is itself proven ready to replace it (see
+  `apps/api/README.md`, "Script generation", "Atomicity").
 - `projects.status` is derived, never set by a client: `edutoon.domain.project_status` is the
   rule and `projects.refresh_status` applies it whenever a job is queued or ends or a PDF fails
   to parse (`apps/api/README.md`, "Project status"). Deleting a project removes its uploaded PDFs
@@ -86,40 +90,41 @@ unsupported claims ever reach the script or the screen.
 
 ## Current phase
 
-**Phase 6 — candidate claim extraction: code-complete for everything that can be
-verified without provider credentials.** Delivered: auth, projects, PDF upload and
-parsing, the Evidence Engine (claim verification), script generation and approval,
-the background worker, topic extraction — topics from a PDF, from the user's
-keywords, or both, each with cited source pages (Phase 5; migrations 0001–0011;
-API in `apps/api/README.md`, "Topic understanding") — and now turning a project's
-*accepted* topics into candidate factual claims and verifying each one through the
-same, unmodified Evidence Engine (`POST .../claim-verifications/extraction`;
-migration 0012; API in `apps/api/README.md`, "Candidate claim extraction"). A
-topic's summary/keywords are never themselves treated as verified; only a claim
-that has gone through `services.evidence.verify_claim` carries a status and
-citations, and script generation still only ever reads `status='supported'`
-claims of the project, typed by hand or extracted alike.
+**Phase 7 — duration-aware, topic-scoped script generation: code-complete for
+everything that can be verified without provider credentials.** Delivered on top
+of Phase 6: auth, projects, PDF upload and parsing, the Evidence Engine, topic
+extraction (Phase 5), candidate claim extraction (Phase 6), the background
+worker, and now a script generation pipeline that reads accepted topics and
+their own topic-scoped supported claims instead of the whole project's pool -
+one outline call, one narration call per accepted topic (split into ordered
+sub-sections when a topic's duration budget is too long for one call), a
+bounded duration-correction pass, and one atomic attach (migration 0013;
+API in `apps/api/README.md`, "Script generation"). `project.target_duration_ms`
+now actually controls generation via `edutoon.domain.script_duration`; the LLM
+never decides durations, topic order or which claims a section may cite.
 
 **Pending real-provider verification when company API keys become available**
 (nothing below is verified; see `apps/api/README.md`, "Testing, and what is not yet
 verified against a real provider"): the keys and model availability
-(`LLM_MODEL`, `EMBEDDING_MODEL`), keywords-only extraction, long-PDF extraction,
-the quality of candidate claim extraction, `apps/api/scripts/smoke_test_phase4.py`
-run unmodified, and the real quality, latency and token behaviour of the prompts.
-No test calls a provider; those that involve one carry `pytest.mark.provider_mocked`.
+(`LLM_MODEL`, `EMBEDDING_MODEL`, `SCRIPT_LLM_MODEL`), keywords-only extraction,
+long-PDF extraction, the quality of candidate claim extraction, the teacher-style
+tone and quality of `compose_script_outline` / `compose_script_section` and how
+far their WPM-based duration estimate sits from real TTS audio once that exists,
+`apps/api/scripts/smoke_test_phase4.py` run unmodified, and the real quality,
+latency and token behaviour of every prompt. No test calls a provider; those
+that involve one carry `pytest.mark.provider_mocked`.
 
 **The web front end is built** (`apps/web`, see its README): landing, Clerk sign-in,
 dashboard, project list, create-project wizard, project workspace, topic review with
-evidence, script review and approval. It predates Phase 6 and has not been touched by
-it: the Script step still shows "Verification required" until a project has a
-supported claim, with no UI yet to trigger candidate claim extraction (the API route
-exists; nothing in the front end calls it). Real Clerk sign-in is **unverified** - the
-Clerk keys are placeholders - as are the real providers.
+evidence, script review and approval. Script Studio already shows target vs.
+estimated duration and each segment's topic; job progress now also carries
+`payload.progress` (which topic is being written, out of how many) for a
+`generate_script` job. Real Clerk sign-in is **unverified** - the Clerk keys are
+placeholders - as are the real providers.
 
-Not built yet: a front end for candidate claim extraction, script generation reading
-from topics (it still only reads the project's supported claims directly), scenes,
-voice/TTS, animation, rendering. **Phase 7 has not started and needs the owner's
-explicit approval.**
+Not built yet: a front end for candidate claim extraction, scenes, voice/TTS,
+animation, rendering. **Phase 8 has not started and needs the owner's explicit
+approval.**
 
 ## Commands
 

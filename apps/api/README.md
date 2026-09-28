@@ -139,7 +139,8 @@ It builds two LLM clients from the same API key, one per model: `LLM_MODEL` for
 claim judging and topic extraction, and `SCRIPT_LLM_MODEL` for writing scripts. A
 `generate_script` job runs on the second, and the script it produces records the
 model that actually wrote it (a script is queued for the API's script client's model,
-and the job replaces that with the one it ran with if they differ).
+and the job replaces that with the one it ran with if they differ). See
+"Script generation" below for what that job actually does (Phase 7).
 
 It polls for `queued` jobs, claims one at a time with
 `SELECT ... FOR UPDATE SKIP LOCKED` (safe with any number of worker
@@ -295,9 +296,105 @@ Settings (all optional): `CLAIM_INPUT_BUDGET_CHARS`, `MAX_CLAIMS_PER_TOPIC`,
 `MAX_CLAIM_TEXT_CHARS`, `CLAIM_EXTRACTION_STALE_AFTER_SECONDS`. They use `LLM_MODEL`, the same
 model claim judging and topic extraction already use.
 
-**Not built yet:** script generation does not read from topics at all yet - it still reads every
-`status='supported'` claim of the project (`claim_verifications_repo.list_supported_by_project`,
-unchanged), whether typed by hand or extracted from a topic.
+See "Script generation" below for how these topics and claims feed a script (Phase 7).
+
+## Script generation
+
+Phase 7 replaced the single whole-project `compose_script` call with a
+duration-aware, topic-scoped pipeline: one lesson outline call, then one
+narration call per *accepted* topic (split into several ordered sub-sections
+when a topic's own duration budget is too long for one call), assembled and
+validated as a whole before anything is written.
+
+| Route                                                  | What it does |
+| ------------------------------------------------------- | ------------ |
+| `POST /v1/projects/{id}/scripts`                       | `202` with the queued `generate_script` job and a fresh `pending` script. |
+| `GET /v1/projects/{id}/scripts`                        | Newest first, keyset-paginated. |
+| `GET /v1/projects/{id}/scripts/{script_id}`            | Segments and, per segment, the verified claims it cites. |
+| `POST /v1/projects/{id}/scripts/{script_id}/approval`  | `draft` → `approved`. |
+
+**Target flow:** accepted topics → each topic's own supported claims →
+server-computed duration budgets → one outline call → one section call per
+topic (or sub-section) → an at-most-one duration-correction pass → structural
+and provenance validation → one atomic attach.
+
+**Enqueue-time gate, before any provider call.** `POST .../scripts` rejects
+immediately (`422`→`400` `validation_error`, no job created) if: there is no
+accepted topic; there are more accepted topics than `MAX_SCRIPT_SECTIONS`;
+`project.target_duration_ms` cannot give every accepted topic the
+`MIN_SECTION_DURATION_MS` floor; or **any** accepted topic has zero
+`status='supported'` claims of its own (`claim_verifications_repo.list_supported_by_topic`) -
+named in the error. A hand-typed claim (`topic_id IS NULL`) never counts
+towards any topic's evidence; it belongs to no topic's section.
+
+**Duration is a target, not a hard gate.** `project.target_duration_ms` is
+split across accepted topics (`domain.script_duration.allocate_topic_budgets`):
+each gets `MIN_SECTION_DURATION_MS` as a floor, then a share of the remainder
+proportional to its own supported-claim count. The LLM never decides
+duration. A topic's total budget over `MAX_SECTION_DURATION_MS` is split into
+several ordered sub-sections (`split_topic_budget`) sharing one `topic_id` -
+never one huge call. The WPM-based `estimated_duration_ms` this produces is
+an estimate for a **not-yet-real TTS duration** - if it lands outside
+`SCRIPT_DURATION_TOLERANCE` of the target, exactly one bounded correction
+pass re-generates every section with a rescaled word budget
+(`MAX_SCRIPT_CORRECTION_ATTEMPTS`), and the result is accepted afterwards
+regardless of the remaining difference. Only structural/provenance failures
+reject a script outright.
+
+**Topic scoping.** Each section call sees only its own topic's supported
+claims (oldest-first, capped at `MAX_CLAIMS_PER_SECTION`) - never another
+topic's, never a hand-typed one. Every persisted segment's `topic_id` is set
+by the service from the section it came from, never taken from the model.
+Provenance validation (`domain.script_provenance.filter_and_validate`,
+unchanged) still rejects any non-connective segment left with no supported
+citation.
+
+**Atomicity (migration 0013).** `uq_scripts_project_id_active` used to cover
+`pending` / `draft` / `approved`, so queuing a new generation had to
+supersede the previous `approved` script immediately, before anything was
+validated - a failed regeneration then left the project with nothing
+approved at all. The index now covers only `draft` / `approved` (two pieces
+of actual content still can never coexist); a fresh `pending` placeholder
+coexists with the still-`approved` script for as long as generation takes,
+and `repositories.scripts.attach_draft` supersedes the previous script in the
+same `SAVEPOINT` that writes the new one's segments and flips it to `draft` -
+the one and only moment a previously valid script is touched, and only once
+the new one is already proven ready to replace it. A failed generation always
+leaves the previous `approved` script completely untouched.
+
+**Progress.** The worker's usual pattern runs a whole job inside one
+transaction, committed only once the handler returns - which would make an
+interim progress write invisible until the job finished, or block behind its
+lock. `run_generate_script_job` instead commits its "running" transition
+immediately and reports interim progress (`preparing_outline`,
+`generating_topic`, `correcting_duration`, `validating_provenance`,
+`finalising`) through short, independent sessions, visible on
+`GET /v1/projects/{id}/jobs` as `payload.progress` - each write touches only
+the job row, never a script/segment/claim-link row.
+
+**Provider-call budget.** Worst case: one outline call, plus every topic's
+section/sub-section calls (bounded by `domain.script_duration.max_provider_calls`,
+enforced before any call is made, never merely documented), plus one full
+correction pass over the same set. With the defaults (`MAX_SCRIPT_SECTIONS=20`,
+`MAX_SECTION_DURATION_MS=300_000`, a 60-minute maximum target), that is at
+most 65 calls, against 1 for the pre-Phase-7 single call.
+
+**Keyword-only projects without verified evidence cannot currently generate a
+fact-bearing educational script**, because the enqueue-time evidence gate
+above applies uniformly: a keyword-only topic's claims are correctly
+`unsupported` (no indexed material to verify them against - see "Candidate
+claim extraction"), so that topic can never pass the gate. This is not a
+bypass or a weakening of provenance; it is the same guarantee a hand-typed
+claim against an unindexed project already gets. It becomes generatable once
+the topic has real, verified evidence.
+
+Settings (all optional): `MIN_SECTION_DURATION_MS`, `MAX_SECTION_DURATION_MS`,
+`MAX_SCRIPT_SECTIONS`, `MAX_CLAIMS_PER_SECTION`, `SCRIPT_DURATION_TOLERANCE`,
+`MAX_SCRIPT_CORRECTION_ATTEMPTS`, `CONTINUITY_CONTEXT_CHARS` - plus the
+existing `SCRIPT_LLM_MODEL`, `MAX_SCRIPT_SEGMENTS` (per section call, not the
+whole script any more), `MAX_CLAIMS_PER_GENERATION` (the whole script's
+claim-count ceiling, distinct from the new per-section one) and
+`SCRIPT_WORDS_PER_MINUTE`.
 
 ## Testing, and what is not yet verified against a real provider
 
@@ -330,6 +427,12 @@ how a real provider behaves, and none of them is real-provider verification.
    `providers/errors.py` gives it (for example, that an unavailable model is a `404`).
 6. **Candidate claim extraction** (Phase 6): the quality of `LLM.extract_claims`'s
    proposals against a live model, and token use against `_claims_max_tokens`.
+7. **Script generation** (Phase 7): the quality and teacher-style tone of
+   `LLM.compose_script_outline` / `LLM.compose_script_section` against a live
+   model, token use against `_outline_max_tokens` / `_section_max_tokens`, and
+   how far the WPM-based `estimated_duration_ms` actually sits from real TTS
+   audio once that exists - the duration-correction pass is tuned against an
+   estimate, not a measurement.
 
 ## Known limitations
 
@@ -351,6 +454,15 @@ how a real provider behaves, and none of them is real-provider verification.
   topic plus one embed-and-judge round trip per surviving candidate, with no
   batching across topics - a project with many accepted topics means many paid
   calls. Credits come with the ledger, in a later phase.
+- **Script generation cost scales with topic count and target duration.** One
+  outline call plus one section call per accepted topic (more if a topic's
+  budget needs splitting, and again if duration correction fires) - bounded
+  (`domain.script_duration.max_provider_calls`) but not free. Credits come
+  with the ledger, in a later phase.
+- **Duration is an estimate, not a measurement.** `estimated_duration_ms` is
+  word count over `SCRIPT_WORDS_PER_MINUTE`; real narration timing only
+  exists once TTS is built. The correction pass narrows this estimate towards
+  the target, but a script is never rejected for still missing it.
 - **A retry after a failed commit repeats the work.** Every mutating route commits
   before it caches its result, so a failed commit is never cached as a success - but
   the client's retry then runs the handler again. For claim verification that

@@ -358,6 +358,44 @@ function seedDefault() {
     error: 'The model is busy right now. Please try again in a few minutes.',
   });
 
+  // A script generation in progress, mid-topic - the progress card's dynamic label.
+  const gen = project({
+    title: 'Cell Biology',
+    updated_at: ago(2 * MIN),
+    target_duration_ms: 8 * MIN,
+  });
+  const gensrc = source(gen.id, 'cell_biology.pdf', 30, { created_at: ago(2 * 3_600_000) });
+  topic(gen.id, 'The cell membrane', {
+    sourceId: gensrc.id,
+    pages: [[3, 6]],
+    summary: 'Structure and function of the membrane.',
+    status: 'accepted',
+  });
+  topic(gen.id, 'Mitochondria', {
+    sourceId: gensrc.id,
+    pages: [[10, 13]],
+    summary: "The cell's powerhouse.",
+    status: 'accepted',
+  });
+  const genScript = script(gen.id, 'pending', null);
+  job(gen.id, 'generate_script', 'running', {
+    created_at: ago(45_000),
+    started_at: ago(40_000),
+    payload: {
+      hold: true,
+      script_id: genScript.id,
+      project_id: gen.id,
+      topic_ids: [],
+      progress: {
+        stage: 'generating_topic',
+        topic_index: 1,
+        topic_count: 2,
+        topic_title: 'Mitochondria',
+        updated_at: now(),
+      },
+    },
+  });
+
   // Nothing added yet.
   project({ title: 'Operating Systems', updated_at: ago(10 * MIN), created_at: ago(10 * MIN) });
 }

@@ -11,7 +11,13 @@ import { QueryGate } from '@/components/workspace/query-gate';
 import { useWorkspaceContext } from '@/components/workspace/workspace-context';
 import { ApiError, describeError } from '@/lib/api/errors';
 import { useGenerateScript, useScriptDetail, useSupportedClaimCount } from '@/lib/api/queries';
-import { isActiveJob, jobFailureMessage, latestJobOfKind } from '@/lib/jobs';
+import {
+  isActiveJob,
+  jobFailureMessage,
+  latestJobOfKind,
+  readScriptGenerationProgress,
+  scriptGenerationStageLabel,
+} from '@/lib/jobs';
 import { ApprovedPanel } from './approved-panel';
 import { ScriptStudio } from './script-studio';
 import { VerificationRequired } from './verification-required';
@@ -151,6 +157,7 @@ function ScriptView() {
 
   if (script?.status === 'pending') {
     if (job && isActiveJob(job)) {
+      const progress = readScriptGenerationProgress(job);
       return (
         <JobProgressCard
           icon={<PenLine className="size-7" aria-hidden />}
@@ -159,7 +166,7 @@ function ScriptView() {
           job={job}
           steps={stepsForJob(job, {
             ready: 'Verified claims gathered',
-            working: 'Writing the script',
+            working: progress ? scriptGenerationStageLabel(progress) : 'Writing the script',
           })}
           onRefresh={() => void jobs.refetch()}
           refreshing={jobs.isRefetching}

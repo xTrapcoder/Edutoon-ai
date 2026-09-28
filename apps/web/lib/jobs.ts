@@ -129,6 +129,54 @@ export function jobFailureMessage(job: Job | undefined): string {
   return safeServerMessage(job?.error) ?? GENERIC_FAILURE;
 }
 
+export interface ScriptGenerationProgress {
+  stage: string;
+  topicIndex: number | null;
+  topicCount: number | null;
+  topicTitle: string | null;
+}
+
+/**
+ * What a `generate_script` job's interim `payload.progress` reports while it is still running
+ * (Phase 7 - see `services.scripts` on the API side). Untyped in the API's contract, so it is
+ * read field by field, exactly like `readExtractionSummary` / `readClaimExtractionSummary`: a
+ * missing or odd field is simply absent, never an exception.
+ */
+export function readScriptGenerationProgress(
+  job: Job | undefined,
+): ScriptGenerationProgress | null {
+  if (!job || job.status !== 'running' || !isRecord(job.payload)) return null;
+  const progress = job.payload.progress;
+  if (!isRecord(progress) || typeof progress.stage !== 'string') return null;
+  return {
+    stage: progress.stage,
+    topicIndex: asCount(progress.topic_index),
+    topicCount: asCount(progress.topic_count),
+    topicTitle: asString(progress.topic_title),
+  };
+}
+
+const SCRIPT_GENERATION_STAGE_LABELS: Record<string, string> = {
+  preparing_outline: 'Planning the lesson outline',
+  generating_topic: 'Writing the script',
+  correcting_duration: 'Adjusting the length',
+  validating_provenance: 'Checking every source',
+  finalising: 'Finishing up',
+};
+
+/** A one-line label for a script generation's current stage, naming the topic when known. */
+export function scriptGenerationStageLabel(progress: ScriptGenerationProgress): string {
+  if (
+    progress.stage === 'generating_topic' &&
+    progress.topicIndex !== null &&
+    progress.topicCount !== null
+  ) {
+    const of = `topic ${progress.topicIndex + 1} of ${progress.topicCount}`;
+    return progress.topicTitle ? `Writing ${of}: ${progress.topicTitle}` : `Writing ${of}`;
+  }
+  return SCRIPT_GENERATION_STAGE_LABELS[progress.stage] ?? 'Writing your script';
+}
+
 export type WaitLevel = 'normal' | 'slow' | 'stalled';
 
 export interface WaitAssessment {
