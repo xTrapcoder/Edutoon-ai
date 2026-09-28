@@ -1,9 +1,19 @@
 'use client';
 
-import { BookOpen, Check, Info, Pencil, RotateCcw, Sparkles, User, X } from 'lucide-react';
+import {
+  BookOpen,
+  Check,
+  Info,
+  Pencil,
+  RotateCcw,
+  ShieldCheck,
+  Sparkles,
+  User,
+  X,
+} from 'lucide-react';
 import { useState } from 'react';
 import { toast } from 'sonner';
-import type { Topic, TopicUpdateRequest } from '@edutoon/contracts';
+import type { ClaimVerification, Topic, TopicUpdateRequest } from '@edutoon/contracts';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardBody } from '@/components/ui/card';
@@ -11,6 +21,7 @@ import { Alert, Skeleton } from '@/components/ui/feedback';
 import { Field, Input, Textarea } from '@/components/ui/field';
 import { describeError } from '@/lib/api/errors';
 import { useSourceChunks, useUpdateTopic } from '@/lib/api/queries';
+import { CLAIM_STATUS_META } from '@/lib/claims';
 import { cn } from '@/lib/cn';
 import { formatPageRange } from '@/lib/format';
 import { evidencePages } from './topic-tree';
@@ -25,6 +36,44 @@ interface TopicDetailProps {
   topic: Topic;
   /** Wording cannot be changed while an extraction runs; accepting and rejecting still can. */
   wordingLocked: boolean;
+  /** This topic's own extracted claims (never a claim typed in by hand). */
+  claims: ClaimVerification[];
+}
+
+/** What claim extraction has found for this topic so far, if anything. */
+function ClaimsSummary({ claims }: { claims: ClaimVerification[] }) {
+  if (claims.length === 0) {
+    return (
+      <p className="flex gap-2 text-sm text-ink-600">
+        <ShieldCheck className="mt-0.5 size-4 shrink-0 text-ink-400" aria-hidden />
+        No claims have been extracted for this topic yet.
+      </p>
+    );
+  }
+  const byStatus = (status: ClaimVerification['status']) =>
+    claims.filter((claim) => claim.status === status).length;
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-1.5">
+        {(Object.keys(CLAIM_STATUS_META) as ClaimVerification['status'][])
+          .map((status) => ({ status, count: byStatus(status) }))
+          .filter(({ count }) => count > 0)
+          .map(({ status, count }) => (
+            <Badge key={status} tone={CLAIM_STATUS_META[status].tone}>
+              {count} {CLAIM_STATUS_META[status].label.toLowerCase()}
+            </Badge>
+          ))}
+      </div>
+      <ul className="space-y-2">
+        {claims.map((claim) => (
+          <li key={claim.id} className="text-sm text-ink-700">
+            {claim.claim_text}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
 }
 
 function PassageExcerpt({ projectId, topic }: { projectId: string; topic: Topic }) {
@@ -208,7 +257,7 @@ const DECISIONS = [
 ] as const;
 
 /** The selected topic: its wording, where it came from and the accept / reject decision. */
-export function TopicDetail({ projectId, topic, wordingLocked }: TopicDetailProps) {
+export function TopicDetail({ projectId, topic, wordingLocked, claims }: TopicDetailProps) {
   const [editing, setEditing] = useState(false);
   const update = useUpdateTopic(projectId);
 
@@ -303,6 +352,13 @@ export function TopicDetail({ projectId, topic, wordingLocked }: TopicDetailProp
             Evidence and source
           </h3>
           <Evidence projectId={projectId} topic={topic} />
+        </section>
+
+        <section aria-labelledby="claims-heading" className="space-y-3 border-t border-line pt-5">
+          <h3 id="claims-heading" className="text-sm font-semibold text-ink-950">
+            Claims verified for this topic
+          </h3>
+          <ClaimsSummary claims={claims} />
         </section>
 
         <section aria-labelledby="decision-heading" className="space-y-3 border-t border-line pt-5">

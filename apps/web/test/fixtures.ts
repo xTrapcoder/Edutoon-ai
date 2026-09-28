@@ -138,6 +138,7 @@ export function claim(over: Partial<ClaimVerification> = {}): ClaimVerification 
     rationale: null,
     embedding_model: 'test',
     llm_model: 'test',
+    topic_id: null,
     created_at: AT,
     citations: [],
     ...over,

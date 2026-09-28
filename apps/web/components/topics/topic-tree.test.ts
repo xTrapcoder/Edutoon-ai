@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { topic } from '@/test/fixtures';
-import { buildTree, countTopics, evidencePages, visibleRows } from './topic-tree';
+import {
+  buildTree,
+  countTopics,
+  eligibleAcceptedTopics,
+  evidencePages,
+  visibleRows,
+} from './topic-tree';
 
 const evidence = (from: number, to: number) => ({
   source_chunk_id: 'c',
@@ -43,6 +49,23 @@ describe('countTopics', () => {
       topic({ status: 'proposed' }),
     ]);
     expect(counts).toEqual({ total: 3, accepted: 1, rejected: 1, toReview: 1 });
+  });
+});
+
+describe('eligibleAcceptedTopics', () => {
+  it('counts a topic only when it and every ancestor is accepted', () => {
+    const topics = [
+      topic({ id: 'a', title: 'Models', status: 'accepted' }),
+      topic({ id: 'a1', parent_id: 'a', title: 'OSI', status: 'accepted', depth: 1 }),
+      topic({ id: 'b', title: 'Devices', status: 'proposed' }),
+      topic({ id: 'b1', parent_id: 'b', title: 'Switches', status: 'accepted', depth: 1 }),
+    ];
+    // 'b1' is accepted but its parent 'b' is not, so it does not count.
+    expect(eligibleAcceptedTopics(topics).map((t) => t.id)).toEqual(['a', 'a1']);
+  });
+
+  it('is empty when nothing has been accepted', () => {
+    expect(eligibleAcceptedTopics([topic({ status: 'proposed' })])).toEqual([]);
   });
 });
 

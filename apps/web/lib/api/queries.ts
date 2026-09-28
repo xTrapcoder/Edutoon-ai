@@ -101,6 +101,14 @@ export function useScriptDetail(projectId: string, scriptId: string | undefined)
   });
 }
 
+/** Every claim verification the project has, manual and extracted alike. */
+export function useClaimVerifications(projectId: string) {
+  return useQuery({
+    queryKey: queryKeys.claims(projectId),
+    queryFn: () => api.listClaimVerifications(projectId),
+  });
+}
+
 /** Whether the project has any claim verified as supported - what a script may be written from. */
 export function useSupportedClaimCount(projectId: string) {
   return useQuery({
@@ -129,6 +137,7 @@ export interface Workspace {
   topics: ReturnType<typeof useTopics>;
   jobs: ReturnType<typeof useJobs>;
   scripts: ReturnType<typeof useScripts>;
+  claims: ReturnType<typeof useClaimVerifications>;
   /** The project itself could not be loaded. */
   error: unknown;
   isLoading: boolean;
@@ -144,6 +153,7 @@ export function useWorkspace(projectId: string): Workspace {
   const topics = useTopics(projectId);
   const jobs = useJobs(projectId);
   const scripts = useScripts(projectId);
+  const claims = useClaimVerifications(projectId);
   const queryClient = useQueryClient();
 
   // When a background job finishes, what it produced is now stored: fetch it straight away
@@ -156,6 +166,7 @@ export function useWorkspace(projectId: string): Workspace {
       void queryClient.invalidateQueries({ queryKey: queryKeys.topics(projectId) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.scripts(projectId) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.sources(projectId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.claims(projectId) });
     }
     settled.current = jobSignature;
   }, [jobSignature, jobs.data, projectId, queryClient]);
@@ -178,6 +189,7 @@ export function useWorkspace(projectId: string): Workspace {
     topics,
     jobs,
     scripts,
+    claims,
     error: projectQuery.error,
     isLoading: projectQuery.isPending,
   };
@@ -297,6 +309,28 @@ export function useStartExtraction(projectId: string) {
   const queryClient = useQueryClient();
   return useIdempotentMutation(
     (options: { replace: boolean }, key) => api.startTopicExtraction(projectId, options, key),
+    {
+      onSuccess: (job: Job) => {
+        // Show the new job at once, so the screen switches to "in progress" without a gap.
+        queryClient.setQueryData<Job[]>(queryKeys.jobs(projectId), (jobs) => [
+          job,
+          ...(jobs ?? []).filter((existing) => existing.id !== job.id),
+        ]);
+        void queryClient.invalidateQueries({ queryKey: queryKeys.jobs(projectId) });
+      },
+    },
+  );
+}
+
+/**
+ * Turn the project's accepted topics into candidate claims and verify each one (Phase 6).
+ * Additive: calling it again after accepting more topics covers only the new ones, so this
+ * always sends `replace: false` - the ordinary, idempotent way to extend coverage.
+ */
+export function useStartClaimExtraction(projectId: string) {
+  const queryClient = useQueryClient();
+  return useIdempotentMutation(
+    (_: void, key) => api.startClaimExtraction(projectId, { replace: false }, key),
     {
       onSuccess: (job: Job) => {
         // Show the new job at once, so the screen switches to "in progress" without a gap.

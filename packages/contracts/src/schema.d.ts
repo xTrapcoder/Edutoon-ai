@@ -177,11 +177,44 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List Claim Verifications */
+        /**
+         * List Claim Verifications
+         * @description The project's claim verifications, newest first. ``topic_id`` narrows
+         *     the page to claims extracted for that one topic (Phase 6); omitted, every
+         *     verification is returned, manual and extracted alike.
+         */
         get: operations["list_claim_verifications_v1_projects__project_id__claim_verifications_get"];
         put?: never;
         /** Create Claim Verification */
         post: operations["create_claim_verification_v1_projects__project_id__claim_verifications_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/claim-verifications/extraction": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Enqueue Claim Extraction
+         * @description Turn the project's accepted topics into candidate claims and verify
+         *     each one (Phase 6). ``202`` with the queued ``extract_claims`` job;
+         *     progress and the result are on ``GET /v1/projects/{id}/jobs``. Refused
+         *     with ``409`` while one is already queued or running for this project;
+         *     otherwise always accepted - extraction is per-topic and additive, so a
+         *     repeat call after accepting more topics is the ordinary way to cover them
+         *     (``services.claim_extraction`` decides, topic by topic, what is already
+         *     covered; ``replace`` re-runs every accepted topic instead of only new
+         *     ones).
+         */
+        post: operations["enqueue_claim_extraction_v1_projects__project_id__claim_verifications_extraction_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -331,6 +364,14 @@ export interface components {
              */
             created_at: string;
         };
+        /** ClaimExtractionRequest */
+        ClaimExtractionRequest: {
+            /**
+             * Replace
+             * @default false
+             */
+            replace: boolean;
+        };
         /** ClaimVerificationListResponse */
         ClaimVerificationListResponse: {
             /** Items */
@@ -363,6 +404,8 @@ export interface components {
             embedding_model: string;
             /** Llm Model */
             llm_model: string;
+            /** Topic Id */
+            topic_id: string | null;
             /**
              * Created At
              * Format: date-time
@@ -399,7 +442,7 @@ export interface components {
              * Kind
              * @enum {string}
              */
-            kind: "parse_source" | "extract_topics" | "build_evidence" | "generate_script" | "synthesise_voice" | "render_video";
+            kind: "parse_source" | "extract_topics" | "extract_claims" | "build_evidence" | "generate_script" | "synthesise_voice" | "render_video";
             /**
              * Status
              * @enum {string}
@@ -1369,6 +1412,7 @@ export interface operations {
     list_claim_verifications_v1_projects__project_id__claim_verifications_get: {
         parameters: {
             query?: {
+                topic_id?: string | null;
                 limit?: number;
                 cursor?: string | null;
             };
@@ -1427,6 +1471,44 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ClaimVerificationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    enqueue_claim_extraction_v1_projects__project_id__claim_verifications_extraction_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "idempotency-key": string;
+                authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["ClaimExtractionRequest"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobResponse"];
                 };
             };
             /** @description Validation Error */

@@ -56,6 +56,71 @@ export function readExtractionSummary(job: Job | undefined): ExtractionSummary |
 
 const GENERIC_FAILURE = "This step didn't finish. You can try again.";
 
+export interface ClaimExtractionFailure {
+  topicId: string | null;
+  topicTitle: string | null;
+  /** Already screened for people (the API writes it through the same job-error path). */
+  error: string;
+}
+
+export interface ClaimExtractionSummary {
+  topicsEligible: number | null;
+  topicsProcessed: number | null;
+  topicsSkipped: number | null;
+  topicsFailed: number | null;
+  candidatesGenerated: number | null;
+  claimsVerified: number | null;
+  /** Verified counts by verdict, e.g. `{ supported: 3, unsupported: 1 }`. */
+  claimsByStatus: Record<string, number>;
+  failures: ClaimExtractionFailure[];
+}
+
+const asString = (value: unknown): string | null => (typeof value === 'string' ? value : null);
+
+function readClaimsByStatus(value: unknown): Record<string, number> {
+  if (!isRecord(value)) return {};
+  const result: Record<string, number> = {};
+  for (const [status, count] of Object.entries(value)) {
+    const parsed = asCount(count);
+    if (parsed !== null) result[status] = parsed;
+  }
+  return result;
+}
+
+function readFailures(value: unknown): ClaimExtractionFailure[] {
+  if (!Array.isArray(value)) return [];
+  const failures: ClaimExtractionFailure[] = [];
+  for (const entry of value) {
+    if (!isRecord(entry)) continue;
+    const error = safeServerMessage(entry.error) ?? GENERIC_FAILURE;
+    failures.push({
+      topicId: asString(entry.topic_id),
+      topicTitle: asString(entry.topic_title),
+      error,
+    });
+  }
+  return failures;
+}
+
+/**
+ * What an `extract_claims` job reported. Its `result` is untyped in the API's contract, so it is
+ * read field by field and a missing or odd field is simply absent - never an exception.
+ */
+export function readClaimExtractionSummary(job: Job | undefined): ClaimExtractionSummary | null {
+  if (!job || job.status !== 'succeeded' || !isRecord(job.result)) return null;
+  const result = job.result;
+  return {
+    topicsEligible: asCount(result.topics_eligible),
+    topicsProcessed: asCount(result.topics_processed),
+    topicsSkipped: asCount(result.topics_skipped_already_extracted),
+    topicsFailed: asCount(result.topics_failed),
+    candidatesGenerated: asCount(result.candidates_generated),
+    claimsVerified: asCount(result.claims_verified),
+    claimsByStatus: readClaimsByStatus(result.claims_by_status),
+    failures: readFailures(result.failures),
+  };
+}
+
 /**
  * Why a job failed, in words for its owner. The API writes `error` for people, but it is screened
  * again here so nothing technical can ever reach the screen.

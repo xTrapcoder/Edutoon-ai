@@ -206,6 +206,20 @@ export async function listClaimVerifications(
   return data.items;
 }
 
+export function startClaimExtraction(
+  projectId: string,
+  options: { replace: boolean },
+  key: string,
+): Promise<Job> {
+  return unwrap(
+    getApiClient().POST('/v1/projects/{project_id}/claim-verifications/extraction', {
+      params: { path: { project_id: projectId }, header: idempotent(key) },
+      body: { replace: options.replace },
+      signal: timeoutSignal(),
+    }),
+  );
+}
+
 // --- scripts ----------------------------------------------------------------------------
 
 /** The project's scripts, newest first (superseded ones included). */

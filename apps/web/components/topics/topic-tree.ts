@@ -68,6 +68,25 @@ export function countTopics(topics: readonly Topic[]): TopicCounts {
   };
 }
 
+/**
+ * The topics that count as accepted, in reading order - mirroring the API's own rule
+ * (`domain.topic_tree.accepted_topics`, what claim extraction is eligible to run on). A topic
+ * counts only if it *and every ancestor* is `accepted`: a parent left unaccepted takes its whole
+ * subtree out, so a decision on one row is never contradicted by treating a descendant as ready.
+ */
+export function eligibleAcceptedTopics(topics: readonly Topic[]): Topic[] {
+  const acceptedIds = new Set<string>();
+  const result: Topic[] = [];
+  for (const topic of topics) {
+    const parentCounts = topic.parent_id === null || acceptedIds.has(topic.parent_id);
+    if (topic.status === 'accepted' && parentCounts) {
+      acceptedIds.add(topic.id);
+      result.push(topic);
+    }
+  }
+  return result;
+}
+
 /** Where a topic was drawn from, in a few words: "Page 4" or "Pages 3–5, 9". */
 export function evidencePages(topic: Topic): string | null {
   const ranges: string[] = [];

@@ -404,6 +404,91 @@ function finishExtraction(job_: Row) {
   };
 }
 
+/** Topics that count as accepted for claim extraction - a topic counts only if it and every
+ * ancestor is accepted, mirroring `domain.topic_tree.accepted_topics`. */
+function eligibleAcceptedTopics(projectId: string): Row[] {
+  const acceptedIds = new Set<string>();
+  const result: Row[] = [];
+  for (const t of topics.filter((x) => x.project_id === projectId)) {
+    const parentId = t.parent_id as string | null;
+    const parentCounts = parentId === null || acceptedIds.has(parentId);
+    if (t.status === 'accepted' && parentCounts) {
+      acceptedIds.add(t.id);
+      result.push(t);
+    }
+  }
+  return result;
+}
+
+const CLAIM_TEMPLATES: [string, string, string][] = [
+  [
+    '{title} plays the role described in your source material.',
+    'supported',
+    'Found on the cited pages of your document.',
+  ],
+  [
+    '{title} was first standardised in 1969.',
+    'unsupported',
+    'No indexed source material supports this statement.',
+  ],
+];
+
+function finishClaimExtraction(job_: Row) {
+  const projectId = job_.project_id as string;
+  const replace = (job_.payload as { replace?: boolean }).replace === true;
+  const eligible = eligibleAcceptedTopics(projectId);
+  let processed = 0;
+  let skipped = 0;
+  let candidatesGenerated = 0;
+  let claimsVerified = 0;
+  const byStatus: Record<string, number> = {};
+
+  for (const t of eligible) {
+    const already = claims.some((c) => c.topic_id === t.id);
+    if (already && !replace) {
+      skipped += 1;
+      continue;
+    }
+    if (already && replace) {
+      for (let i = claims.length - 1; i >= 0; i--) {
+        if (claims[i]!.topic_id === t.id) claims.splice(i, 1);
+      }
+    }
+    processed += 1;
+    for (const [template, status, rationale] of CLAIM_TEMPLATES) {
+      candidatesGenerated += 1;
+      claims.push({
+        id: uuid(),
+        project_id: projectId,
+        claim_text: template.replace('{title}', t.title as string),
+        status,
+        rationale,
+        embedding_model: 'mock',
+        llm_model: 'mock',
+        topic_id: t.id,
+        created_at: now(),
+        citations: [],
+      });
+      claimsVerified += 1;
+      byStatus[status] = (byStatus[status] ?? 0) + 1;
+    }
+  }
+
+  job_.status = 'succeeded';
+  job_.finished_at = now();
+  job_.result = {
+    topics_eligible: eligible.length,
+    topics_processed: processed,
+    topics_skipped_already_extracted: skipped,
+    topics_failed: 0,
+    candidates_generated: candidatesGenerated,
+    claims_verified: claimsVerified,
+    claims_by_status: byStatus,
+    failures: [],
+    replace,
+  };
+}
+
 function advance(job_: Row) {
   // A job seeded with `hold` stays exactly as it is, so the in-progress screens can be inspected.
   if ((job_.payload as { hold?: boolean }).hold) return;
@@ -414,6 +499,7 @@ function advance(job_: Row) {
   }
   if (job_.status === 'running' && age > QUEUE_S + RUN_S) {
     if (job_.kind === 'extract_topics') finishExtraction(job_);
+    if (job_.kind === 'extract_claims') finishClaimExtraction(job_);
     if (job_.kind === 'generate_script') {
       const sc = scripts.find((s) => s.id === (job_.payload as { script_id: string }).script_id);
       if (sc) {
@@ -688,29 +774,61 @@ async function route(req: IncomingMessage, res: ServerResponse) {
     if (resource === 'jobs' && method === 'GET')
       return send(res, 200, page(jobs.filter((j) => j.project_id === pid)));
 
-    if (resource === 'claim-verifications' && method === 'GET') {
-      // MOCK_WITH_CLAIMS=1 pretends a project has one verified claim, so script generation can be tried.
-      const withClaim =
-        process.env.MOCK_WITH_CLAIMS === '1'
-          ? [
-              {
-                id: uuid(),
-                project_id: pid,
-                claim_text: 'A sample verified claim.',
-                status: 'supported',
-                rationale: null,
-                embedding_model: 'mock',
-                llm_model: 'mock',
-                created_at: now(),
-                citations: [],
-              },
-            ]
-          : [];
-      return send(
-        res,
-        200,
-        page([...claims.filter((c) => c.project_id === pid), ...withClaim] as Row[]),
-      );
+    if (resource === 'claim-verifications') {
+      if (method === 'GET' && !a) {
+        // MOCK_WITH_CLAIMS=1 pretends a project has one verified claim, so script generation can be tried.
+        const withClaim =
+          process.env.MOCK_WITH_CLAIMS === '1'
+            ? [
+                {
+                  id: uuid(),
+                  project_id: pid,
+                  claim_text: 'A sample verified claim.',
+                  status: 'supported',
+                  rationale: null,
+                  embedding_model: 'mock',
+                  llm_model: 'mock',
+                  topic_id: null,
+                  created_at: now(),
+                  citations: [],
+                },
+              ]
+            : [];
+        return send(
+          res,
+          200,
+          page([...claims.filter((c) => c.project_id === pid), ...withClaim] as Row[]),
+        );
+      }
+      if (method === 'POST' && a === 'extraction') {
+        const body = JSON.parse((await readBody(req)).toString() || '{}') as { replace?: boolean };
+        if (
+          jobs.some(
+            (j) =>
+              j.project_id === pid &&
+              j.kind === 'extract_claims' &&
+              (j.status === 'queued' || j.status === 'running'),
+          )
+        )
+          return fail(
+            res,
+            409,
+            'conflict',
+            'Claim extraction is already queued or running for this project; wait for it to finish.',
+          );
+        if (eligibleAcceptedTopics(pid).length === 0)
+          return fail(
+            res,
+            400,
+            'validation_error',
+            'There are no accepted topics to extract claims from. Accept at least one topic first.',
+          );
+        const j = job(pid, 'extract_claims', 'queued', {
+          payload: { project_id: pid, replace: body.replace === true },
+        });
+        touch();
+        return done(202, j);
+      }
     }
 
     if (resource === 'scripts') {

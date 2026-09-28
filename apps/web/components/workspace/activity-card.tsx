@@ -12,6 +12,7 @@ const KIND_LABEL: Record<JobKind, string> = {
   parse_source: 'Reading your PDF',
   build_evidence: 'Preparing your source for verification',
   extract_topics: 'Extracting topics',
+  extract_claims: 'Extracting and verifying claims',
   generate_script: 'Writing the script',
   synthesise_voice: 'Narration',
   render_video: 'Rendering',

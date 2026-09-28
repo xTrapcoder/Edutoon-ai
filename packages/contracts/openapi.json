@@ -1050,6 +1050,7 @@
           "claim-verifications"
         ],
         "summary": "List Claim Verifications",
+        "description": "The project's claim verifications, newest first. ``topic_id`` narrows\nthe page to claims extracted for that one topic (Phase 6); omitted, every\nverification is returned, manual and extracted alike.",
         "operationId": "list_claim_verifications_v1_projects__project_id__claim_verifications_get",
         "parameters": [
           {
@@ -1060,6 +1061,23 @@
               "type": "string",
               "format": "uuid",
               "title": "Project Id"
+            }
+          },
+          {
+            "name": "topic_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Topic Id"
             }
           },
           {
@@ -1112,6 +1130,94 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ClaimVerificationListResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/claim-verifications/extraction": {
+      "post": {
+        "tags": [
+          "claim-verifications"
+        ],
+        "summary": "Enqueue Claim Extraction",
+        "description": "Turn the project's accepted topics into candidate claims and verify\neach one (Phase 6). ``202`` with the queued ``extract_claims`` job;\nprogress and the result are on ``GET /v1/projects/{id}/jobs``. Refused\nwith ``409`` while one is already queued or running for this project;\notherwise always accepted - extraction is per-topic and additive, so a\nrepeat call after accepting more topics is the ordinary way to cover them\n(``services.claim_extraction`` decides, topic by topic, what is already\ncovered; ``replace`` re-runs every accepted topic instead of only new\nones).",
+        "operationId": "enqueue_claim_extraction_v1_projects__project_id__claim_verifications_extraction_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255,
+              "title": "Idempotency-Key"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ClaimExtractionRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobResponse"
                 }
               }
             }
@@ -1699,6 +1805,18 @@
         ],
         "title": "ClaimCitationResponse"
       },
+      "ClaimExtractionRequest": {
+        "properties": {
+          "replace": {
+            "type": "boolean",
+            "title": "Replace",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "ClaimExtractionRequest"
+      },
       "ClaimVerificationListResponse": {
         "properties": {
           "items": {
@@ -1772,6 +1890,18 @@
             "type": "string",
             "title": "Llm Model"
           },
+          "topic_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Topic Id"
+          },
           "created_at": {
             "type": "string",
             "format": "date-time",
@@ -1794,6 +1924,7 @@
           "rationale",
           "embedding_model",
           "llm_model",
+          "topic_id",
           "created_at",
           "citations"
         ],
@@ -1857,6 +1988,7 @@
             "enum": [
               "parse_source",
               "extract_topics",
+              "extract_claims",
               "build_evidence",
               "generate_script",
               "synthesise_voice",

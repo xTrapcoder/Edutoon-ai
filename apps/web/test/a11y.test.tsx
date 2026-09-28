@@ -8,7 +8,7 @@ import { DashboardView } from '@/components/dashboard/dashboard-view';
 import { ScriptPage } from '@/components/script/script-view';
 import { TopicsPage } from '@/components/topics/topics-view';
 import { CreateProjectWizard } from '@/components/wizard/create-project-wizard';
-import { job, project, PROJECT_ID, script, scriptDetail, source, topic } from './fixtures';
+import { claim, job, project, PROJECT_ID, script, scriptDetail, source, topic } from './fixtures';
 import { renderProjectPage, renderWithClient, serveProject } from './render';
 import { API, server } from './server';
 
@@ -85,6 +85,46 @@ describe('accessibility', () => {
     renderProjectPage(<TopicsPage />, 'topics');
     await screen.findByRole('heading', { name: 'Review your topics' });
     expect(await violationsIn(document.body)).toEqual([]);
+  });
+
+  it('the claim extraction panel, in progress and once finished', async () => {
+    serveProject({
+      sources: [source()],
+      jobs: [job(), job({ kind: 'extract_claims', status: 'running' })],
+      topics: [topic({ id: 'a', title: 'Models', status: 'accepted' })],
+      claims: [],
+    });
+    const running = renderProjectPage(<TopicsPage />, 'topics');
+    await screen.findByRole('heading', { name: /verifying your topics. claims/i });
+    expect(await violationsIn(running.container)).toEqual([]);
+    running.unmount();
+
+    serveProject({
+      sources: [source()],
+      jobs: [
+        job(),
+        job({
+          kind: 'extract_claims',
+          status: 'succeeded',
+          result: {
+            topics_eligible: 1,
+            topics_processed: 1,
+            topics_skipped_already_extracted: 0,
+            topics_failed: 0,
+            candidates_generated: 2,
+            claims_verified: 2,
+            claims_by_status: { supported: 2 },
+            failures: [],
+          },
+        }),
+      ],
+      topics: [topic({ id: 'a', title: 'Models', status: 'accepted' })],
+      claims: [claim({ id: 'c1', status: 'supported', topic_id: 'a' })],
+    });
+    const finished = renderProjectPage(<TopicsPage />, 'topics');
+    await screen.findByText('Claim extraction finished');
+    expect(await violationsIn(finished.container)).toEqual([]);
+    finished.unmount();
   });
 
   it('the verification-required state and the script studio', async () => {

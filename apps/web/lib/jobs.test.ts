@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { job } from '@/test/fixtures';
-import { assessWait, jobFailureMessage, readExtractionSummary } from './jobs';
+import {
+  assessWait,
+  jobFailureMessage,
+  readClaimExtractionSummary,
+  readExtractionSummary,
+} from './jobs';
 
 const at = (iso: string) => Date.parse(iso);
 
@@ -56,6 +61,57 @@ describe('readExtractionSummary', () => {
         topicCount: null,
       },
     );
+  });
+});
+
+describe('readClaimExtractionSummary', () => {
+  it('reads what the untyped result reports, screening each failure the same way job.error is', () => {
+    const summary = readClaimExtractionSummary(
+      job({
+        kind: 'extract_claims',
+        result: {
+          topics_eligible: 2,
+          topics_processed: 1,
+          topics_skipped_already_extracted: 0,
+          topics_failed: 1,
+          candidates_generated: 4,
+          claims_verified: 4,
+          claims_by_status: { supported: 3, unsupported: 1 },
+          failures: [
+            {
+              topic_id: 't1',
+              topic_title: 'Devices',
+              error: 'Traceback (most recent call last): boom',
+            },
+          ],
+        },
+      }),
+    );
+    expect(summary).toEqual({
+      topicsEligible: 2,
+      topicsProcessed: 1,
+      topicsSkipped: 0,
+      topicsFailed: 1,
+      candidatesGenerated: 4,
+      claimsVerified: 4,
+      claimsByStatus: { supported: 3, unsupported: 1 },
+      failures: [
+        {
+          topicId: 't1',
+          topicTitle: 'Devices',
+          error: "This step didn't finish. You can try again.",
+        },
+      ],
+    });
+  });
+
+  it('never throws on a result that is missing or odd', () => {
+    expect(readClaimExtractionSummary(job({ kind: 'extract_claims', result: null }))).toBeNull();
+    expect(
+      readClaimExtractionSummary(
+        job({ kind: 'extract_claims', result: { topics_eligible: 'lots', failures: 'nope' } }),
+      ),
+    ).toMatchObject({ topicsEligible: null, failures: [] });
   });
 });
 

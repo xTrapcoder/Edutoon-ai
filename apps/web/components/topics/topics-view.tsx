@@ -9,12 +9,14 @@ import { Alert } from '@/components/ui/feedback';
 import { Modal } from '@/components/ui/modal';
 import { describeError } from '@/lib/api/errors';
 import { useStartExtraction } from '@/lib/api/queries';
+import { claimsForTopic } from '@/lib/claims';
 import { pluralise } from '@/lib/format';
 import { isActiveJob, jobFailureMessage, latestJobOfKind, readExtractionSummary } from '@/lib/jobs';
 import { AddKeywordsForm, AddPdfForm } from '@/components/workspace/add-source';
 import { JobProgressCard, stepsForJob } from '@/components/workspace/job-progress';
 import { QueryGate } from '@/components/workspace/query-gate';
 import { useWorkspaceContext } from '@/components/workspace/workspace-context';
+import { ClaimExtractionPanel } from './claim-extraction-panel';
 import { TopicDetail } from './topic-detail';
 import { TopicList } from './topic-list';
 import { buildTree, countTopics, findTopic } from './topic-tree';
@@ -46,9 +48,10 @@ function ExtractButton({
 }
 
 function TopicsView() {
-  const { project, workflow, sources, topics, jobs } = useWorkspaceContext();
+  const { project, workflow, sources, topics, jobs, claims } = useWorkspaceContext();
   const start = useStartExtraction(project.id);
   const topicList = useMemo(() => topics.data ?? [], [topics.data]);
+  const claimList = useMemo(() => claims.data ?? [], [claims.data]);
 
   const extraction = latestJobOfKind(jobs.data, 'extract_topics');
   const active = extraction !== undefined && isActiveJob(extraction);
@@ -320,6 +323,15 @@ function TopicsView() {
         </Card>
       ) : null}
 
+      <ClaimExtractionPanel
+        projectId={project.id}
+        topics={topicList}
+        claims={claimList}
+        jobs={jobs.data ?? []}
+        onRefreshJobs={() => void jobs.refetch()}
+        refreshingJobs={jobs.isRefetching}
+      />
+
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)]">
         <Card className="lg:sticky lg:top-24 lg:max-h-[calc(100vh-8rem)] lg:self-start lg:overflow-hidden">
           <CardHeader
@@ -354,6 +366,7 @@ function TopicsView() {
               projectId={project.id}
               topic={selected}
               wordingLocked={active}
+              claims={claimsForTopic(claimList, selected.id)}
             />
           ) : null}
         </div>
@@ -390,10 +403,10 @@ function TopicsView() {
 }
 
 export function TopicsPage() {
-  const { sources, topics, jobs, scripts } = useWorkspaceContext();
+  const { sources, topics, jobs, scripts, claims } = useWorkspaceContext();
   return (
     <QueryGate
-      queries={[sources, topics, jobs, scripts]}
+      queries={[sources, topics, jobs, scripts, claims]}
       action="load your topics"
       label="Loading topics"
     >
