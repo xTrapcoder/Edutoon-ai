@@ -4,17 +4,24 @@ Same no-real-Clerk pattern as ``test_projects_api.py``: tokens are signed
 locally and ``providers.clerk.get_signing_key`` is monkeypatched.
 ``get_session`` is overridden to the transactional ``db_session`` fixture,
 so Postgres writes never persist past a test. The storage side (MinIO) is
-real and not transactional - uploaded objects persist - but keys are
-content-addressed (``projects/{project_id}/{checksum}.pdf``), so repeat
-runs simply overwrite the same handful of objects rather than accumulating.
+real and not transactional, so nothing here can roll a ``put_object`` back -
+each project id is a fresh UUIDv7 (``projects/{project_id}/{checksum}.pdf``,
+see ``domain/source_storage.py``), so *no* two test runs ever address the
+same key, and every real upload would otherwise be a permanent orphan in
+the dev MinIO. ``_track_uploads`` below wraps the storage client so
+``client_factory`` deletes everything a test actually stored, whether or
+not the test itself knew to ask for it - see
+``test_every_uploaded_object_is_deleted_once_the_client_is_torn_down``.
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import time
 from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from uuid import UUID, uuid4
 
 import httpx
@@ -29,10 +36,11 @@ from sqlalchemy import select
 from edutoon.api.dependencies import get_current_user
 from edutoon.core.config import get_settings
 from edutoon.db.session import get_session
+from edutoon.domain.source_storage import source_storage_key
 from edutoon.main import create_app
 from edutoon.providers import clerk
 from edutoon.providers.cache import get_redis_client
-from edutoon.providers.storage import get_storage_client
+from edutoon.providers.storage import Storage, get_storage_client
 from edutoon.repositories import jobs as jobs_repo
 from edutoon.repositories import users as users_repo
 from tests.idempotency_helpers import INVALID_KEYS, idempotency_status
@@ -80,6 +88,32 @@ def _make_token(private_pem: bytes, *, sub: str, email: str) -> str:
     return jwt.encode(payload, private_pem, algorithm="RS256")
 
 
+@asynccontextmanager
+async def _track_uploads(storage: Storage) -> AsyncIterator[Storage]:
+    """Wrap ``storage.put_object`` so every object it actually writes is
+    deleted again on exit - real MinIO has no transaction to roll back, so
+    without this every test that uploads leaves a permanent orphan behind
+    (see the module docstring). Deletes unconditionally, whether the test
+    that triggered the upload passed, failed, or never asked for cleanup.
+    """
+    created: list[tuple[str, str]] = []
+    real_put_object = storage.put_object
+
+    async def _tracking_put_object(
+        *, bucket: str, key: str, body: bytes, content_type: str
+    ) -> None:
+        created.append((bucket, key))
+        await real_put_object(bucket=bucket, key=key, body=body, content_type=content_type)
+
+    storage.put_object = _tracking_put_object  # type: ignore[method-assign]
+    try:
+        yield storage
+    finally:
+        storage.put_object = real_put_object  # type: ignore[method-assign]
+        for bucket, key in created:
+            await storage.delete_object(bucket=bucket, key=key)
+
+
 @pytest.fixture(scope="module")
 def rsa_keypair() -> tuple[bytes, RSAPublicKey]:
     return _generate_rsa_keypair()
@@ -123,7 +157,7 @@ async def client_factory(db_session) -> AsyncIterator[Callable[[], httpx.AsyncCl
     # exactly as lifespan() would have set them.
     settings = get_settings()
     app.state.redis = get_redis_client(settings.REDIS_URL)
-    app.state.storage = get_storage_client(
+    raw_storage = get_storage_client(
         endpoint_url=settings.STORAGE_ENDPOINT_URL,
         access_key_id=settings.STORAGE_ACCESS_KEY_ID,
         secret_access_key=settings.STORAGE_SECRET_ACCESS_KEY,
@@ -132,7 +166,9 @@ async def client_factory(db_session) -> AsyncIterator[Callable[[], httpx.AsyncCl
     def _make() -> httpx.AsyncClient:
         return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
 
-    yield _make
+    async with _track_uploads(raw_storage) as storage:
+        app.state.storage = storage
+        yield _make
 
     await app.state.redis.aclose()
 
@@ -505,7 +541,7 @@ async def test_concurrent_duplicate_upload_returns_409(db_session):
     app.dependency_overrides[get_current_user] = lambda: fixed_user
     settings = get_settings()
     app.state.redis = get_redis_client(settings.REDIS_URL)
-    app.state.storage = get_storage_client(
+    raw_storage = get_storage_client(
         endpoint_url=settings.STORAGE_ENDPOINT_URL,
         access_key_id=settings.STORAGE_ACCESS_KEY_ID,
         secret_access_key=settings.STORAGE_SECRET_ACCESS_KEY,
@@ -515,9 +551,13 @@ async def test_concurrent_duplicate_upload_returns_409(db_session):
     headers = {"Idempotency-Key": idempotency_key}
 
     try:
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
+        async with (
+            _track_uploads(raw_storage) as storage,
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client,
+        ):
+            app.state.storage = storage
             project_resp = await client.post(
                 "/v1/projects",
                 json={"title": "Source material", "source_type": "pdf"},
@@ -821,3 +861,64 @@ async def test_an_idempotency_key_of_the_maximum_length_is_accepted(client_facto
         )
 
     assert response.status_code == 201, response.text
+
+
+# --- storage-isolation regression (real MinIO leaves nothing behind) ---------------
+
+
+async def test_every_uploaded_object_is_deleted_once_tracking_exits(auth_headers, db_session):
+    """Regression test for the leak this module used to have: every real
+    upload wrote to real MinIO with a project id unique to the run, so
+    nothing ever deduplicated across test sessions and every ``pytest``
+    invocation left new orphaned objects behind forever.
+
+    ``client_factory`` only tears down (and so only deletes) once the whole
+    *test function* returns - a normal test body can never observe its own
+    fixture's post-yield cleanup. So this drives ``_track_uploads`` - the
+    exact mechanism ``client_factory`` wraps its storage client in -
+    directly, uploading through it via a real request and then asserting
+    the object is genuinely gone from MinIO, not merely absent from the
+    database, once tracking's own context exits.
+    """
+    headers = auth_headers()
+    settings = get_settings()
+    verifier = get_storage_client(
+        endpoint_url=settings.STORAGE_ENDPOINT_URL,
+        access_key_id=settings.STORAGE_ACCESS_KEY_ID,
+        secret_access_key=settings.STORAGE_SECRET_ACCESS_KEY,
+    )
+    raw_storage = get_storage_client(
+        endpoint_url=settings.STORAGE_ENDPOINT_URL,
+        access_key_id=settings.STORAGE_ACCESS_KEY_ID,
+        secret_access_key=settings.STORAGE_SECRET_ACCESS_KEY,
+    )
+
+    app = create_app()
+
+    async def _session_override():
+        yield db_session
+
+    key: str | None = None
+    async with _track_uploads(raw_storage) as tracked:
+        app.dependency_overrides[get_session] = _session_override
+        app.state.redis = get_redis_client(settings.REDIS_URL)
+        app.state.storage = tracked
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            project_id = await _create_project(client, headers)
+            upload_resp = await client.post(
+                f"/v1/projects/{project_id}/sources",
+                files=_pdf_file(),
+                headers={**headers, **IDEMPOTENCY_HEADERS},
+            )
+            assert upload_resp.status_code == 201
+            key = source_storage_key(UUID(project_id), hashlib.sha256(_DEFAULT_PDF).hexdigest())
+
+            assert await verifier.object_exists(bucket=settings.BUCKET_UPLOADS, key=key)
+
+        await app.state.redis.aclose()
+
+    assert key is not None
+    assert not await verifier.object_exists(bucket=settings.BUCKET_UPLOADS, key=key)
