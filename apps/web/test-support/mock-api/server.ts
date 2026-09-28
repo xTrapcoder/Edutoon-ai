@@ -30,6 +30,29 @@ const uuid = () => randomUUID();
 
 const OWNER = uuid();
 
+/** A real, valid, silent 16-bit PCM mono WAV of the given duration - so the QA player shows a
+ * genuine, correct-length audio element rather than a broken one. */
+function silentWav(durationMs: number): Buffer {
+  const sampleRate = 22050;
+  const frames = Math.max(1, Math.round((durationMs / 1000) * sampleRate));
+  const dataSize = frames * 2; // 16-bit mono
+  const buf = Buffer.alloc(44 + dataSize);
+  buf.write('RIFF', 0);
+  buf.writeUInt32LE(36 + dataSize, 4);
+  buf.write('WAVE', 8);
+  buf.write('fmt ', 12);
+  buf.writeUInt32LE(16, 16);
+  buf.writeUInt16LE(1, 20); // PCM
+  buf.writeUInt16LE(1, 22); // mono
+  buf.writeUInt32LE(sampleRate, 24);
+  buf.writeUInt32LE(sampleRate * 2, 28); // byte rate
+  buf.writeUInt16LE(2, 32); // block align
+  buf.writeUInt16LE(16, 34); // bits per sample
+  buf.write('data', 36);
+  buf.writeUInt32LE(dataSize, 40);
+  return buf; // PCM samples left zeroed = silence
+}
+
 // --- state --------------------------------------------------------------------------------
 
 const projects: Row[] = [];
@@ -39,6 +62,7 @@ const topics: Row[] = [];
 const jobs: Row[] = [];
 const scripts: Row[] = [];
 const segments: Row[] = [];
+const segmentAudio: Row[] = [];
 const claims: Row[] = [];
 /** Idempotency: `${method} ${path} ${key}` -> the first response. */
 const replays = new Map<string, { status: number; body: unknown }>();
@@ -278,10 +302,40 @@ function script(projectId: string, status: string, estimated: number | null): Ro
     status,
     llm_model: 'claude-sonnet-5',
     estimated_duration_ms: estimated,
+    measured_duration_ms: null,
     created_at: ago(3_600_000),
     updated_at: ago(3_000_000),
   };
   scripts.unshift(row);
+  return row;
+}
+
+// Piper has no genuine Indian-English voice (see apps/api/README.md, "Text-to-speech"): en-IN
+// mirrors that real limitation here too, rather than a mock that quietly does better than the
+// real system.
+const EN_GB_VOICE = 'en_GB-cori-medium';
+const voiceForLanguage = (language: string) => ({
+  voiceModel: EN_GB_VOICE,
+  isTemporarySubstitute: language === 'en-IN',
+});
+
+function readySegmentAudio(seg: Row, projectLanguage: string): Row {
+  const { voiceModel, isTemporarySubstitute } = voiceForLanguage(projectLanguage);
+  const measured = Math.round((seg.estimated_duration_ms as number) * (0.9 + Math.random() * 0.2));
+  const row: Row = {
+    id: uuid(),
+    script_segment_id: seg.id,
+    status: 'ready',
+    format: 'wav',
+    sample_rate: 22050,
+    channels: 1,
+    measured_duration_ms: measured,
+    voice_model: voiceModel,
+    is_temporary_voice_substitute: isTemporarySubstitute,
+    error: null,
+    updated_at: now(),
+  };
+  segmentAudio.push(row);
   return row;
 }
 
@@ -566,6 +620,33 @@ function advance(job_: Row) {
       job_.status = 'succeeded';
       job_.finished_at = now();
     }
+    if (job_.kind === 'synthesise_voice') {
+      const sc = scripts.find((s) => s.id === (job_.payload as { script_id: string }).script_id);
+      const p = projects.find((x) => x.id === job_.project_id);
+      if (sc && p) {
+        const segs = segments
+          .filter((s) => s.script_id === sc.id)
+          .sort((x, y) => (x.segment_index as number) - (y.segment_index as number));
+        for (let i = segmentAudio.length - 1; i >= 0; i--) {
+          if (segs.some((s) => s.id === segmentAudio[i]!.script_segment_id)) segmentAudio.splice(i, 1);
+        }
+        const created = segs.map((seg) => readySegmentAudio(seg, p.language as string));
+        sc.measured_duration_ms = created.reduce(
+          (total, a) => total + (a.measured_duration_ms as number),
+          0,
+        );
+        sc.updated_at = now();
+      }
+      job_.status = 'succeeded';
+      job_.finished_at = now();
+      job_.result = {
+        script_id: (job_.payload as { script_id: string }).script_id,
+        segment_count: segments.filter((s) => s.script_id === sc?.id).length,
+        ready_segment_count: segments.filter((s) => s.script_id === sc?.id).length,
+        failed_segment_ids: [],
+        measured_duration_ms: sc?.measured_duration_ms ?? null,
+      };
+    }
   }
 }
 
@@ -641,6 +722,31 @@ async function route(req: IncomingMessage, res: ServerResponse) {
 
   const m = (pattern: RegExp) => path.match(pattern);
   let hit: RegExpMatchArray | null;
+
+  // Five path segments (project/scripts/id/segments/id/audio) - outside the generic resource
+  // regex below, which only captures two - so it is matched here first.
+  if (
+    (hit = m(/^\/v1\/projects\/([^/]+)\/scripts\/([^/]+)\/segments\/([^/]+)\/audio$/)) &&
+    method === 'GET'
+  ) {
+    const [, pid, sid, segId] = hit as unknown as [string, string, string, string];
+    const p = projects.find((x) => x.id === pid);
+    if (!p) return fail(res, 404, 'not_found', `Project ${pid} not found.`);
+    const sc = scripts.find((s) => s.id === sid && s.project_id === pid);
+    if (!sc) return fail(res, 404, 'not_found', `Script ${sid} not found.`);
+    const audio = segmentAudio.find((a) => a.script_segment_id === segId);
+    if (!audio || audio.status !== 'ready')
+      return fail(res, 404, 'not_found', `Audio for segment ${segId} not found.`);
+    const wav = silentWav((audio.measured_duration_ms as number) ?? 1000);
+    res.writeHead(200, {
+      'Access-Control-Allow-Origin': ORIGIN,
+      'Access-Control-Allow-Credentials': 'true',
+      'Content-Type': 'audio/wav',
+      'Content-Length': String(wav.length),
+      'Accept-Ranges': 'bytes',
+    });
+    return res.end(wav);
+  }
 
   if (path === '/v1/projects' && method === 'GET')
     return send(
@@ -871,8 +977,60 @@ async function route(req: IncomingMessage, res: ServerResponse) {
 
     if (resource === 'scripts') {
       const mine = scripts.filter((s) => s.project_id === pid);
+
+      if (a && b === 'synthesis') {
+        const sc = mine.find((s) => s.id === a);
+        if (!sc) return fail(res, 404, 'not_found', `Script ${a} not found.`);
+        if (method === 'POST') {
+          if (sc.status !== 'approved')
+            return fail(
+              res,
+              409,
+              'conflict',
+              `Only an approved script can be synthesised; this one is '${sc.status}'.`,
+            );
+          if (
+            jobs.some(
+              (j) =>
+                j.project_id === pid &&
+                j.kind === 'synthesise_voice' &&
+                (j.status === 'queued' || j.status === 'running'),
+            )
+          )
+            return fail(
+              res,
+              409,
+              'conflict',
+              'Synthesis is already queued or running for this project; wait for it to finish.',
+            );
+          const j = job(pid, 'synthesise_voice', 'queued', {
+            payload: { script_id: sc.id, project_id: pid },
+          });
+          touch();
+          return done(202, j);
+        }
+        if (method === 'GET') {
+          const latest = jobs
+            .filter((j) => j.project_id === pid && j.kind === 'synthesise_voice')
+            .sort((x, y) => Date.parse(y.created_at as string) - Date.parse(x.created_at as string))[0];
+          const segs = segments
+            .filter((s) => s.script_id === sc.id)
+            .sort((x, y) => (x.segment_index as number) - (y.segment_index as number));
+          return send(res, 200, {
+            script: sc,
+            job: latest ?? null,
+            segments: segs.map((seg) => ({
+              id: seg.id,
+              segment_index: seg.segment_index,
+              estimated_duration_ms: seg.estimated_duration_ms,
+              audio: segmentAudio.find((au) => au.script_segment_id === seg.id) ?? null,
+            })),
+          });
+        }
+      }
+
       if (method === 'GET' && !a) return send(res, 200, page(mine));
-      if (method === 'GET' && a) {
+      if (method === 'GET' && a && !b) {
         const sc = mine.find((s) => s.id === a);
         if (!sc) return fail(res, 404, 'not_found', `Script ${a} not found.`);
         return send(res, 200, {

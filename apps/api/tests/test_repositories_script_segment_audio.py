@@ -241,6 +241,15 @@ async def test_ready_without_storage_fields_is_rejected_by_the_database(db_sessi
         )
 
 
+async def test_a_negative_measured_duration_is_rejected_by_the_database(db_session):
+    _, _, [segment] = await _make_script_with_segments(db_session, segment_count=1)
+
+    with pytest.raises(IntegrityError):
+        await audio_repo.upsert(
+            db_session, script_segment_id=segment.id, **_ready_fields(measured_duration_ms=-1)
+        )
+
+
 async def test_an_unknown_status_is_rejected_by_the_database(db_session):
     _, _, [segment] = await _make_script_with_segments(db_session, segment_count=1)
 
