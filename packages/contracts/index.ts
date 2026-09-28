@@ -34,6 +34,11 @@ export type SynthesisStatus = Schemas['SynthesisStatusResponse'];
 export type SynthesisSegment = Schemas['SynthesisSegmentResponse'];
 export type SegmentAudio = Schemas['SegmentAudioResponse'];
 
+export type StoryboardEnqueueResponse = Schemas['StoryboardEnqueueResponse'];
+export type StoryboardStatus = Schemas['StoryboardStatusResponse'];
+export type SegmentStoryboard = Schemas['SegmentStoryboardResponse'];
+export type Scene = Schemas['SceneResponse'];
+
 export type ClaimVerification = Schemas['ClaimVerificationResponse'];
 
 /** The vocabularies below are the API's own `Literal` types, read back out of the schema. */
@@ -48,3 +53,4 @@ export type JobStatus = Job['status'];
 export type SourceStatus = Source['status'];
 export type VerdictStatus = CitedClaim['status'];
 export type AudioStatus = SegmentAudio['status'];
+export type SceneTemplate = Scene['template'];

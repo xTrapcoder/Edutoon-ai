@@ -1881,6 +1881,170 @@
         }
       }
     },
+    "/v1/projects/{project_id}/scripts/{script_id}/storyboard": {
+      "post": {
+        "tags": [
+          "storyboard"
+        ],
+        "summary": "Enqueue Storyboard",
+        "operationId": "enqueue_storyboard_v1_projects__project_id__scripts__script_id__storyboard_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "script_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Script Id"
+            }
+          },
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255,
+              "title": "Idempotency-Key"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/StoryboardEnqueueRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoryboardEnqueueResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "storyboard"
+        ],
+        "summary": "Get Storyboard",
+        "operationId": "get_storyboard_v1_projects__project_id__scripts__script_id__storyboard_get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "script_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Script Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoryboardStatusResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/jobs": {
       "get": {
         "tags": [
@@ -2249,6 +2413,7 @@
               "build_evidence",
               "generate_script",
               "synthesise_voice",
+              "generate_storyboard",
               "render_video"
             ],
             "title": "Kind"
@@ -2617,6 +2782,65 @@
         "title": "ProjectUpdateRequest",
         "description": "All fields optional (PATCH semantics). Only keys actually present in\nthe request body reach the service - see ``model_dump(exclude_unset=True)``\nin the router - so omitting a field leaves it untouched, while\nexplicitly sending ``null`` for a nullable field (``description``)\nclears it. ``title`` and the generation settings are ``NOT NULL`` in the\nschema, so an explicit ``null`` for any of them is rejected here rather than\nreaching the database."
       },
+      "SceneResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "scene_index": {
+            "type": "integer",
+            "title": "Scene Index"
+          },
+          "start_ms": {
+            "type": "integer",
+            "title": "Start Ms"
+          },
+          "duration_ms": {
+            "type": "integer",
+            "title": "Duration Ms"
+          },
+          "template": {
+            "type": "string",
+            "enum": [
+              "title_card",
+              "bullet_points",
+              "labelled_diagram",
+              "split_text_illustration",
+              "full_bleed_illustration",
+              "formula_or_code"
+            ],
+            "title": "Template"
+          },
+          "content": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Content"
+          },
+          "reviewer_flag": {
+            "type": "boolean",
+            "title": "Reviewer Flag"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "scene_index",
+          "start_ms",
+          "duration_ms",
+          "template",
+          "content",
+          "reviewer_flag",
+          "updated_at"
+        ],
+        "title": "SceneResponse"
+      },
       "ScriptDetailResponse": {
         "properties": {
           "id": {
@@ -2954,6 +3178,60 @@
         ],
         "title": "SegmentAudioResponse"
       },
+      "SegmentStoryboardResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "segment_index": {
+            "type": "integer",
+            "title": "Segment Index"
+          },
+          "expected_scene_count": {
+            "type": "integer",
+            "title": "Expected Scene Count"
+          },
+          "audio_measured_duration_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Audio Measured Duration Ms"
+          },
+          "is_stale": {
+            "type": "boolean",
+            "title": "Is Stale"
+          },
+          "is_ready": {
+            "type": "boolean",
+            "title": "Is Ready"
+          },
+          "scenes": {
+            "items": {
+              "$ref": "#/components/schemas/SceneResponse"
+            },
+            "type": "array",
+            "title": "Scenes"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "segment_index",
+          "expected_scene_count",
+          "audio_measured_duration_ms",
+          "is_stale",
+          "is_ready",
+          "scenes"
+        ],
+        "title": "SegmentStoryboardResponse"
+      },
       "SourceChunkListResponse": {
         "properties": {
           "items": {
@@ -3054,6 +3332,97 @@
           "updated_at"
         ],
         "title": "SourceChunkResponse"
+      },
+      "StoryboardEnqueueRequest": {
+        "properties": {},
+        "additionalProperties": false,
+        "type": "object",
+        "title": "StoryboardEnqueueRequest",
+        "description": "Carries no fields yet: generation takes its settings from\nconfiguration, not the caller. Exists so an unknown field in the\nrequest body is rejected with 422 (rule 10), the same pattern as\n``SynthesisRequest``."
+      },
+      "StoryboardEnqueueResponse": {
+        "properties": {
+          "job": {
+            "$ref": "#/components/schemas/JobResponse"
+          },
+          "estimated_provider_calls": {
+            "type": "integer",
+            "title": "Estimated Provider Calls"
+          }
+        },
+        "type": "object",
+        "required": [
+          "job",
+          "estimated_provider_calls"
+        ],
+        "title": "StoryboardEnqueueResponse"
+      },
+      "StoryboardStatusResponse": {
+        "properties": {
+          "script": {
+            "$ref": "#/components/schemas/ScriptResponse"
+          },
+          "job": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/JobResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "segments": {
+            "items": {
+              "$ref": "#/components/schemas/SegmentStoryboardResponse"
+            },
+            "type": "array",
+            "title": "Segments"
+          },
+          "ready_segment_count": {
+            "type": "integer",
+            "title": "Ready Segment Count"
+          },
+          "not_ready_segment_ids": {
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "type": "array",
+            "title": "Not Ready Segment Ids"
+          },
+          "is_complete": {
+            "type": "boolean",
+            "title": "Is Complete"
+          },
+          "estimated_provider_calls": {
+            "type": "integer",
+            "title": "Estimated Provider Calls"
+          },
+          "actual_provider_calls": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actual Provider Calls"
+          }
+        },
+        "type": "object",
+        "required": [
+          "script",
+          "job",
+          "segments",
+          "ready_segment_count",
+          "not_ready_segment_ids",
+          "is_complete",
+          "estimated_provider_calls",
+          "actual_provider_calls"
+        ],
+        "title": "StoryboardStatusResponse"
       },
       "SynthesisRequest": {
         "properties": {},

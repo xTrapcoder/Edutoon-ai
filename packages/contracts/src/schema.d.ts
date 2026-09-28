@@ -331,6 +331,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/scripts/{script_id}/storyboard": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Storyboard */
+        get: operations["get_storyboard_v1_projects__project_id__scripts__script_id__storyboard_get"];
+        put?: never;
+        /** Enqueue Storyboard */
+        post: operations["enqueue_storyboard_v1_projects__project_id__scripts__script_id__storyboard_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/jobs": {
         parameters: {
             query?: never;
@@ -477,7 +495,7 @@ export interface components {
              * Kind
              * @enum {string}
              */
-            kind: "parse_source" | "extract_topics" | "extract_claims" | "build_evidence" | "generate_script" | "synthesise_voice" | "render_video";
+            kind: "parse_source" | "extract_topics" | "extract_claims" | "build_evidence" | "generate_script" | "synthesise_voice" | "generate_storyboard" | "render_video";
             /**
              * Status
              * @enum {string}
@@ -626,6 +644,36 @@ export interface components {
             /** Target Duration Ms */
             target_duration_ms?: number | null;
         };
+        /** SceneResponse */
+        SceneResponse: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Scene Index */
+            scene_index: number;
+            /** Start Ms */
+            start_ms: number;
+            /** Duration Ms */
+            duration_ms: number;
+            /**
+             * Template
+             * @enum {string}
+             */
+            template: "title_card" | "bullet_points" | "labelled_diagram" | "split_text_illustration" | "full_bleed_illustration" | "formula_or_code";
+            /** Content */
+            content: {
+                [key: string]: unknown;
+            };
+            /** Reviewer Flag */
+            reviewer_flag: boolean;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
         /** ScriptDetailResponse */
         ScriptDetailResponse: {
             /**
@@ -755,6 +803,26 @@ export interface components {
              */
             updated_at: string;
         };
+        /** SegmentStoryboardResponse */
+        SegmentStoryboardResponse: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Segment Index */
+            segment_index: number;
+            /** Expected Scene Count */
+            expected_scene_count: number;
+            /** Audio Measured Duration Ms */
+            audio_measured_duration_ms: number | null;
+            /** Is Stale */
+            is_stale: boolean;
+            /** Is Ready */
+            is_ready: boolean;
+            /** Scenes */
+            scenes: components["schemas"]["SceneResponse"][];
+        };
         /**
          * SourceChunkListResponse
          * @description Not paginated: a source's chunk count is bounded by ``MAX_PDF_PAGES``
@@ -801,6 +869,37 @@ export interface components {
              * Format: date-time
              */
             updated_at: string;
+        };
+        /**
+         * StoryboardEnqueueRequest
+         * @description Carries no fields yet: generation takes its settings from
+         *     configuration, not the caller. Exists so an unknown field in the
+         *     request body is rejected with 422 (rule 10), the same pattern as
+         *     ``SynthesisRequest``.
+         */
+        StoryboardEnqueueRequest: Record<string, never>;
+        /** StoryboardEnqueueResponse */
+        StoryboardEnqueueResponse: {
+            job: components["schemas"]["JobResponse"];
+            /** Estimated Provider Calls */
+            estimated_provider_calls: number;
+        };
+        /** StoryboardStatusResponse */
+        StoryboardStatusResponse: {
+            script: components["schemas"]["ScriptResponse"];
+            job: components["schemas"]["JobResponse"] | null;
+            /** Segments */
+            segments: components["schemas"]["SegmentStoryboardResponse"][];
+            /** Ready Segment Count */
+            ready_segment_count: number;
+            /** Not Ready Segment Ids */
+            not_ready_segment_ids: string[];
+            /** Is Complete */
+            is_complete: boolean;
+            /** Estimated Provider Calls */
+            estimated_provider_calls: number;
+            /** Actual Provider Calls */
+            actual_provider_calls: number | null;
         };
         /**
          * SynthesisRequest
@@ -1889,6 +1988,79 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_storyboard_v1_projects__project_id__scripts__script_id__storyboard_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+                script_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StoryboardStatusResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    enqueue_storyboard_v1_projects__project_id__scripts__script_id__storyboard_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "idempotency-key": string;
+                authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+                script_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["StoryboardEnqueueRequest"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StoryboardEnqueueResponse"];
                 };
             };
             /** @description Validation Error */
