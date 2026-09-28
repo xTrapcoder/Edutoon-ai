@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from pydantic import Field, ValidationError
+from pydantic import Field, ValidationError, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -103,6 +103,69 @@ class Settings(BaseSettings):
     # ``extract_claims`` job may sit "running" with no worker holding it
     # before it is treated as abandoned and failed.
     CLAIM_EXTRACTION_STALE_AFTER_SECONDS: int = Field(default=3600, ge=60)
+
+    # Duration-aware, topic-scoped script generation (Phase 7). Every one is
+    # optional: an ``.env`` written before Phase 7 boots unchanged. Replaces the
+    # single whole-project ``compose_script`` call with one outline call plus one
+    # call per topic "section" (further split if a topic's own budget would make
+    # a single call too large) - see ``domain.script_duration`` for the pure
+    # allocation/splitting maths these bound, and ``services.scripts`` for how
+    # they are spent. ``MAX_CLAIMS_PER_GENERATION`` (above) still bounds the
+    # *whole* script's claim count; ``MAX_CLAIMS_PER_SECTION`` bounds one
+    # section's call.
+    #
+    # ``MIN_SECTION_DURATION_MS`` is the floor every accepted topic's section
+    # receives before evidence-proportional duration is added on top, and is
+    # also the enqueue-time check that a project has not accepted more topics
+    # than its target duration can give each a floor (rule: never silently
+    # squeeze a topic).
+    #
+    # ``MAX_SECTION_DURATION_MS`` is a *per provider call* ceiling, not a cap on
+    # a topic's total budget: a topic allocated more than this is split into
+    # several ordered sub-sections (same ``topic_id``), never one huge call.
+    MIN_SECTION_DURATION_MS: int = Field(default=30_000, ge=1)
+    MAX_SECTION_DURATION_MS: int = Field(default=300_000, ge=1)
+
+    # How many accepted topics one generation may cover - bounds worst-case
+    # provider-call count and cost independently of how many topics a project
+    # happens to have accepted. Enforced at enqueue time (a clear validation
+    # error, never a silent drop of the excess topics).
+    MAX_SCRIPT_SECTIONS: int = Field(default=20, ge=1)
+
+    # How many of a topic's own supported claims one section's provider call may
+    # see - the oldest-first, deterministically chosen subset when a topic has
+    # more than this many (never random, never borrowed from another topic).
+    MAX_CLAIMS_PER_SECTION: int = Field(default=15, ge=1)
+
+    # How far the WPM-based ``estimated_duration_ms`` may sit from
+    # ``project.target_duration_ms`` (a fraction of the target) before exactly
+    # one bounded correction pass re-generates every section with a rescaled
+    # word budget. The script is accepted after that pass whatever the result -
+    # duration is a target for a not-yet-real TTS estimate, never a hard gate
+    # (only structural/provenance failures reject a script).
+    SCRIPT_DURATION_TOLERANCE: float = Field(default=0.15, gt=0, lt=1)
+
+    # How many bounded correction passes a generation may run when the
+    # assembled script lands outside ``SCRIPT_DURATION_TOLERANCE`` - each pass
+    # re-generates every section once with a rescaled word budget. ``0``
+    # disables correction outright (the first pass's result is always
+    # accepted); there is no automatic retry beyond this: a script is accepted
+    # after its last permitted pass whatever the remaining difference.
+    MAX_SCRIPT_CORRECTION_ATTEMPTS: int = Field(default=1, ge=0)
+
+    # How bounded continuity context (previous/next section) is capped, in
+    # characters, when built into a section's prompt - deliberately far smaller
+    # than a whole script, so passing it never approaches a single huge call.
+    CONTINUITY_CONTEXT_CHARS: int = Field(default=600, ge=1)
+
+    @model_validator(mode="after")
+    def _section_duration_bounds_are_consistent(self) -> Settings:
+        if self.MAX_SECTION_DURATION_MS < self.MIN_SECTION_DURATION_MS:
+            raise ValueError(
+                "MAX_SECTION_DURATION_MS must be >= MIN_SECTION_DURATION_MS "
+                f"({self.MAX_SECTION_DURATION_MS} < {self.MIN_SECTION_DURATION_MS})."
+            )
+        return self
 
 
 class MissingSettingsError(RuntimeError):

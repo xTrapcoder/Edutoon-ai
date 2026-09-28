@@ -53,6 +53,7 @@ class ValidatedScriptSegment:
     connective: bool
     claim_verification_ids: tuple[UUID, ...]
     estimated_duration_ms: int
+    topic_id: UUID | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,6 +115,7 @@ def filter_and_validate(
                 estimated_duration_ms=_segment_duration_ms(
                     segment.narration_text, words_per_minute
                 ),
+                topic_id=segment.topic_id,
             )
         )
 

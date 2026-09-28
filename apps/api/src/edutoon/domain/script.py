@@ -15,6 +15,7 @@ is what turns a draft into something safe to persist.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from uuid import UUID
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,7 +26,9 @@ class ScriptSegmentDraft:
     the model (stringified claim-verification UUIDs); they are validated
     downstream, not here. ``connective`` marks a segment that asserts no
     fact of its own - an introduction or a hand-off - and so is allowed to
-    carry no citations.
+    carry no citations. ``topic_id`` (Phase 7) is never taken from the model:
+    the service sets it to the accepted topic whose section this segment
+    belongs to, since a section call only ever writes narration for one topic.
     """
 
     segment_index: int
@@ -33,6 +36,7 @@ class ScriptSegmentDraft:
     claim_ids: list[str]
     estimated_duration_ms: int
     connective: bool = False
+    topic_id: UUID | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,3 +44,26 @@ class ScriptDraft:
     title: str
     segments: list[ScriptSegmentDraft] = field(default_factory=list)
     estimated_duration_ms: int = 0
+
+
+# --- Outline (Phase 7) -------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class TopicOutlineDraft:
+    """One accepted topic's outline guidance from the model - informational
+    only. Order and duration budget are never taken from an outline response
+    (see ``domain.script_duration``): the server already fixed both before the
+    outline call was made, from the topic's own reading-order position and its
+    evidence-proportional budget.
+    """
+
+    topic_id: UUID
+    purpose: str
+    key_concepts: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class ScriptOutlineDraft:
+    title: str
+    topics: tuple[TopicOutlineDraft, ...] = ()
