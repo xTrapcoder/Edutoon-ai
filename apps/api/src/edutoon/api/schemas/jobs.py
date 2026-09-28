@@ -2,7 +2,7 @@
 
 ``kind``/``status`` are ``Literal`` types mirroring the ``ck_jobs_kind`` /
 ``ck_jobs_status`` CHECK constraints (migration 0003, ``kind`` widened by
-0012) exactly, the same pattern as ``UploadedSourceResponse`` and
+0012 and 0015) exactly, the same pattern as ``UploadedSourceResponse`` and
 ``ScriptResponse``. Read-only: there is no request schema because this
 router has no mutating routes.
 """
@@ -24,6 +24,7 @@ JobKind = Literal[
     "build_evidence",
     "generate_script",
     "synthesise_voice",
+    "generate_storyboard",
     "render_video",
 ]
 JobStatus = Literal["queued", "running", "succeeded", "failed", "cancelled"]

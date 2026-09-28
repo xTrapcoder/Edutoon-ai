@@ -260,3 +260,22 @@ script_segment_audio = sa.Table(
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
 )
+
+# Migration 0015 (Phase 9). Not append-only, like script_segment_audio: a
+# retry replaces one segment's whole scene set via DELETE + INSERT inside a
+# single SAVEPOINT (repositories.script_segment_scenes.replace_for_segment),
+# never an UPDATE of individual rows.
+script_segment_scenes = sa.Table(
+    "script_segment_scenes",
+    metadata,
+    sa.Column("id", UUID(as_uuid=True), primary_key=True, server_default=sa.FetchedValue()),
+    sa.Column("script_segment_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("scene_index", sa.Integer, nullable=False),
+    sa.Column("start_ms", sa.BigInteger, nullable=False),
+    sa.Column("duration_ms", sa.BigInteger, nullable=False),
+    sa.Column("template", sa.Text, nullable=False),
+    sa.Column("content", JSONB, nullable=False),
+    sa.Column("source_audio_content_hash", sa.Text, nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+)

@@ -210,6 +210,35 @@ class Settings(BaseSettings):
     # shape as generate_script) before it is treated as abandoned and failed.
     SYNTHESIS_STALE_AFTER_SECONDS: int = Field(default=3600, ge=60)
 
+    # Scene / Storyboard layer (Phase 9). Every one is optional: an .env written before
+    # Phase 9 boots unchanged. Turns each segment's measured narration audio
+    # (script_segment_audio.measured_duration_ms - the sole narration-completeness gate,
+    # see domain.storyboard_timing) into an ordered set of fixed-template scenes. The
+    # six templates and their per-slot character limits are a fixed contract
+    # (domain.storyboard_template), not configuration.
+    #
+    # MIN_SCENE_DURATION_MS is the shortest a single scene may run; a segment too short
+    # to give even one scene this floor is never squeezed into an under-length scene
+    # (domain.storyboard_timing.effective_scene_count) - it is handled as the documented
+    # degenerate case instead. MAX_SCENES_PER_SEGMENT caps how many scenes one segment's
+    # single provider call may propose.
+    MIN_SCENE_DURATION_MS: int = Field(default=1500, ge=1)
+    MAX_SCENES_PER_SEGMENT: int = Field(default=6, ge=1)
+
+    # Worst-case size bounds, enforced at enqueue time before any provider call
+    # (never merely documented) - the same "cheap check first" discipline as script
+    # generation's MAX_SCRIPT_SECTIONS. MAX_SCENES_PER_SCRIPT bounds a whole script's
+    # scene count; MAX_STORYBOARD_SEGMENTS bounds how many segments (and so provider
+    # calls - exactly one per segment, never one per scene) one storyboard generation
+    # may cover.
+    MAX_SCENES_PER_SCRIPT: int = Field(default=300, ge=1)
+    MAX_STORYBOARD_SEGMENTS: int = Field(default=200, ge=1)
+
+    # Mirrors the other STALE_AFTER_SECONDS settings: how long a generate_storyboard job
+    # may sit "running" with no worker holding it before it is treated as abandoned by a
+    # crashed worker and failed.
+    STORYBOARD_STALE_AFTER_SECONDS: int = Field(default=3600, ge=60)
+
     @model_validator(mode="after")
     def _section_duration_bounds_are_consistent(self) -> Settings:
         if self.MAX_SECTION_DURATION_MS < self.MIN_SECTION_DURATION_MS:
