@@ -115,28 +115,53 @@ def _idle_providers() -> WorkerProviders:
     return WorkerProviders(embeddings=_idle_embeddings(), llm=_idle_llm(), script_llm=_idle_llm())
 
 
-def _fake_llm(
+# A project created with no explicit generation settings gets
+# ``DEFAULT_TARGET_DURATION_MS`` (5 minutes); at ``SCRIPT_WORDS_PER_MINUTE``'s
+# default (150), 750 words lands dead centre of that target, so a single
+# section call's narration does not itself trip Phase 7's duration-correction
+# pass and turn "one call" tests into "two calls" by accident.
+_ON_TARGET_WORD_COUNT = 750
+
+
+def _fake_script_llm(
     monkeypatch: Any,
-    segments: list[dict[str, Any]],
     *,
+    topic_id: Any,
+    claim_id: Any,
     title: str = "A title",
+    narration_words: int = _ON_TARGET_WORD_COUNT,
     model: str = LLM_MODEL,
 ) -> LLM:
+    """An LLM double answering both Phase 7 script-generation calls: the
+    outline call (for whatever topics it is given) and the section call for
+    ``topic_id``, citing ``claim_id``. The narration is padded to
+    ``narration_words`` words (see ``_ON_TARGET_WORD_COUNT``) so a test that
+    is not itself about duration correction does not trigger it by accident.
+    """
     client = AsyncAnthropic(api_key="sk-ant-test-not-a-real-key")
-    message = Message(
-        id="msg_1",
-        content=[
-            ToolUseBlock(
-                type="tool_use", id="toolu_1", name="submit_script",
-                input={"title": title, "segments": segments},
-            )
-        ],
-        model=model,
-        role="assistant",
-        type="message",
-        usage=AnthropicUsage(input_tokens=10, output_tokens=20),
-    )
-    monkeypatch.setattr(client.messages, "create", AsyncMock(return_value=message))
+    narration = " ".join(["word"] * narration_words)
+
+    async def _create(*, tool_choice: dict[str, str], **_kwargs: Any) -> Message:
+        name = tool_choice["name"]
+        if name == "submit_outline":
+            tool_input: dict[str, Any] = {
+                "title": title,
+                "topics": [{"topic_id": str(topic_id), "purpose": "p", "key_concepts": []}],
+            }
+        elif name == "submit_section":
+            tool_input = {"segments": [{"narration_text": narration, "claim_ids": [str(claim_id)]}]}
+        else:  # pragma: no cover - a test bug, not a production path
+            raise AssertionError(f"unexpected tool_choice: {tool_choice}")
+        return Message(
+            id="msg_1",
+            content=[ToolUseBlock(type="tool_use", id="toolu_1", name=name, input=tool_input)],
+            model=model,
+            role="assistant",
+            type="message",
+            usage=AnthropicUsage(input_tokens=10, output_tokens=20),
+        )
+
+    monkeypatch.setattr(client.messages, "create", AsyncMock(side_effect=_create))
     return LLM(client, model=model)
 
 
@@ -217,7 +242,14 @@ async def _make_source_with_chunks(db_session: AsyncSession, project, num_chunks
 
 
 async def _project_with_supported_claim(db_session: AsyncSession):
+    """A project with one *accepted* topic and one *supported* claim
+    extracted for it - the minimum Phase 7's enqueue-time evidence gate
+    requires.
+    """
     project = await _make_project(db_session)
+    topic = await project_topics_repo.create(
+        db_session, project_id=project.id, title="A topic", status="accepted"
+    )
     source = await uploaded_sources_repo.create(
         db_session,
         project_id=project.id,
@@ -242,9 +274,10 @@ async def _project_with_supported_claim(db_session: AsyncSession):
         status="supported",
         embedding_model=EMBEDDING_MODEL,
         llm_model=LLM_MODEL,
+        topic_id=topic.id,
         citations=[NewClaimCitation(source_chunk_id=chunk.id, similarity=0.9)],
     )
-    return project, claim
+    return project, topic, claim
 
 
 # --- process_one_job: empty queue -------------------------------------------------
@@ -325,16 +358,13 @@ async def test_process_one_job_marks_build_evidence_failed_on_a_provider_error(
 async def test_process_one_job_runs_the_generate_script_handler(
     db_session, worker_sessionmaker, monkeypatch
 ):
-    project, claim = await _project_with_supported_claim(db_session)
+    project, topic, claim = await _project_with_supported_claim(db_session)
     enqueued = await scripts_service.enqueue_script_generation(
         db_session, project_id=project.id, owner_id=project.owner_id, idempotency_key="k"
     )
     await db_session.commit()
 
-    llm = _fake_llm(
-        monkeypatch,
-        [{"narration_text": "A cited sentence.", "claim_ids": [str(claim.id)]}],
-    )
+    llm = _fake_script_llm(monkeypatch, topic_id=topic.id, claim_id=claim.id)
     providers = WorkerProviders(embeddings=_idle_embeddings(), llm=_idle_llm(), script_llm=llm)
 
     claimed_something = await process_one_job(worker_sessionmaker, providers)
@@ -360,7 +390,7 @@ QUEUED_FOR_MODEL = "queued-for-model-z"
 
 async def _queued_script(db_session: AsyncSession):
     """A project with a verified claim and a script queued for ``QUEUED_FOR_MODEL``."""
-    project, claim = await _project_with_supported_claim(db_session)
+    project, topic, claim = await _project_with_supported_claim(db_session)
     enqueued = await scripts_service.enqueue_script_generation(
         db_session,
         project_id=project.id,
@@ -369,26 +399,24 @@ async def _queued_script(db_session: AsyncSession):
         llm_model=QUEUED_FOR_MODEL,
     )
     await db_session.commit()  # release the savepoint so the worker's own session sees it
-    return project, claim, enqueued
+    return project, topic, claim, enqueued
 
 
 async def test_script_generation_runs_on_the_script_client_and_never_the_general_one(
     db_session, worker_sessionmaker, monkeypatch
 ):
-    project, claim, enqueued = await _queued_script(db_session)
-    general = _fake_llm(monkeypatch, [], model=GENERAL_MODEL)
-    script = _fake_llm(
-        monkeypatch,
-        [{"narration_text": "A cited sentence.", "claim_ids": [str(claim.id)]}],
-        model=SCRIPT_MODEL,
-    )
+    project, topic, claim, enqueued = await _queued_script(db_session)
+    # Mocked (not `_idle_llm()`) so `_create_of` below can assert it was never awaited.
+    general = _fake_script_llm(monkeypatch, topic_id=uuid4(), claim_id=uuid4(), model=GENERAL_MODEL)
+    script = _fake_script_llm(monkeypatch, topic_id=topic.id, claim_id=claim.id, model=SCRIPT_MODEL)
     providers = WorkerProviders(embeddings=_idle_embeddings(), llm=general, script_llm=script)
 
     await process_one_job(worker_sessionmaker, providers)
 
     general_create, script_create = _create_of(general), _create_of(script)
     general_create.assert_not_awaited()
-    script_create.assert_awaited_once()
+    # One outline call plus one section call - never the general client.
+    assert script_create.await_count == 2
     # SCRIPT_LLM_MODEL is the model actually asked of the provider, not merely recorded.
     assert script_create.await_args.kwargs["model"] == SCRIPT_MODEL
     finished = await jobs_repo.get_by_id(db_session, enqueued.job.id)
@@ -399,14 +427,10 @@ async def test_script_generation_runs_on_the_script_client_and_never_the_general
 async def test_the_script_records_the_model_that_actually_wrote_it(
     db_session, worker_sessionmaker, monkeypatch
 ):
-    project, claim, enqueued = await _queued_script(db_session)
+    project, topic, claim, enqueued = await _queued_script(db_session)
     queued = await scripts_repo.get_by_id(db_session, enqueued.script.id)
     assert queued is not None and queued.llm_model == QUEUED_FOR_MODEL
-    script = _fake_llm(
-        monkeypatch,
-        [{"narration_text": "A cited sentence.", "claim_ids": [str(claim.id)]}],
-        model=SCRIPT_MODEL,
-    )
+    script = _fake_script_llm(monkeypatch, topic_id=topic.id, claim_id=claim.id, model=SCRIPT_MODEL)
     providers = WorkerProviders(
         embeddings=_idle_embeddings(), llm=_idle_llm(), script_llm=script
     )
@@ -422,7 +446,7 @@ async def test_the_script_records_the_model_that_actually_wrote_it(
 async def test_a_script_that_fails_still_records_the_model_that_attempted_it(
     db_session, worker_sessionmaker, monkeypatch
 ):
-    project, _claim, enqueued = await _queued_script(db_session)
+    project, _topic, _claim, enqueued = await _queued_script(db_session)
     client = AsyncAnthropic(api_key="sk-ant-test-not-a-real-key")
     monkeypatch.setattr(
         client.messages, "create", AsyncMock(side_effect=RuntimeError("anthropic is unreachable"))
@@ -463,7 +487,7 @@ async def test_topic_extraction_stays_on_the_general_client_and_never_the_script
         ],
         model=GENERAL_MODEL,
     )
-    script = _fake_llm(monkeypatch, [], model=SCRIPT_MODEL)
+    script = _fake_script_llm(monkeypatch, topic_id=uuid4(), claim_id=uuid4(), model=SCRIPT_MODEL)
     providers = WorkerProviders(embeddings=_idle_embeddings(), llm=general, script_llm=script)
 
     await process_one_job(worker_sessionmaker, providers)
@@ -752,7 +776,7 @@ async def test_a_crashing_handler_still_ends_the_job_failed_with_a_safe_message(
     job = await jobs_repo.create(db_session, project_id=project.id, kind="extract_topics")
     await db_session.commit()
 
-    async def crashes(session, providers, job_id):
+    async def crashes(session, providers, job_id, sessionmaker):
         raise make_exc()
 
     monkeypatch.setitem(JOB_HANDLERS, "extract_topics", crashes)
@@ -847,7 +871,7 @@ async def test_a_crashing_handler_leaves_the_project_failed_not_stuck_processing
     await jobs_repo.create(db_session, project_id=project.id, kind="extract_topics")
     await db_session.commit()
 
-    async def crashes(session, providers, job_id):
+    async def crashes(session, providers, job_id, sessionmaker):
         raise RuntimeError("the connection dropped")
 
     monkeypatch.setitem(JOB_HANDLERS, "extract_topics", crashes)

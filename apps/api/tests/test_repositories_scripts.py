@@ -188,14 +188,40 @@ async def test_set_status_rejects_an_unknown_status(db_session):
 
 
 async def test_second_active_script_for_a_project_conflicts(db_session):
+    """The partial unique index (migration 0013: ``draft`` / ``approved``
+    only) is what actually enforces "at most one active script" now -
+    reachable through :func:`set_status`, since :func:`create` always
+    inserts a fresh row as ``pending`` (never itself a conflict).
+    """
     project = await _make_project(db_session)
-    await scripts_repo.create(db_session, project_id=project.id, llm_model=MODEL)
+    first = await scripts_repo.create(db_session, project_id=project.id, llm_model=MODEL)
+    await scripts_repo.set_status(
+        db_session, project_id=project.id, script_id=first.id, status="draft"
+    )
+    second = await scripts_repo.create(db_session, project_id=project.id, llm_model=MODEL)
 
     with pytest.raises(ConflictError) as excinfo:
-        await scripts_repo.create(db_session, project_id=project.id, llm_model=MODEL)
+        await scripts_repo.set_status(
+            db_session, project_id=project.id, script_id=second.id, status="draft"
+        )
 
     assert excinfo.value.status_code == 409
     assert "active script" in excinfo.value.message.lower()
+
+
+async def test_a_second_pending_script_does_not_conflict(db_session):
+    """Phase 7 (migration 0013): ``pending`` no longer counts as "active" -
+    a fresh generation may be queued while an earlier one is still pending,
+    so a slow or abandoned generation can never block a new attempt. Only
+    ``draft`` / ``approved`` (see the test above) still exclude each other.
+    """
+    project = await _make_project(db_session)
+    first = await scripts_repo.create(db_session, project_id=project.id, llm_model=MODEL)
+
+    second = await scripts_repo.create(db_session, project_id=project.id, llm_model=MODEL)
+
+    assert first.status == "pending"
+    assert second.status == "pending"
 
 
 async def test_supersede_active_frees_the_slot_for_a_new_script(db_session):
@@ -565,19 +591,28 @@ async def test_create_script_rolls_back_atomically_on_failure(db_session):
     assert [s.id for s in page.items] == [incumbent.id]
 
 
-async def test_create_script_without_supersede_conflicts_on_the_active_slot(db_session):
+async def test_create_script_without_supersede_no_longer_conflicts_since_pending_is_not_active(
+    db_session,
+):
+    """Phase 7 (migration 0013): ``create_script`` always inserts its new row
+    as ``pending``, which is no longer part of ``uq_scripts_project_id_active`` -
+    so skipping the supersede step here no longer conflicts with an existing
+    active script the way it did before the index was narrowed.
+    """
     project = await _make_project(db_session)
     v1 = await _make_verified_claim(db_session, project)
-    await scripts_repo.create(db_session, project_id=project.id, llm_model=MODEL)
+    first = await scripts_repo.create(db_session, project_id=project.id, llm_model=MODEL)
 
-    with pytest.raises(ConflictError):
-        await scripts_repo.create_script(
-            db_session,
-            project_id=project.id,
-            llm_model=MODEL,
-            draft=_validated_draft(_validated_segment(0, "Second active.", (v1.id,))),
-            supersede=False,
-        )
+    second = await scripts_repo.create_script(
+        db_session,
+        project_id=project.id,
+        llm_model=MODEL,
+        draft=_validated_draft(_validated_segment(0, "Second active.", (v1.id,))),
+        supersede=False,
+    )
+
+    assert first.status == "pending"
+    assert second.status == "pending"
 
 
 # --- attach_draft / list_segment_claims_for_script (SG-4 support) ----------------
@@ -635,6 +670,33 @@ async def test_attach_draft_records_the_model_that_wrote_it_when_given(db_sessio
         db_session, project_id=project.id, script_id=without_model.id, draft=draft
     )
     assert kept is not None and kept.llm_model == "queued-for"
+
+
+async def test_attach_draft_supersedes_the_previous_active_script_in_the_same_step(db_session):
+    """Phase 7 (migration 0013): the previous ``draft`` / ``approved`` script
+    is only ever superseded inside the same SAVEPOINT that attaches the new
+    one - the two coexist (one ``draft``, one ``pending``) right up until
+    that single atomic step, never before.
+    """
+    project = await _make_project(db_session)
+    v1 = await _make_verified_claim(db_session, project)
+    incumbent = await scripts_repo.create(db_session, project_id=project.id, llm_model=MODEL)
+    await scripts_repo.set_status(
+        db_session, project_id=project.id, script_id=incumbent.id, status="draft"
+    )
+    new_script = await scripts_repo.create(db_session, project_id=project.id, llm_model=MODEL)
+    # They coexist while the new one is still pending.
+    assert (await scripts_repo.get_by_id(db_session, incumbent.id)).status == "draft"
+
+    updated = await scripts_repo.attach_draft(
+        db_session,
+        project_id=project.id,
+        script_id=new_script.id,
+        draft=_validated_draft(_validated_segment(0, "A fact.", (v1.id,))),
+    )
+
+    assert updated is not None and updated.status == "draft"
+    assert (await scripts_repo.get_by_id(db_session, incumbent.id)).status == "superseded"
 
 
 async def test_attach_draft_is_project_scoped_and_pending_only(db_session):

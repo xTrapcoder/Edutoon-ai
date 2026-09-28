@@ -1,33 +1,60 @@
-"""``services/scripts.py`` - Script Generation Engine service layer (SG-4).
+"""``services/scripts.py`` - Script Generation Engine service layer (Phase 7:
+duration-aware, topic-scoped generation).
 
-The LLM is a real ``LLM``/``AsyncAnthropic`` pair with only
-``messages.create`` monkeypatched (same pattern as ``test_llm_provider.py``
-and ``test_evidence_service.py``) - never a real network call, but the
-orchestration runs exactly as it would in production.
+``LLM``'s two Phase 7 methods (``compose_script_outline`` /
+``compose_script_section``) are mocked directly here, the same pattern
+``_llm_raising`` already used for failure injection: this file is about the
+service's *orchestration* (topic scoping, duration allocation, correction,
+atomicity, progress), not the provider's own request/response parsing, which
+``test_llm_provider.py`` already covers in full. A real ``LLM``/``AsyncAnthropic``
+pair is still used underneath (never a real network call) so nothing about the
+``LLM`` type itself is faked away.
 """
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Sequence
 from typing import Any
 from unittest.mock import AsyncMock
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from anthropic import AsyncAnthropic
-from anthropic.types import Message, ToolUseBlock
-from anthropic.types import Usage as AnthropicUsage
+from sqlalchemy import select
 
+import edutoon.db.session as session_module
+from edutoon.core.config import get_settings
 from edutoon.core.errors import ConflictError, NotFoundError, ValidationError
+from edutoon.db.database import dispose_engine, get_engine
+from edutoon.db.session import get_sessionmaker
+from edutoon.db.tables import claim_citations as claim_citations_table
+from edutoon.db.tables import claim_verifications as claim_verifications_table
+from edutoon.db.tables import projects as projects_table
+from edutoon.db.tables import script_segment_claims as script_segment_claims_table
+from edutoon.db.tables import users as users_table
+from edutoon.domain.script import ScriptOutlineDraft, ScriptSegmentDraft, TopicOutlineDraft
 from edutoon.providers import errors as provider_errors
-from edutoon.providers.llm import LLM, LLMResponseError
+from edutoon.providers.llm import (
+    LLM,
+    Claim,
+    LLMResponseError,
+    OutlineTopicBrief,
+    ScriptBrief,
+    SectionContinuity,
+    SectionTopicBrief,
+    TokenUsage,
+)
 from edutoon.repositories import claim_verifications as claim_verifications_repo
 from edutoon.repositories import jobs as jobs_repo
+from edutoon.repositories import project_topics as project_topics_repo
 from edutoon.repositories import projects as projects_repo
 from edutoon.repositories import scripts as scripts_repo
 from edutoon.repositories import source_chunks as source_chunks_repo
 from edutoon.repositories import uploaded_sources as uploaded_sources_repo
 from edutoon.repositories import users as users_repo
-from edutoon.repositories.claim_verifications import NewClaimCitation
+from edutoon.repositories.claim_verifications import ClaimVerificationRecord, NewClaimCitation
+from edutoon.repositories.project_topics import ProjectTopicRecord
 from edutoon.repositories.source_chunks import NewSourceChunk
 from edutoon.services import audit_logs as audit_logs_service
 from edutoon.services import job_errors
@@ -42,38 +69,22 @@ pytestmark = pytest.mark.provider_mocked
 SCRIPT_MODEL = "claude-sonnet-5"
 
 
-def _fake_llm(
-    monkeypatch: Any,
-    segments: list[dict[str, Any]],
-    *,
-    title: str = "How photosynthesis works",
-    input_tokens: int = 100,
-    output_tokens: int = 200,
-) -> LLM:
-    client = AsyncAnthropic(api_key="sk-ant-test-not-a-real-key")
-    message = Message(
-        id="msg_1",
-        content=[
-            ToolUseBlock(
-                type="tool_use",
-                id="toolu_1",
-                name="submit_script",
-                input={"title": title, "segments": segments},
-            )
-        ],
-        model=SCRIPT_MODEL,
-        role="assistant",
-        type="message",
-        usage=AnthropicUsage(input_tokens=input_tokens, output_tokens=output_tokens),
-    )
-    monkeypatch.setattr(client.messages, "create", AsyncMock(return_value=message))
-    return LLM(client, model=SCRIPT_MODEL)
+@pytest.fixture(autouse=True)
+def _no_duration_correction(monkeypatch):
+    """Phase 7's bounded duration-correction pass would otherwise fire for
+    almost any test's necessarily-short fake narration: the shortest target
+    duration a project may have is 60 seconds, far longer than any short test
+    sentence. Disabled by default so every test but the ones explicitly about
+    correction gets one predictable pass; those tests turn it back on
+    themselves.
+    """
+    monkeypatch.setenv("MAX_SCRIPT_CORRECTION_ATTEMPTS", "0")
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
 
 
-def _llm_raising(monkeypatch: Any, exc: Exception) -> LLM:
-    llm = LLM(AsyncAnthropic(api_key="sk-ant-test-not-a-real-key"), model=SCRIPT_MODEL)
-    monkeypatch.setattr(llm, "compose_script", AsyncMock(side_effect=exc))
-    return llm
+# --- fixtures: projects, topics, claims ---------------------------------------------
 
 
 async def _make_project(db_session, *, title: str = "Photosynthesis", **project_fields: Any):
@@ -84,7 +95,7 @@ async def _make_project(db_session, *, title: str = "Photosynthesis", **project_
     return owner, project
 
 
-async def _add_supported_claims(db_session, project, texts: list[str]):
+async def _add_supported_claim(db_session, project, topic: ProjectTopicRecord, text: str):
     source = await uploaded_sources_repo.create(
         db_session,
         project_id=project.id,
@@ -94,47 +105,177 @@ async def _add_supported_claims(db_session, project, texts: list[str]):
         byte_size=1024,
         checksum_sha256=uuid4().hex + uuid4().hex[:32],
     )
-    chunks = await source_chunks_repo.create_many(
+    [chunk] = await source_chunks_repo.create_many(
         db_session,
-        [
-            NewSourceChunk(
-                source_id=source.id, project_id=project.id, chunk_index=i, content=text
-            )
-            for i, text in enumerate(texts)
-        ],
+        [NewSourceChunk(source_id=source.id, project_id=project.id, chunk_index=0, content=text)],
     )
-    verifications = []
-    for text, chunk in zip(texts, chunks, strict=True):
-        verifications.append(
-            await claim_verifications_repo.create(
-                db_session,
-                project_id=project.id,
-                claim_text=text,
-                status="supported",
-                embedding_model="text-embedding-3-small",
-                llm_model=SCRIPT_MODEL,
-                citations=[NewClaimCitation(source_chunk_id=chunk.id, similarity=0.9)],
-            )
+    return await claim_verifications_repo.create(
+        db_session,
+        project_id=project.id,
+        claim_text=text,
+        status="supported",
+        embedding_model="text-embedding-3-small",
+        llm_model=SCRIPT_MODEL,
+        topic_id=topic.id,
+        citations=[NewClaimCitation(source_chunk_id=chunk.id, similarity=0.9)],
+    )
+
+
+async def _project_with_topics(
+    db_session, topic_specs: list[tuple[str, list[str]]], **project_fields: Any
+) -> tuple[Any, Any, list[ProjectTopicRecord], dict[UUID, list[ClaimVerificationRecord]]]:
+    """``topic_specs`` is one ``(title, [claim_text, ...])`` per accepted
+    topic to create, each with its own supported claims.
+    """
+    owner, project = await _make_project(db_session, **project_fields)
+    topics: list[ProjectTopicRecord] = []
+    claims_by_topic: dict[UUID, list[ClaimVerificationRecord]] = {}
+    for position, (title, claim_texts) in enumerate(topic_specs):
+        topic = await project_topics_repo.create(
+            db_session, project_id=project.id, title=title, status="accepted", position=position
         )
-    return verifications
+        topics.append(topic)
+        claims_by_topic[topic.id] = [
+            await _add_supported_claim(db_session, project, topic, text) for text in claim_texts
+        ]
+    return owner, project, topics, claims_by_topic
 
 
-async def _enqueued(db_session, key: str = "idem-1"):
-    owner, project = await _make_project(db_session)
-    claims = await _add_supported_claims(
-        db_session, project, ["Plants convert light to energy.", "Chlorophyll absorbs light."]
+async def _enqueued(
+    db_session, *, key: str = "idem-1", claim_text: str = "A fact.", **project_fields: Any
+):
+    owner, project, [topic], claims_by_topic = await _project_with_topics(
+        db_session, [("A topic", [claim_text])], **project_fields
     )
+    claim = claims_by_topic[topic.id][0]
     result = await scripts_service.enqueue_script_generation(
         db_session, project_id=project.id, owner_id=owner.id, idempotency_key=key
     )
-    return owner, project, claims, result
+    return owner, project, topic, claim, result
+
+
+# --- fake LLM: mocks the two Phase 7 methods directly -------------------------------
+
+
+def _mock_llm(
+    monkeypatch: Any,
+    *,
+    sections_by_topic: dict[UUID, list[list[ScriptSegmentDraft]]],
+    outline_title: str = "How photosynthesis works",
+    model: str = SCRIPT_MODEL,
+) -> tuple[LLM, AsyncMock, AsyncMock]:
+    """An ``LLM`` whose outline call echoes back whatever topics it is given
+    (generic purpose, no key concepts) and whose section call returns
+    ``sections_by_topic[topic_id][call_index]`` - a *list of generations* per
+    topic, so a test can give the correction pass a different response than
+    the first pass (the last entry repeats for any further call).
+    """
+    llm = LLM(AsyncAnthropic(api_key="sk-ant-test-not-a-real-key"), model=model)
+    call_counts: dict[UUID, int] = {}
+
+    async def _outline(
+        brief: ScriptBrief, topics: Sequence[OutlineTopicBrief]
+    ) -> tuple[ScriptOutlineDraft, TokenUsage]:
+        return (
+            ScriptOutlineDraft(
+                title=outline_title,
+                topics=tuple(
+                    TopicOutlineDraft(topic_id=topic.topic_id, purpose="p", key_concepts=())
+                    for topic in topics
+                ),
+            ),
+            TokenUsage(input_tokens=10, output_tokens=10),
+        )
+
+    async def _section(
+        brief: ScriptBrief,
+        topic: SectionTopicBrief,
+        claims: list[Claim],
+        continuity: SectionContinuity,
+        *,
+        duration_ms: int,
+        unit_index: int,
+        unit_count: int,
+        max_segments: int,
+        max_claims: int,
+        words_per_minute: int,
+    ) -> tuple[list[ScriptSegmentDraft], TokenUsage]:
+        generations = sections_by_topic[topic.topic_id]
+        index = call_counts.get(topic.topic_id, 0)
+        call_counts[topic.topic_id] = index + 1
+        chosen = generations[min(index, len(generations) - 1)]
+        return list(chosen), TokenUsage(input_tokens=10, output_tokens=10)
+
+    outline_mock = AsyncMock(side_effect=_outline)
+    section_mock = AsyncMock(side_effect=_section)
+    monkeypatch.setattr(llm, "compose_script_outline", outline_mock)
+    monkeypatch.setattr(llm, "compose_script_section", section_mock)
+    return llm, outline_mock, section_mock
+
+
+def _simple_llm(
+    monkeypatch: Any,
+    *,
+    segments_by_topic: dict[UUID, list[ScriptSegmentDraft]],
+    outline_title: str = "How photosynthesis works",
+    model: str = SCRIPT_MODEL,
+) -> tuple[LLM, AsyncMock, AsyncMock]:
+    return _mock_llm(
+        monkeypatch,
+        sections_by_topic={
+            topic_id: [segments] for topic_id, segments in segments_by_topic.items()
+        },
+        outline_title=outline_title,
+        model=model,
+    )
+
+
+def _llm_raising_on_outline(monkeypatch: Any, exc: Exception, *, model: str = SCRIPT_MODEL) -> LLM:
+    llm = LLM(AsyncAnthropic(api_key="sk-ant-test-not-a-real-key"), model=model)
+    monkeypatch.setattr(llm, "compose_script_outline", AsyncMock(side_effect=exc))
+    return llm
+
+
+# --- fake segments -------------------------------------------------------------------
+
+
+def _words_for_duration(duration_ms: int, *, wpm: int = 150) -> int:
+    return max(1, round(duration_ms / 60_000 * wpm))
+
+
+def _narration_of_duration(duration_ms: int, *, wpm: int = 150) -> str:
+    """Padded narration whose word count lands on ``duration_ms`` at ``wpm`` -
+    so a test controls the duration the service will compute without needing
+    to hand-count words in realistic prose.
+    """
+    return " ".join(["word"] * _words_for_duration(duration_ms, wpm=wpm))
+
+
+def _segment(
+    narration: str, claim_ids: Sequence[str] = (), *, connective: bool = False, wpm: int = 150
+) -> ScriptSegmentDraft:
+    return ScriptSegmentDraft(
+        segment_index=0,
+        narration_text=narration,
+        claim_ids=list(claim_ids),
+        estimated_duration_ms=round(len(narration.split()) / wpm * 60_000),
+        connective=connective,
+    )
+
+
+def _on_target(claim_ids: Sequence[str] = (), *, duration_ms: int = 300_000) -> ScriptSegmentDraft:
+    """A single segment padded to ``duration_ms`` (default: a project's own
+    default target) - connective only when given no claims - so a test that
+    is not itself about duration correction does not trigger it.
+    """
+    return _segment(_narration_of_duration(duration_ms), claim_ids, connective=not claim_ids)
 
 
 # --- enqueue_script_generation --------------------------------------------------
 
 
 async def test_enqueue_creates_a_pending_script_and_a_queued_job(db_session):
-    owner, project, _claims, result = await _enqueued(db_session)
+    owner, project, topic, _claim, result = await _enqueued(db_session)
 
     assert result.replayed is False
     assert result.script.status == "pending"
@@ -144,31 +285,51 @@ async def test_enqueue_creates_a_pending_script_and_a_queued_job(db_session):
     assert result.job.payload == {
         "script_id": str(result.script.id),
         "project_id": str(project.id),
+        "topic_ids": [str(topic.id)],
     }
 
 
 async def test_enqueue_writes_an_audit_log(db_session):
-    _owner, _project, _claims, result = await _enqueued(db_session)
+    _owner, _project, _topic, _claim, result = await _enqueued(db_session)
 
     logs = await audit_logs_service.list_audit_logs_for_entity(
         db_session, entity_type="script", entity_id=result.script.id
     )
     assert [log.action for log in logs.items] == ["script.generation_enqueued"]
     assert logs.items[0].context["job_id"] == str(result.job.id)
+    assert logs.items[0].context["accepted_topic_count"] == 1
 
 
-async def test_enqueue_requires_at_least_one_supported_claim(db_session):
+async def test_enqueue_requires_at_least_one_accepted_topic(db_session):
     owner, project = await _make_project(db_session)
+    # A merely proposed topic does not count.
+    await project_topics_repo.create(
+        db_session, project_id=project.id, title="Not yet accepted", status="proposed"
+    )
 
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="accepted topic"):
         await scripts_service.enqueue_script_generation(
             db_session, project_id=project.id, owner_id=owner.id, idempotency_key="k"
         )
 
 
-async def test_enqueue_ignores_unsupported_claims(db_session):
+async def test_enqueue_requires_every_accepted_topic_to_have_supported_evidence(db_session):
     owner, project = await _make_project(db_session)
-    # A non-"supported" verification must not count towards the requirement.
+    await project_topics_repo.create(
+        db_session, project_id=project.id, title="Photosynthesis", status="accepted"
+    )
+
+    with pytest.raises(ValidationError, match="Photosynthesis"):
+        await scripts_service.enqueue_script_generation(
+            db_session, project_id=project.id, owner_id=owner.id, idempotency_key="k"
+        )
+
+
+async def test_enqueue_ignores_a_partially_supported_claim_as_evidence(db_session):
+    owner, project = await _make_project(db_session)
+    topic = await project_topics_repo.create(
+        db_session, project_id=project.id, title="Photosynthesis", status="accepted"
+    )
     await claim_verifications_repo.create(
         db_session,
         project_id=project.id,
@@ -176,34 +337,78 @@ async def test_enqueue_ignores_unsupported_claims(db_session):
         status="partially_supported",
         embedding_model="text-embedding-3-small",
         llm_model=SCRIPT_MODEL,
+        topic_id=topic.id,
     )
 
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="Photosynthesis"):
         await scripts_service.enqueue_script_generation(
             db_session, project_id=project.id, owner_id=owner.id, idempotency_key="k"
         )
 
 
-async def test_enqueue_supersedes_the_current_active_script(db_session):
+async def test_enqueue_ignores_a_hand_typed_claim_with_no_topic(db_session):
+    """A claim verified through the manual route (``topic_id`` always
+    ``NULL``) belongs to no topic's section, so it can never satisfy an
+    accepted topic's evidence requirement - never borrowed.
+    """
     owner, project = await _make_project(db_session)
-    await _add_supported_claims(db_session, project, ["A fact."])
-    stale = await scripts_repo.create(db_session, project_id=project.id, llm_model=SCRIPT_MODEL)
-
-    result = await scripts_service.enqueue_script_generation(
-        db_session, project_id=project.id, owner_id=owner.id, idempotency_key="k"
+    await project_topics_repo.create(
+        db_session, project_id=project.id, title="Photosynthesis", status="accepted"
+    )
+    await claim_verifications_repo.create(
+        db_session,
+        project_id=project.id,
+        claim_text="Typed in by hand.",
+        status="supported",
+        embedding_model="text-embedding-3-small",
+        llm_model=SCRIPT_MODEL,
+        topic_id=None,
     )
 
-    assert (await scripts_repo.get_by_id(db_session, stale.id)).status == "superseded"
-    assert (await scripts_repo.get_active(db_session, project.id)).id == result.script.id
+    with pytest.raises(ValidationError, match="Photosynthesis"):
+        await scripts_service.enqueue_script_generation(
+            db_session, project_id=project.id, owner_id=owner.id, idempotency_key="k"
+        )
+
+
+async def test_enqueue_rejects_more_accepted_topics_than_the_configured_maximum(
+    db_session, monkeypatch
+):
+    monkeypatch.setenv("MAX_SCRIPT_SECTIONS", "1")
+    get_settings.cache_clear()
+    try:
+        owner, project, _topics, _claims = await _project_with_topics(
+            db_session, [("Topic A", ["A fact."]), ("Topic B", ["Another fact."])]
+        )
+
+        with pytest.raises(ValidationError, match="at most 1"):
+            await scripts_service.enqueue_script_generation(
+                db_session, project_id=project.id, owner_id=owner.id, idempotency_key="k"
+            )
+    finally:
+        get_settings.cache_clear()
+
+
+async def test_enqueue_rejects_too_many_topics_for_the_target_duration(db_session, monkeypatch):
+    monkeypatch.setenv("MIN_SECTION_DURATION_MS", "200000")
+    get_settings.cache_clear()
+    try:
+        # Default target duration is 300_000ms; two topics at a 200_000ms floor
+        # each cannot both fit.
+        owner, project, _topics, _claims = await _project_with_topics(
+            db_session, [("Topic A", ["A fact."]), ("Topic B", ["Another fact."])]
+        )
+
+        with pytest.raises(ValidationError, match="cannot each receive"):
+            await scripts_service.enqueue_script_generation(
+                db_session, project_id=project.id, owner_id=owner.id, idempotency_key="k"
+            )
+    finally:
+        get_settings.cache_clear()
 
 
 async def test_enqueue_is_idempotent_on_the_key(db_session):
-    owner, project = await _make_project(db_session)
-    await _add_supported_claims(db_session, project, ["A fact."])
-
-    first = await scripts_service.enqueue_script_generation(
-        db_session, project_id=project.id, owner_id=owner.id, idempotency_key="same"
-    )
+    owner, project, _topic, _claim, first = await _enqueued(db_session, key="same")
     second = await scripts_service.enqueue_script_generation(
         db_session, project_id=project.id, owner_id=owner.id, idempotency_key="same"
     )
@@ -216,8 +421,7 @@ async def test_enqueue_is_idempotent_on_the_key(db_session):
 
 
 async def test_enqueue_rejects_a_project_the_caller_does_not_own(db_session):
-    _owner, project = await _make_project(db_session)
-    await _add_supported_claims(db_session, project, ["A fact."])
+    _owner, project, _topic, _claim, _result = await _enqueued(db_session)
     other = await users_repo.create(db_session, email=f"{uuid4()}@example.com")
 
     with pytest.raises(NotFoundError):
@@ -227,8 +431,9 @@ async def test_enqueue_rejects_a_project_the_caller_does_not_own(db_session):
 
 
 async def test_enqueue_records_the_configured_script_model(db_session):
-    owner, project = await _make_project(db_session)
-    await _add_supported_claims(db_session, project, ["A fact."])
+    owner, project, _topics, _claims = await _project_with_topics(
+        db_session, [("A topic", ["A fact."])]
+    )
 
     result = await scripts_service.enqueue_script_generation(
         db_session,
@@ -241,90 +446,125 @@ async def test_enqueue_records_the_configured_script_model(db_session):
     assert result.script.llm_model == "claude-opus-5"
 
 
-# --- run_generate_script_job ---------------------------------------------------
+async def test_enqueue_does_not_touch_an_existing_approved_script(db_session, monkeypatch):
+    owner, project, topic, claim, enq = await _enqueued(db_session)
+    llm, _outline_mock, _section_mock = _simple_llm(
+        monkeypatch, segments_by_topic={topic.id: [_on_target([str(claim.id)])]}
+    )
+    await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
+    approved = await scripts_service.approve_script(
+        db_session, project_id=project.id, owner_id=owner.id, script_id=enq.script.id
+    )
+    assert approved.status == "approved"
+
+    # Enqueuing a new generation must not itself touch the approved script -
+    # only a *successful* attach may (migration 0013).
+    await scripts_service.enqueue_script_generation(
+        db_session, project_id=project.id, owner_id=owner.id, idempotency_key="second"
+    )
+
+    still_approved = await scripts_repo.get_by_id(db_session, enq.script.id)
+    assert still_approved is not None
+    assert still_approved.status == "approved"
 
 
-async def test_run_produces_a_draft_from_the_supported_claims(db_session, monkeypatch):
-    _owner, project, claims, enq = await _enqueued(db_session)
-    llm = _fake_llm(
-        monkeypatch,
+# --- run_generate_script_job: topic scoping and success -----------------------------
+
+
+async def test_run_scopes_each_section_to_its_own_topic(db_session, monkeypatch):
+    owner, project, topics, claims_by_topic = await _project_with_topics(
+        db_session,
         [
-            {"narration_text": "An opening line.", "claim_ids": [], "connective": True},
-            {
-                "narration_text": "Plants turn light into chemical energy for food.",
-                "claim_ids": [str(claims[0].id)],
-            },
-            {
-                "narration_text": "The pigment chlorophyll is what captures that light.",
-                "claim_ids": [str(claims[1].id)],
-            },
+            ("Light reactions", ["Chlorophyll absorbs light."]),
+            ("Calvin cycle", ["Carbon is fixed."]),
         ],
     )
+    topic_a, topic_b = topics
+    claim_a = claims_by_topic[topic_a.id][0]
+    claim_b = claims_by_topic[topic_b.id][0]
+    enq = await scripts_service.enqueue_script_generation(
+        db_session, project_id=project.id, owner_id=owner.id, idempotency_key="k"
+    )
+    llm, _outline_mock, section_mock = _mock_llm(
+        monkeypatch,
+        sections_by_topic={
+            topic_a.id: [[_on_target([str(claim_a.id)], duration_ms=150_000)]],
+            topic_b.id: [[_on_target([str(claim_b.id)], duration_ms=150_000)]],
+        },
+    )
 
     job = await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
 
     assert job.status == "succeeded"
-    assert job.result["segment_count"] == 3
-    assert job.result["input_tokens"] == 100
-    assert job.result["output_tokens"] == 200
-    assert job.attempts == 1
+    assert job.result["topic_count"] == 2
+    assert job.result["segment_count"] == 2
 
-    script = await scripts_repo.get_by_id(db_session, enq.script.id)
-    assert script.status == "draft"
-    assert script.estimated_duration_ms is not None and script.estimated_duration_ms > 0
+    # Every section call only ever received its own topic's claims - never
+    # the other's (rule: never borrow another topic's claims).
+    for call in section_mock.call_args_list:
+        called_topic: SectionTopicBrief = call.args[1]
+        called_claims: list[Claim] = call.args[2]
+        expected_id = str(claim_a.id) if called_topic.topic_id == topic_a.id else str(claim_b.id)
+        assert [c.id for c in called_claims] == [expected_id]
 
     segments = await scripts_repo.list_segments(
-        db_session, project_id=project.id, script_id=script.id
+        db_session, project_id=project.id, script_id=enq.script.id
     )
-    assert [s.segment_index for s in segments] == [0, 1, 2]
-    first_links = await scripts_repo.list_segment_claims(
-        db_session, project_id=project.id, script_segment_id=segments[0].id
-    )
-    assert first_links == []
-    second_links = await scripts_repo.list_segment_claims(
-        db_session, project_id=project.id, script_segment_id=segments[1].id
-    )
-    assert [c.claim_verification_id for c in second_links] == [claims[0].id]
+    assert {s.topic_id for s in segments} == {topic_a.id, topic_b.id}
 
 
-@pytest.mark.parametrize(
-    ("language", "asked_for", "not_asked_for"),
-    [
-        ("en-IN", "Indian English", "British English"),
-        ("en-GB", "British English", "Indian English"),
-    ],
-)
-async def test_run_writes_the_script_in_the_projects_own_language(
-    db_session, monkeypatch, language, asked_for, not_asked_for
-):
-    """The stored ``projects.language`` is the only thing that picks the language: it
-    flows project -> service -> ``ScriptBrief`` -> the prompt the client really sends.
+async def test_run_caps_claims_per_section_to_the_oldest(db_session, monkeypatch):
+    monkeypatch.setenv("MAX_CLAIMS_PER_SECTION", "2")
+    get_settings.cache_clear()
+    try:
+        owner, project, [topic], claims_by_topic = await _project_with_topics(
+            db_session, [("A topic", ["First fact.", "Second fact.", "Third fact."])]
+        )
+        first, second, third = claims_by_topic[topic.id]
+        enq = await scripts_service.enqueue_script_generation(
+            db_session, project_id=project.id, owner_id=owner.id, idempotency_key="k"
+        )
+        llm, _outline_mock, section_mock = _simple_llm(
+            monkeypatch, segments_by_topic={topic.id: [_on_target([str(first.id)])]}
+        )
+
+        job = await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
+
+        assert job.status == "succeeded"
+        offered = section_mock.await_args_list[0].args[2]
+        # Oldest-first, deterministically - never the newest, never random, never all three.
+        assert [c.id for c in offered] == [str(first.id), str(second.id)]
+        assert str(third.id) not in [c.id for c in offered]
+    finally:
+        get_settings.cache_clear()
+
+
+async def test_run_writes_the_script_in_the_projects_own_language(db_session, monkeypatch):
+    """The stored ``projects.language`` is the only thing that picks the
+    language: it flows project -> service -> ``ScriptBrief`` -> both provider
+    calls.
     """
-    owner, project = await _make_project(db_session, language=language)
-    claims = await _add_supported_claims(db_session, project, ["Plants convert light to energy."])
+    owner, project, [topic], claims_by_topic = await _project_with_topics(
+        db_session, [("A topic", ["A fact."])], language="en-IN"
+    )
+    claim = claims_by_topic[topic.id][0]
     enq = await scripts_service.enqueue_script_generation(
-        db_session, project_id=project.id, owner_id=owner.id, idempotency_key="language-key"
+        db_session, project_id=project.id, owner_id=owner.id, idempotency_key="k"
     )
-    llm = _fake_llm(
-        monkeypatch,
-        [{"narration_text": "Plants turn light into energy.", "claim_ids": [str(claims[0].id)]}],
+    llm, outline_mock, section_mock = _simple_llm(
+        monkeypatch, segments_by_topic={topic.id: [_on_target([str(claim.id)])]}
     )
-    create = llm._client.messages.create  # the double _fake_llm put on the real client
 
     job = await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
 
     assert job.status == "succeeded"
-    request = create.await_args.kwargs
-    content = request["messages"][0]["content"]
-    assert f"Language: {language}" in content
-    assert asked_for in content
-    assert not_asked_for not in content
-    assert "British English" not in request["system"]
+    assert outline_mock.await_args_list[0].args[0].language == "en-IN"
+    assert section_mock.await_args_list[0].args[0].language == "en-IN"
 
 
 async def test_run_marks_job_and_script_failed_on_a_provider_error(db_session, monkeypatch):
-    _owner, _project, _claims, enq = await _enqueued(db_session)
-    llm = _llm_raising(monkeypatch, LLMResponseError("model returned junk"))
+    _owner, _project, _topic, _claim, enq = await _enqueued(db_session)
+    llm = _llm_raising_on_outline(monkeypatch, LLMResponseError("model returned junk"))
 
     job = await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
 
@@ -335,8 +575,8 @@ async def test_run_marks_job_and_script_failed_on_a_provider_error(db_session, m
 
 
 async def test_run_never_raises_on_a_value_error_from_the_provider(db_session, monkeypatch):
-    _owner, _project, _claims, enq = await _enqueued(db_session)
-    llm = _llm_raising(monkeypatch, ValueError("too many claims"))
+    _owner, _project, _topic, _claim, enq = await _enqueued(db_session)
+    llm = _llm_raising_on_outline(monkeypatch, ValueError("too many claims"))
 
     job = await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
 
@@ -344,13 +584,17 @@ async def test_run_never_raises_on_a_value_error_from_the_provider(db_session, m
 
 
 async def test_run_marks_failed_when_a_segment_is_unsourced(db_session, monkeypatch):
-    _owner, _project, claims, enq = await _enqueued(db_session)
-    llm = _fake_llm(
+    _owner, project, topic, claim, enq = await _enqueued(db_session)
+    llm, _outline_mock, _section_mock = _mock_llm(
         monkeypatch,
-        [
-            {"narration_text": "A properly cited sentence.", "claim_ids": [str(claims[0].id)]},
-            {"narration_text": "An unsourced assertion with no citation.", "claim_ids": []},
-        ],
+        sections_by_topic={
+            topic.id: [
+                [
+                    _segment("A properly cited sentence.", [str(claim.id)]),
+                    _segment("An unsourced assertion with no citation.", []),
+                ]
+            ]
+        },
     )
 
     job = await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
@@ -367,20 +611,61 @@ async def test_run_marks_failed_when_a_segment_is_unsourced(db_session, monkeypa
     )
 
 
-async def test_run_raises_not_found_for_a_missing_job(db_session, monkeypatch):
-    llm = _fake_llm(monkeypatch, [])
+async def test_run_persists_nothing_when_a_later_topic_fails_even_though_an_earlier_one_succeeded(
+    db_session, monkeypatch
+):
+    """Atomicity (rule 13): topics are generated one after another, but
+    nothing is ever attached until every one of them has succeeded - a later
+    topic's failure must not leave an earlier, perfectly good topic's
+    segments behind.
+    """
+    owner, project, topics, claims_by_topic = await _project_with_topics(
+        db_session,
+        [
+            ("Light reactions", ["Chlorophyll absorbs light."]),
+            ("Calvin cycle", ["Carbon is fixed."]),
+        ],
+    )
+    topic_a, topic_b = topics
+    claim_a = claims_by_topic[topic_a.id][0]
+    enq = await scripts_service.enqueue_script_generation(
+        db_session, project_id=project.id, owner_id=owner.id, idempotency_key="k"
+    )
+    llm, _outline_mock, _section_mock = _mock_llm(
+        monkeypatch,
+        sections_by_topic={
+            # Topic A (generated first, in reading order) succeeds cleanly.
+            topic_a.id: [[_on_target([str(claim_a.id)], duration_ms=150_000)]],
+            # Topic B fails provenance validation.
+            topic_b.id: [[_segment("Unsourced.", [])]],
+        },
+    )
+
+    job = await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
+
+    assert job.status == "failed"
+    script = await scripts_repo.get_by_id(db_session, enq.script.id)
+    assert script.status == "failed"
+    # Topic A's perfectly good segment never reached the database either.
+    assert (
+        await scripts_repo.list_segments(db_session, project_id=project.id, script_id=enq.script.id)
+        == []
+    )
+
+
+async def test_run_raises_not_found_for_a_missing_job(db_session):
+    llm = LLM(AsyncAnthropic(api_key="sk-ant-test-not-a-real-key"), model=SCRIPT_MODEL)
 
     with pytest.raises(NotFoundError):
         await scripts_service.run_generate_script_job(db_session, llm, job_id=uuid4())
 
 
 async def test_run_fails_cleanly_if_the_pending_script_was_superseded(db_session, monkeypatch):
-    _owner, project, claims, enq = await _enqueued(db_session)
+    _owner, project, topic, claim, enq = await _enqueued(db_session)
     # Something else superseded the pending script before the worker got to it.
     await scripts_repo.supersede_active(db_session, project_id=project.id)
-    llm = _fake_llm(
-        monkeypatch,
-        [{"narration_text": "A cited sentence here.", "claim_ids": [str(claims[0].id)]}],
+    llm, _outline_mock, _section_mock = _simple_llm(
+        monkeypatch, segments_by_topic={topic.id: [_on_target([str(claim.id)])]}
     )
 
     job = await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
@@ -389,8 +674,8 @@ async def test_run_fails_cleanly_if_the_pending_script_was_superseded(db_session
 
 
 async def test_run_increments_attempts_across_runs(db_session, monkeypatch):
-    _owner, _project, claims, enq = await _enqueued(db_session)
-    llm = _llm_raising(monkeypatch, LLMResponseError("boom"))
+    _owner, _project, _topic, _claim, enq = await _enqueued(db_session)
+    llm = _llm_raising_on_outline(monkeypatch, LLMResponseError("boom"))
 
     first = await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
     second = await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
@@ -399,27 +684,216 @@ async def test_run_increments_attempts_across_runs(db_session, monkeypatch):
     assert second.attempts == 2
 
 
+# --- run_generate_script_job: duration tolerance and correction ---------------------
+
+
+async def test_run_accepts_a_script_within_duration_tolerance_without_correcting(
+    db_session, monkeypatch
+):
+    monkeypatch.setenv("MAX_SCRIPT_CORRECTION_ATTEMPTS", "1")
+    get_settings.cache_clear()
+    try:
+        _owner, project, topic, claim, enq = await _enqueued(db_session)
+        # Default target is 300_000ms; land dead on it.
+        llm, _outline_mock, section_mock = _simple_llm(
+            monkeypatch, segments_by_topic={topic.id: [_on_target([str(claim.id)])]}
+        )
+
+        job = await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
+
+        assert job.status == "succeeded"
+        assert job.result["correction_applied"] is False
+        section_mock.assert_awaited_once()
+    finally:
+        get_settings.cache_clear()
+
+
+async def test_run_applies_one_correction_pass_when_outside_tolerance(db_session, monkeypatch):
+    monkeypatch.setenv("MAX_SCRIPT_CORRECTION_ATTEMPTS", "1")
+    get_settings.cache_clear()
+    try:
+        _owner, project, topic, claim, enq = await _enqueued(db_session)
+        # First pass: a tiny fraction of the 300_000ms target - well outside
+        # SCRIPT_DURATION_TOLERANCE (default 0.15). Second (correction) pass:
+        # right on target.
+        llm, _outline_mock, section_mock = _mock_llm(
+            monkeypatch,
+            sections_by_topic={
+                topic.id: [
+                    [_on_target([str(claim.id)], duration_ms=10_000)],
+                    [_on_target([str(claim.id)], duration_ms=300_000)],
+                ]
+            },
+        )
+
+        job = await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
+
+        assert job.status == "succeeded"
+        assert job.result["correction_applied"] is True
+        assert section_mock.await_count == 2
+        script = await scripts_repo.get_by_id(db_session, enq.script.id)
+        assert script.estimated_duration_ms == 300_000
+    finally:
+        get_settings.cache_clear()
+
+
+async def test_run_accepts_the_result_after_correction_even_if_still_outside_tolerance(
+    db_session, monkeypatch
+):
+    """Duration is a target for a not-yet-real TTS estimate, never a hard
+    gate: after its one bounded correction pass, the script is accepted
+    whatever the remaining mismatch.
+    """
+    monkeypatch.setenv("MAX_SCRIPT_CORRECTION_ATTEMPTS", "1")
+    get_settings.cache_clear()
+    try:
+        _owner, project, topic, claim, enq = await _enqueued(db_session)
+        llm, _outline_mock, section_mock = _mock_llm(
+            monkeypatch,
+            sections_by_topic={
+                # Both passes stay far too short - the model simply cannot be
+                # made to hit the target here, and that must not fail the job.
+                topic.id: [[_on_target([str(claim.id)], duration_ms=10_000)]]
+            },
+        )
+
+        job = await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
+
+        assert job.status == "succeeded"
+        assert job.result["correction_applied"] is True
+        assert job.result["target_duration_ms"] == 300_000
+        assert job.result["estimated_duration_ms"] == 10_000
+        assert job.result["duration_difference_ms"] == -290_000
+        assert section_mock.await_count == 2
+    finally:
+        get_settings.cache_clear()
+
+
+async def test_run_never_corrects_when_correction_attempts_are_disabled(db_session, monkeypatch):
+    # The autouse fixture already sets this to "0" - assert the behaviour
+    # explicitly rather than relying on it implicitly.
+    assert get_settings().MAX_SCRIPT_CORRECTION_ATTEMPTS == 0
+    _owner, project, topic, claim, enq = await _enqueued(db_session)
+    llm, _outline_mock, section_mock = _simple_llm(
+        monkeypatch, segments_by_topic={topic.id: [_on_target([str(claim.id)], duration_ms=1_000)]}
+    )
+
+    job = await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
+
+    assert job.status == "succeeded"
+    assert job.result["correction_applied"] is False
+    section_mock.assert_awaited_once()
+
+
+# --- run_generate_script_job: the provider-call budget is enforced ------------------
+
+
+async def test_the_provider_call_budget_is_enforced_before_any_call(db_session, monkeypatch):
+    _owner, project, topic, claim, enq = await _enqueued(db_session)
+    monkeypatch.setattr(scripts_service, "max_provider_calls", lambda **_kwargs: 0)
+    llm, outline_mock, _section_mock = _simple_llm(
+        monkeypatch, segments_by_topic={topic.id: [_on_target([str(claim.id)])]}
+    )
+
+    job = await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
+
+    assert job.status == "failed"
+    assert "provider calls" in job.error
+    outline_mock.assert_not_awaited()
+
+
+# --- atomicity: the previous script is never destroyed by a bad regeneration --------
+
+
+async def test_a_successful_regeneration_supersedes_the_previous_approved_script(
+    db_session, monkeypatch
+):
+    owner, project, topic, claim, enq = await _enqueued(db_session)
+    llm, _outline_mock, _section_mock = _simple_llm(
+        monkeypatch, segments_by_topic={topic.id: [_on_target([str(claim.id)])]}
+    )
+    await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
+    approved = await scripts_service.approve_script(
+        db_session, project_id=project.id, owner_id=owner.id, script_id=enq.script.id
+    )
+    assert approved.status == "approved"
+
+    second = await scripts_service.enqueue_script_generation(
+        db_session, project_id=project.id, owner_id=owner.id, idempotency_key="second"
+    )
+    llm2, _outline_mock2, _section_mock2 = _simple_llm(
+        monkeypatch, segments_by_topic={topic.id: [_on_target([str(claim.id)])]}
+    )
+    job2 = await scripts_service.run_generate_script_job(db_session, llm2, job_id=second.job.id)
+
+    assert job2.status == "succeeded"
+    first_script = await scripts_repo.get_by_id(db_session, enq.script.id)
+    assert first_script.status == "superseded"
+    second_script = await scripts_repo.get_by_id(db_session, second.script.id)
+    assert second_script.status == "draft"
+
+
+async def test_a_failed_regeneration_leaves_the_previous_approved_script_untouched(
+    db_session, monkeypatch
+):
+    owner, project, topic, claim, enq = await _enqueued(db_session)
+    llm, _outline_mock, _section_mock = _simple_llm(
+        monkeypatch, segments_by_topic={topic.id: [_on_target([str(claim.id)])]}
+    )
+    await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
+    await scripts_service.approve_script(
+        db_session, project_id=project.id, owner_id=owner.id, script_id=enq.script.id
+    )
+    original_segments = await scripts_repo.list_segments(
+        db_session, project_id=project.id, script_id=enq.script.id
+    )
+
+    second = await scripts_service.enqueue_script_generation(
+        db_session, project_id=project.id, owner_id=owner.id, idempotency_key="second"
+    )
+    # This regeneration produces an unsourced segment and must fail entirely.
+    llm2, _outline_mock2, _section_mock2 = _mock_llm(
+        monkeypatch, sections_by_topic={topic.id: [[_segment("Unsourced.", [])]]}
+    )
+    job2 = await scripts_service.run_generate_script_job(db_session, llm2, job_id=second.job.id)
+
+    assert job2.status == "failed"
+    failed_script = await scripts_repo.get_by_id(db_session, second.script.id)
+    assert failed_script.status == "failed"
+
+    # The previously approved script is completely untouched, segments and all.
+    still_approved = await scripts_repo.get_by_id(db_session, enq.script.id)
+    assert still_approved.status == "approved"
+    unchanged_segments = await scripts_repo.list_segments(
+        db_session, project_id=project.id, script_id=enq.script.id
+    )
+    assert [s.id for s in unchanged_segments] == [s.id for s in original_segments]
+
+
 # --- assemble_script_detail --------------------------------------------------
 
 
 async def _drafted(db_session, monkeypatch):
-    owner, project, claims, enq = await _enqueued(db_session)
-    llm = _fake_llm(
+    owner, project, topic, claim, enq = await _enqueued(
+        db_session, claim_text="Plants convert light to energy."
+    )
+    llm, _outline_mock, _section_mock = _mock_llm(
         monkeypatch,
-        [
-            {"narration_text": "Intro without a claim.", "claim_ids": [], "connective": True},
-            {
-                "narration_text": "Plants make food from light energy.",
-                "claim_ids": [str(claims[0].id)],
-            },
-        ],
+        sections_by_topic={
+            topic.id: [
+                [
+                    _on_target([], duration_ms=100_000),
+                    _on_target([str(claim.id)], duration_ms=200_000),
+                ]
+            ]
+        },
     )
     await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
-    return owner, project, claims, enq.script.id
+    return owner, project, topic, claim, enq.script.id
 
 
 async def test_assemble_returns_the_script_with_segments_and_cited_claims(db_session, monkeypatch):
-    owner, project, claims, script_id = await _drafted(db_session, monkeypatch)
+    owner, project, topic, claim, script_id = await _drafted(db_session, monkeypatch)
 
     detail = await scripts_service.assemble_script_detail(
         db_session, project_id=project.id, owner_id=owner.id, script_id=script_id
@@ -428,13 +902,14 @@ async def test_assemble_returns_the_script_with_segments_and_cited_claims(db_ses
     assert detail.script.id == script_id
     assert detail.script.status == "draft"
     assert [s.segment.segment_index for s in detail.segments] == [0, 1]
+    assert all(s.segment.topic_id == topic.id for s in detail.segments)
     assert detail.segments[0].claims == ()
-    assert [c.id for c in detail.segments[1].claims] == [claims[0].id]
+    assert [c.id for c in detail.segments[1].claims] == [claim.id]
     assert detail.segments[1].claims[0].claim_text == "Plants convert light to energy."
 
 
 async def test_assemble_rejects_a_project_the_caller_does_not_own(db_session, monkeypatch):
-    _owner, project, _claims, script_id = await _drafted(db_session, monkeypatch)
+    _owner, project, _topic, _claim, script_id = await _drafted(db_session, monkeypatch)
     other = await users_repo.create(db_session, email=f"{uuid4()}@example.com")
 
     with pytest.raises(NotFoundError):
@@ -456,7 +931,7 @@ async def test_assemble_is_a_404_for_an_unknown_script(db_session):
 
 
 async def test_approve_advances_a_draft_to_approved_and_audit_logs_it(db_session, monkeypatch):
-    owner, project, _claims, script_id = await _drafted(db_session, monkeypatch)
+    owner, project, _topic, _claim, script_id = await _drafted(db_session, monkeypatch)
 
     approved = await scripts_service.approve_script(
         db_session, project_id=project.id, owner_id=owner.id, script_id=script_id
@@ -470,11 +945,7 @@ async def test_approve_advances_a_draft_to_approved_and_audit_logs_it(db_session
 
 
 async def test_approve_rejects_a_script_that_is_not_a_draft(db_session):
-    owner, project = await _make_project(db_session)
-    await _add_supported_claims(db_session, project, ["A fact."])
-    result = await scripts_service.enqueue_script_generation(
-        db_session, project_id=project.id, owner_id=owner.id, idempotency_key="k"
-    )
+    owner, project, _topic, _claim, result = await _enqueued(db_session)
 
     # still 'pending' - never drafted
     with pytest.raises(ConflictError):
@@ -484,7 +955,7 @@ async def test_approve_rejects_a_script_that_is_not_a_draft(db_session):
 
 
 async def test_approve_rejects_a_project_the_caller_does_not_own(db_session, monkeypatch):
-    _owner, project, _claims, script_id = await _drafted(db_session, monkeypatch)
+    _owner, project, _topic, _claim, script_id = await _drafted(db_session, monkeypatch)
     other = await users_repo.create(db_session, email=f"{uuid4()}@example.com")
 
     with pytest.raises(NotFoundError):
@@ -503,7 +974,7 @@ async def test_approve_is_a_404_for_an_unknown_script(db_session):
 
 
 async def test_approve_is_idempotent_enough_to_reject_double_approval(db_session, monkeypatch):
-    owner, project, _claims, script_id = await _drafted(db_session, monkeypatch)
+    owner, project, _topic, _claim, script_id = await _drafted(db_session, monkeypatch)
     await scripts_service.approve_script(
         db_session, project_id=project.id, owner_id=owner.id, script_id=script_id
     )
@@ -514,11 +985,14 @@ async def test_approve_is_idempotent_enough_to_reject_double_approval(db_session
         )
 
 
+# --- error sanitisation --------------------------------------------------------------
+
+
 async def test_a_provider_failure_tells_the_owner_a_fixed_sentence_and_nothing_else(
     db_session, monkeypatch
 ):
-    _owner, _project, _claims, enq = await _enqueued(db_session)
-    llm = _llm_raising(monkeypatch, leaky_anthropic(429))
+    _owner, _project, _topic, _claim, enq = await _enqueued(db_session)
+    llm = _llm_raising_on_outline(monkeypatch, leaky_anthropic(429))
 
     job = await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
 
@@ -528,13 +1002,133 @@ async def test_a_provider_failure_tells_the_owner_a_fixed_sentence_and_nothing_e
     assert script.status == "failed"
 
 
-async def test_an_unexpected_failure_while_composing_a_script_is_generic(
-    db_session, monkeypatch
-):
-    _owner, _project, _claims, enq = await _enqueued(db_session)
-    llm = _llm_raising(monkeypatch, RuntimeError("password=hunter2 at /srv/app/worker.py"))
+async def test_an_unexpected_failure_while_composing_a_script_is_generic(db_session, monkeypatch):
+    _owner, _project, _topic, _claim, enq = await _enqueued(db_session)
+    llm = _llm_raising_on_outline(
+        monkeypatch, RuntimeError("password=hunter2 at /srv/app/worker.py")
+    )
 
     job = await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
 
     assert job.status == "failed" and job.error == job_errors.GENERIC_ERROR
     assert_clean(job.error)
+
+
+# --- progress: visible mid-run, never blocking, never partial script data -----------
+#
+# Needs two genuinely independent connections (one running the job, one polling it)
+# to prove real cross-connection visibility - the transactional ``db_session``
+# fixture shares one connection via SAVEPOINTs, so it cannot exercise this. Follows
+# ``test_worker.py``'s / ``test_stale_extraction_recovery.py``'s real-engine,
+# real-commit, manual-cleanup pattern instead.
+
+
+async def test_progress_is_visible_mid_run_without_blocking_or_partial_script_data():
+    engine = get_engine()
+    sessionmaker = get_sessionmaker()
+    reached_section_call = asyncio.Event()
+    release_section_call = asyncio.Event()
+
+    async with sessionmaker() as setup_session:
+        owner = await users_repo.create(setup_session, email=f"{uuid4()}@example.com")
+        project = await projects_repo.create(
+            setup_session, owner_id=owner.id, title="P", source_type="pdf"
+        )
+        topic = await project_topics_repo.create(
+            setup_session, project_id=project.id, title="A topic", status="accepted"
+        )
+        claim = await _add_supported_claim(setup_session, project, topic, "A fact.")
+        await setup_session.commit()
+
+    try:
+        async with sessionmaker() as enqueue_session:
+            enq = await scripts_service.enqueue_script_generation(
+                enqueue_session, project_id=project.id, owner_id=owner.id, idempotency_key="k"
+            )
+            await enqueue_session.commit()
+
+        llm = LLM(AsyncAnthropic(api_key="sk-ant-test-not-a-real-key"), model=SCRIPT_MODEL)
+
+        async def _outline(brief, topics):
+            return (
+                ScriptOutlineDraft(
+                    title="T",
+                    topics=tuple(
+                        TopicOutlineDraft(topic_id=t.topic_id, purpose="p", key_concepts=())
+                        for t in topics
+                    ),
+                ),
+                TokenUsage(input_tokens=1, output_tokens=1),
+            )
+
+        async def _section(brief, topic_brief, claims, continuity, **_kwargs):
+            reached_section_call.set()
+            await release_section_call.wait()
+            return [_on_target([str(claim.id)])], TokenUsage(input_tokens=1, output_tokens=1)
+
+        llm.compose_script_outline = AsyncMock(side_effect=_outline)  # type: ignore[method-assign]
+        llm.compose_script_section = AsyncMock(side_effect=_section)  # type: ignore[method-assign]
+
+        async def _run() -> None:
+            async with sessionmaker() as run_session:
+                await scripts_service.run_generate_script_job(
+                    run_session, llm, job_id=enq.job.id, sessionmaker=sessionmaker
+                )
+                await run_session.commit()
+
+        run_task = asyncio.create_task(_run())
+        await asyncio.wait_for(reached_section_call.wait(), timeout=5)
+
+        # A fully independent connection, while generation is paused mid-call.
+        async with sessionmaker() as poll_session:
+            mid_run_job = await jobs_repo.get_by_id(poll_session, enq.job.id)
+            assert mid_run_job is not None
+            assert mid_run_job.status == "running"
+            progress = mid_run_job.payload.get("progress")
+            assert progress is not None
+            assert progress["stage"] == "generating_topic"
+            assert progress["topic_title"] == "A topic"
+            assert progress["topic_index"] == 0
+            assert progress["topic_count"] == 1
+
+            mid_run_segments = await scripts_repo.list_segments(
+                poll_session, project_id=project.id, script_id=enq.script.id
+            )
+            assert mid_run_segments == []
+            mid_run_script = await scripts_repo.get_by_id(poll_session, enq.script.id)
+            assert mid_run_script is not None
+            assert mid_run_script.status == "pending"
+
+        release_section_call.set()
+        await asyncio.wait_for(run_task, timeout=5)
+
+        async with sessionmaker() as verify_session:
+            finished_job = await jobs_repo.get_by_id(verify_session, enq.job.id)
+            assert finished_job is not None and finished_job.status == "succeeded"
+            finished_script = await scripts_repo.get_by_id(verify_session, enq.script.id)
+            assert finished_script is not None and finished_script.status == "draft"
+    finally:
+        async with engine.begin() as cleanup_conn:
+            # A successful run leaves script_segment_claims -> claim_verifications
+            # and claim_citations -> source_chunks rows, both ON DELETE RESTRICT -
+            # deleted explicitly first so the project's cascade delete below has
+            # nothing left restricting it.
+            claim_ids = select(claim_verifications_table.c.id).where(
+                claim_verifications_table.c.project_id == project.id
+            )
+            await cleanup_conn.execute(
+                script_segment_claims_table.delete().where(
+                    script_segment_claims_table.c.claim_verification_id.in_(claim_ids)
+                )
+            )
+            await cleanup_conn.execute(
+                claim_citations_table.delete().where(
+                    claim_citations_table.c.claim_verification_id.in_(claim_ids)
+                )
+            )
+            await cleanup_conn.execute(
+                projects_table.delete().where(projects_table.c.id == project.id)
+            )
+            await cleanup_conn.execute(users_table.delete().where(users_table.c.id == owner.id))
+        await dispose_engine()
+        session_module._sessionmaker = None

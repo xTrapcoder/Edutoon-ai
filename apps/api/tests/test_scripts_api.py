@@ -1,4 +1,5 @@
-"""``/v1/projects/{project_id}/scripts`` - Script Generation Engine API (SG-5).
+"""``/v1/projects/{project_id}/scripts`` - Script Generation Engine API
+(Phase 7: duration-aware, topic-scoped generation).
 
 Same no-real-Clerk pattern as ``test_projects_api.py`` (tokens signed
 locally, ``providers.clerk.get_signing_key`` monkeypatched) and the same
@@ -9,8 +10,9 @@ Generation runs out of band: the endpoint only enqueues a ``generate_script``
 job. Where a test needs a script that has actually reached ``draft`` it drives
 ``services.scripts.run_generate_script_job`` directly with a fake ``LLM`` -
 a real ``LLM``/``AsyncAnthropic`` pair with only ``messages.create``
-monkeypatched, exactly as ``test_services_scripts.py`` does - so no network
-call is ever made but the orchestration is genuine.
+monkeypatched (answering both the Phase 7 outline and section tool calls),
+exactly as ``test_worker.py`` does - so no network call is ever made but the
+orchestration is genuine.
 """
 
 from __future__ import annotations
@@ -41,6 +43,7 @@ from edutoon.providers.cache import get_redis_client
 from edutoon.providers.llm import LLM
 from edutoon.repositories import claim_verifications as claim_verifications_repo
 from edutoon.repositories import jobs as jobs_repo
+from edutoon.repositories import project_topics as project_topics_repo
 from edutoon.repositories import projects as projects_repo
 from edutoon.repositories import source_chunks as source_chunks_repo
 from edutoon.repositories import uploaded_sources as uploaded_sources_repo
@@ -57,6 +60,20 @@ pytestmark = pytest.mark.provider_mocked
 
 TEST_ISSUER = "https://test.clerk.accounts.dev"
 SCRIPT_MODEL = "claude-sonnet-5"
+
+
+@pytest.fixture(autouse=True)
+def _no_duration_correction(monkeypatch):
+    """These tests use short, realistic narration text, far shorter than any
+    project's minimum 60-second target - Phase 7's bounded duration-correction
+    pass would otherwise fire for every one of them. Disabled here since none
+    of these tests are themselves about duration correction (that has its own
+    coverage in ``test_services_scripts.py``).
+    """
+    monkeypatch.setenv("MAX_SCRIPT_CORRECTION_ATTEMPTS", "0")
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
 
 
 # --- auth plumbing (mirrors test_projects_api.py) -----------------------------------
@@ -151,12 +168,23 @@ async def _create_project(client: httpx.AsyncClient, headers: dict[str, str]) ->
 
 
 async def _add_supported_claims(db_session, project_id: str | UUID, texts: list[str]):
-    """Insert ``texts`` as *supported, cited* claim verifications on the
-    project, straight through the repositories - the Evidence Engine's own
-    flow has its own coverage; here it just needs to be true that the
-    project has something to say.
+    """An accepted topic with ``texts`` as its *supported, cited* claim
+    verifications, straight through the repositories - the Evidence Engine's
+    own flow has its own coverage; here it just needs to be true that the
+    project has an accepted topic with something to say. Returns
+    ``(topic, claims)``.
     """
     project_id = UUID(str(project_id))
+    position = await project_topics_repo.next_position(
+        db_session, project_id=project_id, parent_id=None
+    )
+    topic = await project_topics_repo.create(
+        db_session,
+        project_id=project_id,
+        title="A topic",
+        status="accepted",
+        position=position,
+    )
     source = await uploaded_sources_repo.create(
         db_session,
         project_id=project_id,
@@ -185,37 +213,47 @@ async def _add_supported_claims(db_session, project_id: str | UUID, texts: list[
                 status="supported",
                 embedding_model="text-embedding-3-small",
                 llm_model=SCRIPT_MODEL,
+                topic_id=topic.id,
                 citations=[NewClaimCitation(source_chunk_id=chunk.id, similarity=0.9)],
             )
         )
-    return verifications
+    return topic, verifications
 
 
-def _fake_llm(monkeypatch: Any, segments: list[dict[str, Any]]) -> LLM:
+def _fake_llm(monkeypatch: Any, topic_id: UUID, segments: list[dict[str, Any]]) -> LLM:
+    """An ``LLM`` whose ``messages.create`` answers both Phase 7 calls: the
+    outline call (one topic, ``topic_id``) and the section call (``segments``).
+    """
     client = AsyncAnthropic(api_key="sk-ant-test-not-a-real-key")
-    message = Message(
-        id="msg_1",
-        content=[
-            ToolUseBlock(
-                type="tool_use",
-                id="toolu_1",
-                name="submit_script",
-                input={"title": "How photosynthesis works", "segments": segments},
-            )
-        ],
-        model=SCRIPT_MODEL,
-        role="assistant",
-        type="message",
-        usage=AnthropicUsage(input_tokens=100, output_tokens=200),
-    )
-    monkeypatch.setattr(client.messages, "create", AsyncMock(return_value=message))
+
+    async def _create(*, tool_choice: dict[str, str], **_kwargs: Any) -> Message:
+        name = tool_choice["name"]
+        if name == "submit_outline":
+            tool_input: dict[str, Any] = {
+                "title": "How photosynthesis works",
+                "topics": [{"topic_id": str(topic_id), "purpose": "p", "key_concepts": []}],
+            }
+        elif name == "submit_section":
+            tool_input = {"segments": segments}
+        else:  # pragma: no cover - a test bug, not a production path
+            raise AssertionError(f"unexpected tool_choice: {tool_choice}")
+        return Message(
+            id="msg_1",
+            content=[ToolUseBlock(type="tool_use", id="toolu_1", name=name, input=tool_input)],
+            model=SCRIPT_MODEL,
+            role="assistant",
+            type="message",
+            usage=AnthropicUsage(input_tokens=100, output_tokens=200),
+        )
+
+    monkeypatch.setattr(client.messages, "create", AsyncMock(side_effect=_create))
     return LLM(client, model=SCRIPT_MODEL)
 
 
 async def _run_pending_job(db_session, project_id: str, llm: LLM) -> None:
     """Drive the project's queued ``generate_script`` job to completion."""
     page = await jobs_repo.list_by_project(db_session, UUID(project_id))
-    [job] = [j for j in page.items if j.kind == "generate_script"]
+    [job] = [j for j in page.items if j.kind == "generate_script" and j.status == "queued"]
     await scripts_service.run_generate_script_job(db_session, llm, job_id=job.id)
 
 
@@ -226,7 +264,7 @@ async def _drafted_project(
     Returns ``(project_id, script_id, claims)``.
     """
     project_id = await _create_project(client, headers)
-    claims = await _add_supported_claims(
+    topic, claims = await _add_supported_claims(
         db_session,
         project_id,
         ["Plants convert light to chemical energy.", "Chlorophyll absorbs light."],
@@ -239,6 +277,7 @@ async def _drafted_project(
 
     llm = _fake_llm(
         monkeypatch,
+        topic.id,
         [
             {"narration_text": "Here is how it works.", "claim_ids": [], "connective": True},
             {
@@ -374,7 +413,13 @@ async def test_enqueue_replays_on_a_repeated_key(client_factory, auth_headers, d
     assert len([j for j in page.items if j.kind == "generate_script"]) == 1
 
 
-async def test_enqueue_supersedes_the_previous_script(client_factory, auth_headers, db_session):
+async def test_enqueuing_again_does_not_touch_a_still_pending_script(
+    client_factory, auth_headers, db_session
+):
+    """Phase 7 (migration 0013): a ``pending`` placeholder is no longer
+    "active", so queuing a second generation must not supersede the first
+    one before it has even run - only a *successful* attach may.
+    """
     headers = auth_headers()
 
     async with client_factory() as client:
@@ -393,8 +438,37 @@ async def test_enqueue_supersedes_the_previous_script(client_factory, auth_heade
     first_id, second_id = first.json()["id"], second.json()["id"]
     assert first_id != second_id
     by_id = {item["id"]: item["status"] for item in listed.json()["items"]}
-    assert by_id[first_id] == "superseded"
+    assert by_id[first_id] == "pending"
     assert by_id[second_id] == "pending"
+
+
+async def test_completing_a_regeneration_supersedes_the_previous_draft(
+    client_factory, auth_headers, db_session, monkeypatch
+):
+    headers = auth_headers()
+
+    async with client_factory() as client:
+        project_id, first_script_id, claims = await _drafted_project(
+            client, db_session, headers, monkeypatch
+        )
+        # Re-enqueue for the *same* accepted topic - it already has supported
+        # evidence, so nothing more needs adding.
+        second = await client.post(
+            f"/v1/projects/{project_id}/scripts", headers=_headers(headers)
+        )
+        assert second.status_code == 202
+        llm = _fake_llm(
+            monkeypatch,
+            claims[0].topic_id,
+            [{"narration_text": "Another sentence.", "claim_ids": [str(claims[0].id)]}],
+        )
+        await _run_pending_job(db_session, project_id, llm)
+
+        listed = await client.get(f"/v1/projects/{project_id}/scripts", headers=headers)
+
+    by_id = {item["id"]: item["status"] for item in listed.json()["items"]}
+    assert by_id[first_script_id] == "superseded"
+    assert by_id[second.json()["id"]] == "draft"
 
 
 # --- GET: list -----------------------------------------------------------------
