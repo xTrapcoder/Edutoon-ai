@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import time
 from collections.abc import AsyncIterator, Callable
+from pathlib import Path
 from uuid import UUID, uuid4
 
 import httpx
@@ -33,10 +34,18 @@ from edutoon.main import create_app
 from edutoon.providers import clerk
 from edutoon.providers.cache import get_redis_client
 from edutoon.providers.storage import Storage, get_storage_client
+from edutoon.repositories import script_segment_audio as audio_repo
+from edutoon.repositories import scripts as scripts_repo
 from edutoon.repositories import uploaded_sources as uploaded_sources_repo
+from edutoon.repositories.scripts import NewScriptSegment
 from edutoon.services import projects as projects_service
+from edutoon.services import script_audio as script_audio_service
 
 TEST_ISSUER = "https://test.clerk.accounts.dev"
+
+VOICES_DIR = Path(__file__).resolve().parents[1] / "var" / "piper-voices"
+VOICE_ID = "en_GB-cori-medium"
+SCRIPT_MODEL = "claude-sonnet-5"
 
 
 def _make_pdf(text: str = "Some content.") -> bytes:
@@ -207,6 +216,65 @@ async def test_a_project_with_no_uploads_deletes_cleanly(client_factory, auth_he
         response = await _delete(client, headers, project_id)
 
     assert response.status_code == 204
+
+
+# --- what is removed: synthesised segment audio (Phase 8) ------------------------------
+
+
+@pytest.mark.skipif(
+    not (VOICES_DIR / f"{VOICE_ID}.onnx").exists(),
+    reason=f"Piper voice {VOICE_ID} not downloaded - run `make voices` first",
+)
+async def test_deleting_a_project_removes_its_synthesised_segment_audio(
+    client_factory, auth_headers, db_session, storage
+):
+    headers = auth_headers()
+    async with client_factory() as client:
+        project_id = await _create_project(client, headers)
+        script = await scripts_repo.create(
+            db_session, project_id=UUID(project_id), llm_model=SCRIPT_MODEL
+        )
+        await scripts_repo.add_segments(
+            db_session,
+            script_id=script.id,
+            segments=[
+                NewScriptSegment(
+                    segment_index=0, narration_text="Hello world.", estimated_duration_ms=1000
+                )
+            ],
+        )
+        approved = await scripts_repo.set_status(
+            db_session, project_id=UUID(project_id), script_id=script.id, status="approved"
+        )
+        assert approved is not None
+        await db_session.commit()
+
+        enqueue_response = await client.post(
+            f"/v1/projects/{project_id}/scripts/{script.id}/synthesis",
+            headers={**headers, "Idempotency-Key": str(uuid4())},
+        )
+        assert enqueue_response.status_code == 202, enqueue_response.text
+        finished = await script_audio_service.run_synthesise_voice_job(
+            db_session,
+            storage,
+            job_id=UUID(enqueue_response.json()["id"]),
+            voices_dir=VOICES_DIR,
+        )
+        assert finished.status == "succeeded"
+
+        [audio] = await audio_repo.list_by_script(
+            db_session, project_id=UUID(project_id), script_id=script.id
+        )
+        assert audio.status == "ready"
+        assert (
+            await storage.object_exists(bucket=audio.storage_bucket, key=audio.storage_key) is True
+        )
+
+        response = await _delete(client, headers, project_id)
+
+        assert response.status_code == 204
+
+    assert await storage.object_exists(bucket=audio.storage_bucket, key=audio.storage_key) is False
 
 
 # --- what is NOT removed --------------------------------------------------------------

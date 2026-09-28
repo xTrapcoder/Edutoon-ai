@@ -55,13 +55,20 @@ def load_voice(voices_dir: Path, voice_model: str) -> PiperVoice:
     """The cached :class:`PiperVoice` for ``voice_model``, loading it from
     ``{voices_dir}/{voice_model}.onnx`` the first time it is needed.
 
+    Cached by the resolved ``(voices_dir, voice_model)`` pair, not
+    ``voice_model`` alone - ``PIPER_VOICES_DIR`` is one fixed setting for a
+    process's whole lifetime in production, but keying on the pair keeps a
+    cache hit from ever masking a genuinely missing voice file for a
+    directory this process hasn't loaded that model from before.
+
     Raises :class:`FileNotFoundError` with a clear, actionable message if the
     voice files are missing - never a bare ``onnxruntime`` traceback. Voice
     files are downloaded separately (``make voices`` /
     ``scripts/download_piper_voices.py``), never committed to the repository.
     """
-    if voice_model in _voice_cache:
-        return _voice_cache[voice_model]
+    cache_key = f"{voices_dir.resolve()}::{voice_model}"
+    if cache_key in _voice_cache:
+        return _voice_cache[cache_key]
 
     model_path = voices_dir / f"{voice_model}.onnx"
     if not model_path.exists():
@@ -70,7 +77,7 @@ def load_voice(voices_dir: Path, voice_model: str) -> PiperVoice:
             "with `make voices` (apps/api/scripts/download_piper_voices.py)."
         )
     voice = PiperVoice.load(str(model_path))
-    _voice_cache[voice_model] = voice
+    _voice_cache[cache_key] = voice
     return voice
 
 

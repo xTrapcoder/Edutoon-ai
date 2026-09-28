@@ -35,6 +35,7 @@ from openai.types.create_embedding_response import Usage
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 import edutoon.db.session as session_module
+from edutoon.core.config import get_settings
 from edutoon.db.database import dispose_engine, get_engine
 from edutoon.db.session import get_sessionmaker
 from edutoon.db.tables import jobs as jobs_table
@@ -43,20 +44,23 @@ from edutoon.db.tables import users as users_table
 from edutoon.providers import errors as provider_errors
 from edutoon.providers.embeddings import Embeddings
 from edutoon.providers.llm import LLM
-from edutoon.providers.storage import Storage
+from edutoon.providers.storage import Storage, get_storage_client
 from edutoon.repositories import claim_verifications as claim_verifications_repo
 from edutoon.repositories import jobs as jobs_repo
 from edutoon.repositories import project_topics as project_topics_repo
 from edutoon.repositories import projects as projects_repo
+from edutoon.repositories import script_segment_audio as script_segment_audio_repo
 from edutoon.repositories import scripts as scripts_repo
 from edutoon.repositories import source_chunks as source_chunks_repo
 from edutoon.repositories import uploaded_sources as uploaded_sources_repo
 from edutoon.repositories import users as users_repo
 from edutoon.repositories.claim_verifications import NewClaimCitation
+from edutoon.repositories.scripts import NewScriptSegment
 from edutoon.repositories.source_chunks import NewSourceChunk
 from edutoon.services import claim_extraction as claim_extraction_service
 from edutoon.services import evidence as evidence_service
 from edutoon.services import job_errors
+from edutoon.services import script_audio as script_audio_service
 from edutoon.services import scripts as scripts_service
 from edutoon.services import topic_extraction as topic_extraction_service
 from edutoon.worker.dispatch import JOB_HANDLERS, WorkerProviders
@@ -233,9 +237,7 @@ def _create_of(llm: LLM) -> AsyncMock:
 
 async def _make_project(db_session: AsyncSession):
     owner = await users_repo.create(db_session, email=f"{uuid4()}@example.com")
-    return await projects_repo.create(
-        db_session, owner_id=owner.id, title="P", source_type="pdf"
-    )
+    return await projects_repo.create(db_session, owner_id=owner.id, title="P", source_type="pdf")
 
 
 async def _make_source_with_chunks(db_session: AsyncSession, project, num_chunks: int = 2):
@@ -546,6 +548,82 @@ async def test_topic_extraction_stays_on_the_general_client_and_never_the_script
     finished = await jobs_repo.get_by_id(db_session, enqueued.job.id)
     assert finished is not None and finished.status == "succeeded"
     assert finished.result["llm_model"] == GENERAL_MODEL
+
+
+# --- process_one_job: synthesise_voice (Phase 8) -------------------------------------
+
+_PIPER_VOICES_DIR = Path(__file__).resolve().parent.parent / "var" / "piper-voices"
+_PIPER_VOICE_ID = "en_GB-cori-medium"
+
+
+def _real_storage() -> Storage:
+    settings = get_settings()
+    return get_storage_client(
+        endpoint_url=settings.STORAGE_ENDPOINT_URL,
+        access_key_id=settings.STORAGE_ACCESS_KEY_ID,
+        secret_access_key=settings.STORAGE_SECRET_ACCESS_KEY,
+    )
+
+
+@pytest.mark.skipif(
+    not (_PIPER_VOICES_DIR / f"{_PIPER_VOICE_ID}.onnx").exists(),
+    reason=f"Piper voice {_PIPER_VOICE_ID} not downloaded - run `make voices` first",
+)
+async def test_process_one_job_runs_the_synthesise_voice_handler(db_session, worker_sessionmaker):
+    """Proves the dispatch wiring, not the pipeline itself (already covered
+    in full by ``test_services_script_audio.py``) - real Piper, real local
+    storage, through ``process_one_job`` exactly as the real worker calls it.
+    """
+    owner = await users_repo.create(db_session, email=f"{uuid4()}@example.com")
+    project = await projects_repo.create(
+        db_session, owner_id=owner.id, title="P", source_type="topic"
+    )
+    script = await scripts_repo.create(db_session, project_id=project.id, llm_model=LLM_MODEL)
+    await scripts_repo.add_segments(
+        db_session,
+        script_id=script.id,
+        segments=[
+            NewScriptSegment(
+                segment_index=0, narration_text="Dispatch check.", estimated_duration_ms=800
+            )
+        ],
+    )
+    approved = await scripts_repo.set_status(
+        db_session, project_id=project.id, script_id=script.id, status="approved"
+    )
+    assert approved is not None
+    enqueued = await script_audio_service.enqueue_synthesis(
+        db_session,
+        project_id=project.id,
+        owner_id=owner.id,
+        script_id=script.id,
+        idempotency_key="k",
+    )
+    await db_session.commit()
+
+    storage = _real_storage()
+    providers = WorkerProviders(
+        embeddings=_idle_embeddings(),
+        llm=_idle_llm(),
+        script_llm=_idle_llm(),
+        storage=storage,
+        voices_dir=_PIPER_VOICES_DIR,
+    )
+
+    try:
+        claimed_something = await process_one_job(worker_sessionmaker, providers)
+
+        assert claimed_something is True
+        finished = await jobs_repo.get_by_id(db_session, enqueued.job.id)
+        assert finished is not None
+        assert finished.status == "succeeded"
+        assert finished.result["ready_segment_count"] == 1
+    finally:
+        [audio] = await script_segment_audio_repo.list_by_script(
+            db_session, project_id=project.id, script_id=script.id
+        )
+        if audio.storage_bucket and audio.storage_key:
+            await storage.delete_object(bucket=audio.storage_bucket, key=audio.storage_key)
 
 
 # --- process_one_job: extract_topics -----------------------------------------------
@@ -979,6 +1057,7 @@ async def test_claim_next_is_never_won_by_two_concurrent_claimants():
         await setup_session.commit()
 
     try:
+
         async def _claim() -> jobs_repo.JobRecord | None:
             async with sessionmaker() as session:
                 claimed = await jobs_repo.claim_next(session)

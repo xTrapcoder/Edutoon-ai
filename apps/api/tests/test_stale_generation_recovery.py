@@ -122,9 +122,7 @@ async def _script_status(session, project_id, script_id) -> str:
 
 
 def _with_threshold(monkeypatch: Any, seconds: int) -> None:
-    settings = get_settings().model_copy(
-        update={"SCRIPT_GENERATION_STALE_AFTER_SECONDS": seconds}
-    )
+    settings = get_settings().model_copy(update={"SCRIPT_GENERATION_STALE_AFTER_SECONDS": seconds})
     monkeypatch.setattr(service, "get_settings", lambda: settings)
 
 
@@ -190,8 +188,7 @@ async def test_recovery_is_audited_as_a_system_action(db_session):
     assert entry.entity_id == stale_job.id
     assert entry.context["job_id"] == str(stale_job.id)
     assert (
-        entry.context["stale_after_seconds"]
-        == get_settings().SCRIPT_GENERATION_STALE_AFTER_SECONDS
+        entry.context["stale_after_seconds"] == get_settings().SCRIPT_GENERATION_STALE_AFTER_SECONDS
     )
 
 
