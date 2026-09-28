@@ -6,7 +6,6 @@ import {
   Clapperboard,
   FileText,
   ListTree,
-  Mic,
   PenLine,
   ShieldCheck,
   Video,
@@ -54,7 +53,6 @@ const STEPS = [
 
 const UPCOMING = [
   { icon: Clapperboard, title: 'Visual scenes' },
-  { icon: Mic, title: 'Narration' },
   { icon: Video, title: 'Rendered video' },
 ] as const;
 
@@ -69,7 +67,7 @@ const FAQ = [
   },
   {
     q: 'Can I make a video today?',
-    a: 'Not yet. Today EduToon takes you from your material to an approved, cited script. Visual scenes, narration and rendering are the next stages and are still being built.',
+    a: 'Not yet. Today EduToon takes you from your material to an approved, cited script, and lets you narrate it with a local, offline voice. Visual scenes and rendering are the next stages and are still being built.',
   },
   {
     q: 'Which languages are supported?',
@@ -267,8 +265,8 @@ export default function LandingPage() {
             <div className="mt-12 rounded-xl border border-dashed border-line-strong bg-surface-sunken p-6">
               <p className="text-sm font-semibold text-ink-950">Coming next</p>
               <p className="mt-1 text-sm text-ink-600">
-                After a script is approved, these stages will turn it into a video. They are still
-                being built.
+                Once a script is approved, you can already narrate it with a local, offline voice.
+                Turning it into a full video still needs these stages, which are being built.
               </p>
               <ul className="mt-4 flex flex-wrap gap-3">
                 {UPCOMING.map((stage) => (

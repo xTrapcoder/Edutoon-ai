@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "web-mock-api",
+      "runtimeExecutable": "C:\\Users\\durge\\AppData\\Local\\Temp\\n22\\pnpm.cmd",
+      "runtimeArgs": ["--filter", "@edutoon/web", "mock-api"],
+      "port": 8787
+    },
+    {
+      "name": "web-qa",
+      "runtimeExecutable": "C:\\Users\\durge\\AppData\\Local\\Temp\\n22\\pnpm.cmd",
+      "runtimeArgs": ["--filter", "@edutoon/web", "dev:qa"],
+      "port": 3000
+    }
+  ]
+}
