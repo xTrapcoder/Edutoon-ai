@@ -81,7 +81,13 @@ unsupported claims ever reach the script or the screen.
   Migration 0013 (Phase 7) narrows `uq_scripts_project_id_active` to `draft` /
   `approved` only — a `pending` generation no longer supersedes the previous
   `approved` script until it is itself proven ready to replace it (see
-  `apps/api/README.md`, "Script generation", "Atomicity").
+  `apps/api/README.md`, "Script generation", "Atomicity"). Migration 0014
+  (Phase 8) adds `script_segment_audio` (one current row per segment,
+  `ON DELETE CASCADE` from `script_segments`, `content_hash` fingerprints
+  what produced it) and `scripts.measured_duration_ms` (the sum of real
+  synthesised-audio durations, kept separate from the pre-audio,
+  words-per-minute `estimated_duration_ms` — neither is derived from the
+  other; see `apps/api/README.md`, "Text-to-speech").
 - `projects.status` is derived, never set by a client: `edutoon.domain.project_status` is the
   rule and `projects.refresh_status` applies it whenever a job is queued or ends or a PDF fails
   to parse (`apps/api/README.md`, "Project status"). Deleting a project removes its uploaded PDFs
@@ -90,41 +96,45 @@ unsupported claims ever reach the script or the screen.
 
 ## Current phase
 
-**Phase 7 — duration-aware, topic-scoped script generation: code-complete for
-everything that can be verified without provider credentials.** Delivered on top
-of Phase 6: auth, projects, PDF upload and parsing, the Evidence Engine, topic
-extraction (Phase 5), candidate claim extraction (Phase 6), the background
-worker, and now a script generation pipeline that reads accepted topics and
-their own topic-scoped supported claims instead of the whole project's pool -
-one outline call, one narration call per accepted topic (split into ordered
-sub-sections when a topic's duration budget is too long for one call), a
-bounded duration-correction pass, and one atomic attach (migration 0013;
-API in `apps/api/README.md`, "Script generation"). `project.target_duration_ms`
-now actually controls generation via `edutoon.domain.script_duration`; the LLM
-never decides durations, topic order or which claims a section may cite.
+**Phase 8 — local narration synthesis: code-complete for everything that can be
+verified without provider credentials.** Delivered on top of Phase 7: an approved
+script can now be turned into real narrated audio with a local, offline TTS engine
+(Piper, `piper-tts`) - no company API key needed, and (unlike the LLM/embeddings
+providers) never mocked in the test suite; every test that touches it runs the
+genuine engine against the genuine local MinIO. One WAV per segment
+(`script_segment_audio`, migration 0014), resumable (a content-hash fingerprint
+skips already-valid audio on re-synthesis), and cleaned up by the same
+project-deletion storage path uploaded PDFs already used. Full detail in
+`apps/api/README.md`, "Text-to-speech".
+
+**`en-IN` narrates with a labelled `en-GB` substitute voice, not a genuine
+Indian-English one** - Piper's catalogue has none as of this writing;
+`PIPER_EN_IN_IS_TEMPORARY_SUBSTITUTE` and `is_temporary_voice_substitute` make
+that explicit everywhere the voice is chosen, stored, and shown. **`piper-tts` is
+GPL-3.0-or-later** - fine for local dev and testing, but not yet reviewed for
+production/customer-facing distribution; that review, and a genuine
+Indian-English voice, are both still pending real decisions, not engineering work.
 
 **Pending real-provider verification when company API keys become available**
 (nothing below is verified; see `apps/api/README.md`, "Testing, and what is not yet
 verified against a real provider"): the keys and model availability
 (`LLM_MODEL`, `EMBEDDING_MODEL`, `SCRIPT_LLM_MODEL`), keywords-only extraction,
 long-PDF extraction, the quality of candidate claim extraction, the teacher-style
-tone and quality of `compose_script_outline` / `compose_script_section` and how
-far their WPM-based duration estimate sits from real TTS audio once that exists,
+tone and quality of `compose_script_outline` / `compose_script_section`,
 `apps/api/scripts/smoke_test_phase4.py` run unmodified, and the real quality,
-latency and token behaviour of every prompt. No test calls a provider; those
-that involve one carry `pytest.mark.provider_mocked`.
+latency and token behaviour of every prompt. No test calls an LLM/embeddings
+provider; those that involve one carry `pytest.mark.provider_mocked` - Piper is
+the one provider in this project that is never mocked (see "Text-to-speech").
 
 **The web front end is built** (`apps/web`, see its README): landing, Clerk sign-in,
 dashboard, project list, create-project wizard, project workspace, topic review with
-evidence, script review and approval. Script Studio already shows target vs.
-estimated duration and each segment's topic; job progress now also carries
-`payload.progress` (which topic is being written, out of how many) for a
-`generate_script` job. Real Clerk sign-in is **unverified** - the Clerk keys are
-placeholders - as are the real providers.
+evidence, script review and approval, and now Script Studio's narration panel -
+trigger synthesis, watch per-section progress, play back each segment, and see
+the `en-IN` substitute-voice notice. Real Clerk sign-in is **unverified** - the
+Clerk keys are placeholders - as are the real LLM/embeddings providers.
 
-Not built yet: a front end for candidate claim extraction, scenes, voice/TTS,
-animation, rendering. **Phase 8 has not started and needs the owner's explicit
-approval.**
+Not built yet: a front end for candidate claim extraction, scenes, animation,
+rendering. **Phase 9 has not started and needs the owner's explicit approval.**
 
 ## Commands
 
@@ -154,7 +164,7 @@ apps/
   api/        FastAPI service (uv, src/edutoon)
     src/edutoon/          api/ (routers, schemas) · services/ · domain/ (pure) ·
                           repositories/ · providers/ · worker/ · db/ · core/
-    alembic/              migration environment + versions/0001..0012
+    alembic/              migration environment + versions/0001..0014
   parser/     PDF/topic parser — not yet initialised
   render/     Remotion render worker — not yet initialised
 packages/

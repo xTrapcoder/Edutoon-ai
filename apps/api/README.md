@@ -396,6 +396,77 @@ whole script any more), `MAX_CLAIMS_PER_GENERATION` (the whole script's
 claim-count ceiling, distinct from the new per-section one) and
 `SCRIPT_WORDS_PER_MINUTE`.
 
+## Text-to-speech
+
+Phase 8 turns an approved script into narrated audio with
+[Piper](https://github.com/OHF-voice/piper1-gpl) (`piper-tts`, currently
+1.8.0) - a small, local neural TTS engine. It runs entirely on the API/worker
+host, needs no company API key, and (unlike every other provider in this
+project) is never mocked in the test suite: `tests/test_services_script_audio.py`
+and `tests/test_worker.py` synthesise real audio with the real engine against
+the real local MinIO, every run.
+
+**API surface** (`api/routers/script_audio.py`, prefix
+`/v1/projects/{project_id}/scripts/{script_id}`, an approved script only):
+
+- `POST /synthesis` - enqueues a `synthesise_voice` job (`202`, `Idempotency-Key`
+  required, same asynchronous shape as script generation).
+- `GET /synthesis` - the job's status and each segment's progress.
+- `GET /segments/{segment_id}/audio` - streams that segment's WAV, `Range` requests
+  honoured (browser seeking).
+
+**Storage.** One object per segment,
+`projects/{project_id}/scripts/{script_id}/segments/{segment_id}/audio.wav`
+in `BUCKET_SEGMENTS` (`domain.script_audio.segment_audio_storage_key`) - mono
+16-bit PCM WAV at Piper's native 22050 Hz. Uncompressed PCM costs a fixed
+44.1 KB per second of audio regardless of content (~2.6 MB/minute), so a full
+60-minute narration is roughly **150 MB** of WAV.
+
+**Resumability.** `script_segment_audio.content_hash`
+(`domain.script_audio.compute_content_hash`, over the narration text, voice
+model, engine version and sample rate) fingerprints what produced a
+segment's audio. Re-running synthesis skips any segment whose stored hash
+still matches - only a changed segment, voice or Piper version re-synthesises
+it - so `run_synthesise_voice_job` is safe to call again after a crash or a
+partial failure without redoing already-valid work.
+
+**Deletion.** `services.projects.delete_project` collects every segment's
+storage location (`script_segment_audio` cascades on project delete, same as
+`uploaded_sources`) alongside uploaded PDFs, and `remove_stored_files` removes
+both from object storage after the database deletion commits - Phase 8 audio
+is cleaned up by the exact same path Phase-pre-8 uploaded sources already
+were, not a separate one.
+
+**The `en-IN` voice is a labelled substitute, not a genuine Indian-English
+voice.** Piper's public voice catalogue has no Indian-English model as of
+this writing. Rather than pick an unrelated accent and let it pass as
+correct, `PIPER_VOICE_EN_IN` defaults to the identical catalogue id as
+`PIPER_VOICE_EN_GB` (`en_GB-cori-medium`) and `PIPER_EN_IN_IS_TEMPORARY_SUBSTITUTE`
+records that explicitly - `domain.tts_voice.select_voice` returns the flag on
+every voice selection, `script_segment_audio.is_temporary_voice_substitute`
+persists it per segment, and both the API and the frontend surface it, so an
+`en-IN` project's narration is always labelled for what it actually is.
+Swapping in a genuine Indian-English (or other commercial) voice later only
+means changing this module's mapping; every caller already goes through
+`select_voice`, never a hand-picked model id.
+
+**Licensing.** `piper-tts` is distributed under **GPL-3.0-or-later**. It is
+fine for local development and for the test suite, but a GPL-licensed
+dependency carries copyleft obligations that depend on how (and whether) the
+resulting service is distributed - **this needs a company legal/licensing
+review before any production or customer-facing distribution**, independent
+of whether a genuine Indian-English voice is also added. This is not yet
+reviewed or approved for production use.
+
+Settings (all optional, see `core/config.py`): `PIPER_VOICES_DIR` (where
+`make voices` / `scripts/download_piper_voices.py` puts the downloaded
+`.onnx`/`.onnx.json` files - never committed to git), `PIPER_VOICE_EN_GB`,
+`PIPER_VOICE_EN_IN`, `PIPER_EN_IN_IS_TEMPORARY_SUBSTITUTE`,
+`MAX_TTS_CHARS_PER_CALL` (one internal Piper call;
+`domain.script_audio.chunk_narration_for_tts` splits a segment at sentence
+boundaries under this and concatenates the chunks into one file),
+`MAX_TTS_CHARS_PER_SEGMENT`, `MAX_TTS_CHARS_PER_SCRIPT`, `MAX_CONCURRENT_TTS`.
+
 ## Testing, and what is not yet verified against a real provider
 
 ```bash
@@ -411,6 +482,12 @@ client, or builds the SDK's error objects offline, and carries
 label true in both directions). Such a test proves how *our* code handles a
 response - parsing, validation, persistence, error messages. It says nothing about
 how a real provider behaves, and none of them is real-provider verification.
+
+**Text-to-speech (Piper) is the one exception - it is real in every test that
+touches it.** Piper is local and free, so there is no key to withhold and
+nothing to mock: `tests/test_services_script_audio.py`, `tests/test_worker.py`
+and `tests/test_project_deletion_storage.py` run the genuine engine against
+the genuine local MinIO. `pytest.mark.provider_mocked` does not apply to it.
 
 **Pending real-provider verification when company API keys become available:**
 
@@ -431,8 +508,11 @@ how a real provider behaves, and none of them is real-provider verification.
    `LLM.compose_script_outline` / `LLM.compose_script_section` against a live
    model, token use against `_outline_max_tokens` / `_section_max_tokens`, and
    how far the WPM-based `estimated_duration_ms` actually sits from real TTS
-   audio once that exists - the duration-correction pass is tuned against an
-   estimate, not a measurement.
+   audio - now measurable (Phase 8: `script.measured_duration_ms`), but not yet
+   measured across a real generated corpus at scale.
+8. **A genuine Indian-English Piper voice**, if and when one appears in the
+   catalogue - or a different, commercially-licensed provider for it - to
+   replace the labelled `en-GB` substitute (see "Text-to-speech").
 
 ## Known limitations
 
@@ -459,10 +539,16 @@ how a real provider behaves, and none of them is real-provider verification.
   budget needs splitting, and again if duration correction fires) - bounded
   (`domain.script_duration.max_provider_calls`) but not free. Credits come
   with the ledger, in a later phase.
-- **Duration is an estimate, not a measurement.** `estimated_duration_ms` is
-  word count over `SCRIPT_WORDS_PER_MINUTE`; real narration timing only
-  exists once TTS is built. The correction pass narrows this estimate towards
-  the target, but a script is never rejected for still missing it.
+- **`estimated_duration_ms` is still only a word-count estimate at generation
+  time.** The correction pass narrows it towards the target before the script
+  is approved, but a script is never rejected for still missing it - real
+  measured duration (`measured_duration_ms`, from actually-synthesised audio,
+  Phase 8) only exists once narration has been run, which happens after
+  approval, so it can't inform generation or the correction pass itself.
+- **Synthesis cost and time scale with script length.** One Piper call per
+  narration chunk (`MAX_TTS_CHARS_PER_CALL`), `MAX_CONCURRENT_TTS` limiting how
+  many run at once - no company API key, but still CPU time on the worker
+  host, and a 60-minute script is roughly 150 MB of WAV (see "Text-to-speech").
 - **A retry after a failed commit repeats the work.** Every mutating route commits
   before it caches its result, so a failed commit is never cached as a success - but
   the client's retry then runs the handler again. For claim verification that
