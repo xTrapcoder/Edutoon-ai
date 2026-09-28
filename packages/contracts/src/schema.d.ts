@@ -296,6 +296,41 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/scripts/{script_id}/synthesis": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Synthesis Status */
+        get: operations["get_synthesis_status_v1_projects__project_id__scripts__script_id__synthesis_get"];
+        put?: never;
+        /** Enqueue Synthesis */
+        post: operations["enqueue_synthesis_v1_projects__project_id__scripts__script_id__synthesis_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/scripts/{script_id}/segments/{segment_id}/audio": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Stream Segment Audio */
+        get: operations["stream_segment_audio_v1_projects__project_id__scripts__script_id__segments__segment_id__audio_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/jobs": {
         parameters: {
             query?: never;
@@ -612,6 +647,8 @@ export interface components {
             llm_model: string;
             /** Estimated Duration Ms */
             estimated_duration_ms: number | null;
+            /** Measured Duration Ms */
+            measured_duration_ms: number | null;
             /**
              * Created At
              * Format: date-time
@@ -655,6 +692,8 @@ export interface components {
             llm_model: string;
             /** Estimated Duration Ms */
             estimated_duration_ms: number | null;
+            /** Measured Duration Ms */
+            measured_duration_ms: number | null;
             /**
              * Created At
              * Format: date-time
@@ -688,6 +727,33 @@ export interface components {
             created_at: string;
             /** Claims */
             claims: components["schemas"]["CitedClaimResponse"][];
+        };
+        /** SegmentAudioResponse */
+        SegmentAudioResponse: {
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "ready" | "failed";
+            /** Format */
+            format: string | null;
+            /** Sample Rate */
+            sample_rate: number | null;
+            /** Channels */
+            channels: number | null;
+            /** Measured Duration Ms */
+            measured_duration_ms: number | null;
+            /** Voice Model */
+            voice_model: string;
+            /** Is Temporary Voice Substitute */
+            is_temporary_voice_substitute: boolean;
+            /** Error */
+            error: string | null;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
         };
         /**
          * SourceChunkListResponse
@@ -735,6 +801,34 @@ export interface components {
              * Format: date-time
              */
             updated_at: string;
+        };
+        /**
+         * SynthesisRequest
+         * @description Carries no fields yet: synthesis takes its voice/settings from
+         *     configuration, not the caller. Exists so an unknown field in the request
+         *     body is rejected with 422 (rule 10) rather than silently ignored, the
+         *     same pattern as ``ScriptGenerateRequest``.
+         */
+        SynthesisRequest: Record<string, never>;
+        /** SynthesisSegmentResponse */
+        SynthesisSegmentResponse: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Segment Index */
+            segment_index: number;
+            /** Estimated Duration Ms */
+            estimated_duration_ms: number;
+            audio: components["schemas"]["SegmentAudioResponse"] | null;
+        };
+        /** SynthesisStatusResponse */
+        SynthesisStatusResponse: {
+            script: components["schemas"]["ScriptResponse"];
+            job: components["schemas"]["JobResponse"] | null;
+            /** Segments */
+            segments: components["schemas"]["SynthesisSegmentResponse"][];
         };
         /**
          * TopicEvidenceResponse
@@ -1686,6 +1780,115 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ScriptResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_synthesis_status_v1_projects__project_id__scripts__script_id__synthesis_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+                script_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SynthesisStatusResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    enqueue_synthesis_v1_projects__project_id__scripts__script_id__synthesis_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "idempotency-key": string;
+                authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+                script_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["SynthesisRequest"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    stream_segment_audio_v1_projects__project_id__scripts__script_id__segments__segment_id__audio_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                range?: string | null;
+                authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+                script_id: string;
+                segment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */

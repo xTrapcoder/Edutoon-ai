@@ -30,6 +30,10 @@ export type ScriptDetail = Schemas['ScriptDetailResponse'];
 export type ScriptSegment = Schemas['ScriptSegmentResponse'];
 export type CitedClaim = Schemas['CitedClaimResponse'];
 
+export type SynthesisStatus = Schemas['SynthesisStatusResponse'];
+export type SynthesisSegment = Schemas['SynthesisSegmentResponse'];
+export type SegmentAudio = Schemas['SegmentAudioResponse'];
+
 export type ClaimVerification = Schemas['ClaimVerificationResponse'];
 
 /** The vocabularies below are the API's own `Literal` types, read back out of the schema. */
@@ -43,3 +47,4 @@ export type JobKind = Job['kind'];
 export type JobStatus = Job['status'];
 export type SourceStatus = Source['status'];
 export type VerdictStatus = CitedClaim['status'];
+export type AudioStatus = SegmentAudio['status'];

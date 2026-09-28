@@ -1624,6 +1624,263 @@
         }
       }
     },
+    "/v1/projects/{project_id}/scripts/{script_id}/synthesis": {
+      "post": {
+        "tags": [
+          "synthesis"
+        ],
+        "summary": "Enqueue Synthesis",
+        "operationId": "enqueue_synthesis_v1_projects__project_id__scripts__script_id__synthesis_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "script_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Script Id"
+            }
+          },
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255,
+              "title": "Idempotency-Key"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/SynthesisRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "synthesis"
+        ],
+        "summary": "Get Synthesis Status",
+        "operationId": "get_synthesis_status_v1_projects__project_id__scripts__script_id__synthesis_get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "script_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Script Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SynthesisStatusResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/scripts/{script_id}/segments/{segment_id}/audio": {
+      "get": {
+        "tags": [
+          "synthesis"
+        ],
+        "summary": "Stream Segment Audio",
+        "operationId": "stream_segment_audio_v1_projects__project_id__scripts__script_id__segments__segment_id__audio_get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "script_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Script Id"
+            }
+          },
+          {
+            "name": "segment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Segment Id"
+            }
+          },
+          {
+            "name": "range",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Range"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/jobs": {
       "get": {
         "tags": [
@@ -2398,6 +2655,17 @@
             ],
             "title": "Estimated Duration Ms"
           },
+          "measured_duration_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Measured Duration Ms"
+          },
           "created_at": {
             "type": "string",
             "format": "date-time",
@@ -2423,6 +2691,7 @@
           "status",
           "llm_model",
           "estimated_duration_ms",
+          "measured_duration_ms",
           "created_at",
           "updated_at",
           "segments"
@@ -2501,6 +2770,17 @@
             ],
             "title": "Estimated Duration Ms"
           },
+          "measured_duration_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Measured Duration Ms"
+          },
           "created_at": {
             "type": "string",
             "format": "date-time",
@@ -2519,6 +2799,7 @@
           "status",
           "llm_model",
           "estimated_duration_ms",
+          "measured_duration_ms",
           "created_at",
           "updated_at"
         ],
@@ -2579,6 +2860,99 @@
           "claims"
         ],
         "title": "ScriptSegmentResponse"
+      },
+      "SegmentAudioResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "ready",
+              "failed"
+            ],
+            "title": "Status"
+          },
+          "format": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Format"
+          },
+          "sample_rate": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sample Rate"
+          },
+          "channels": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Channels"
+          },
+          "measured_duration_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Measured Duration Ms"
+          },
+          "voice_model": {
+            "type": "string",
+            "title": "Voice Model"
+          },
+          "is_temporary_voice_substitute": {
+            "type": "boolean",
+            "title": "Is Temporary Voice Substitute"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "format",
+          "sample_rate",
+          "channels",
+          "measured_duration_ms",
+          "voice_model",
+          "is_temporary_voice_substitute",
+          "error",
+          "updated_at"
+        ],
+        "title": "SegmentAudioResponse"
       },
       "SourceChunkListResponse": {
         "properties": {
@@ -2680,6 +3054,79 @@
           "updated_at"
         ],
         "title": "SourceChunkResponse"
+      },
+      "SynthesisRequest": {
+        "properties": {},
+        "additionalProperties": false,
+        "type": "object",
+        "title": "SynthesisRequest",
+        "description": "Carries no fields yet: synthesis takes its voice/settings from\nconfiguration, not the caller. Exists so an unknown field in the request\nbody is rejected with 422 (rule 10) rather than silently ignored, the\nsame pattern as ``ScriptGenerateRequest``."
+      },
+      "SynthesisSegmentResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "segment_index": {
+            "type": "integer",
+            "title": "Segment Index"
+          },
+          "estimated_duration_ms": {
+            "type": "integer",
+            "title": "Estimated Duration Ms"
+          },
+          "audio": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SegmentAudioResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "segment_index",
+          "estimated_duration_ms",
+          "audio"
+        ],
+        "title": "SynthesisSegmentResponse"
+      },
+      "SynthesisStatusResponse": {
+        "properties": {
+          "script": {
+            "$ref": "#/components/schemas/ScriptResponse"
+          },
+          "job": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/JobResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "segments": {
+            "items": {
+              "$ref": "#/components/schemas/SynthesisSegmentResponse"
+            },
+            "type": "array",
+            "title": "Segments"
+          }
+        },
+        "type": "object",
+        "required": [
+          "script",
+          "job",
+          "segments"
+        ],
+        "title": "SynthesisStatusResponse"
       },
       "TopicEvidenceResponse": {
         "properties": {
