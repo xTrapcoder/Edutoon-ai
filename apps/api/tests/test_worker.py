@@ -50,6 +50,7 @@ from edutoon.repositories import jobs as jobs_repo
 from edutoon.repositories import project_topics as project_topics_repo
 from edutoon.repositories import projects as projects_repo
 from edutoon.repositories import script_segment_audio as script_segment_audio_repo
+from edutoon.repositories import script_segment_scenes as script_segment_scenes_repo
 from edutoon.repositories import scripts as scripts_repo
 from edutoon.repositories import source_chunks as source_chunks_repo
 from edutoon.repositories import uploaded_sources as uploaded_sources_repo
@@ -62,6 +63,7 @@ from edutoon.services import evidence as evidence_service
 from edutoon.services import job_errors
 from edutoon.services import script_audio as script_audio_service
 from edutoon.services import scripts as scripts_service
+from edutoon.services import storyboard as storyboard_service
 from edutoon.services import topic_extraction as topic_extraction_service
 from edutoon.worker.dispatch import JOB_HANDLERS, WorkerProviders
 from edutoon.worker.runner import process_one_job
@@ -626,6 +628,109 @@ async def test_process_one_job_runs_the_synthesise_voice_handler(db_session, wor
             await storage.delete_object(bucket=audio.storage_bucket, key=audio.storage_key)
 
 
+# --- process_one_job: generate_storyboard (Phase 9) ---------------------------------
+
+
+def _fake_storyboard_llm(
+    monkeypatch: Any, scenes: list[dict[str, Any]], *, model: str = LLM_MODEL
+) -> LLM:
+    client = AsyncAnthropic(api_key="sk-ant-test-not-a-real-key")
+    message = Message(
+        id="msg_1",
+        content=[
+            ToolUseBlock(
+                type="tool_use", id="toolu_1", name="submit_scenes", input={"scenes": scenes}
+            )
+        ],
+        model=model,
+        role="assistant",
+        type="message",
+        usage=AnthropicUsage(input_tokens=9, output_tokens=13),
+    )
+    monkeypatch.setattr(client.messages, "create", AsyncMock(return_value=message))
+    return LLM(client, model=model)
+
+
+async def test_process_one_job_runs_the_generate_storyboard_handler(
+    db_session, worker_sessionmaker, monkeypatch
+):
+    """Proves the dispatch wiring, not the pipeline itself (already covered in
+    full by ``test_services_storyboard.py``) - through ``process_one_job``
+    exactly as the real worker calls it, and on the general ``llm`` client
+    (never ``script_llm``), mirroring ``test_topic_extraction_stays_on_the_general_client``.
+    """
+    owner = await users_repo.create(db_session, email=f"{uuid4()}@example.com")
+    project = await projects_repo.create(
+        db_session, owner_id=owner.id, title="P", source_type="topic"
+    )
+    script = await scripts_repo.create(db_session, project_id=project.id, llm_model=LLM_MODEL)
+    [segment] = await scripts_repo.add_segments(
+        db_session,
+        script_id=script.id,
+        segments=[
+            NewScriptSegment(
+                segment_index=0, narration_text="Dispatch check.", estimated_duration_ms=9_000
+            )
+        ],
+    )
+    approved = await scripts_repo.set_status(
+        db_session, project_id=project.id, script_id=script.id, status="approved"
+    )
+    assert approved is not None
+    await script_segment_audio_repo.upsert(
+        db_session,
+        script_segment_id=segment.id,
+        status="ready",
+        storage_bucket="edutoon-segments",
+        storage_key=f"k/{segment.id}",
+        format="wav",
+        sample_rate=22_050,
+        channels=1,
+        measured_duration_ms=9_000,
+        voice_model="en_GB-cori-medium",
+        is_temporary_voice_substitute=False,
+        content_hash="h" * 64,
+    )
+    await scripts_repo.set_measured_duration(
+        db_session, project_id=project.id, script_id=script.id, measured_duration_ms=9_000
+    )
+    enqueued = await storyboard_service.enqueue_storyboard_generation(
+        db_session,
+        project_id=project.id,
+        owner_id=owner.id,
+        script_id=script.id,
+        idempotency_key="k",
+    )
+    await db_session.commit()
+
+    general = _fake_storyboard_llm(
+        monkeypatch, [{"template": "title_card", "content": {"title": "Dispatch"}}]
+    )
+    script_client = _fake_script_llm(
+        monkeypatch, topic_id=uuid4(), claim_id=uuid4(), model=SCRIPT_MODEL
+    )
+    providers = WorkerProviders(
+        embeddings=_idle_embeddings(),
+        llm=general,
+        script_llm=script_client,
+        storage=_idle_storage(),
+        voices_dir=_IDLE_VOICES_DIR,
+    )
+
+    claimed_something = await process_one_job(worker_sessionmaker, providers)
+
+    assert claimed_something is True
+    _create_of(script_client).assert_not_awaited()  # storyboard never runs on script_llm
+    finished = await jobs_repo.get_by_id(db_session, enqueued.job.id)
+    assert finished is not None
+    assert finished.status == "succeeded"
+    assert finished.result["outcome"] == "complete"
+    scenes = await script_segment_scenes_repo.list_by_script(
+        db_session, project_id=project.id, script_id=script.id
+    )
+    assert [s.template for s in scenes] == ["title_card"]
+
+
 # --- process_one_job: extract_topics -----------------------------------------------
 
 
@@ -644,6 +749,7 @@ def test_the_worker_has_a_handler_for_each_implemented_job_kind_and_no_others():
         "extract_topics",
         "extract_claims",
         "synthesise_voice",
+        "generate_storyboard",
     }
 
 

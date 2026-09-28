@@ -9,12 +9,13 @@ itself - it only wires a job's ``kind`` (the ``jobs.kind`` CHECK constraint
 from migration 0003, widened by migration 0012) to the service function that
 already knows how to run it.
 
-``jobs.kind`` currently allows seven values; five have a handler implemented
+``jobs.kind`` currently allows eight values; six have a handler implemented
 in the service layer today (``evidence.run_build_evidence_job``,
 ``scripts.run_generate_script_job``,
 ``topic_extraction.run_extract_topics_job``,
 ``claim_extraction.run_extract_claims_job``,
-``script_audio.run_synthesise_voice_job`` - Phase 8). The rest
+``script_audio.run_synthesise_voice_job`` - Phase 8,
+``storyboard.run_generate_storyboard_job`` - Phase 9). The rest
 (``parse_source``, ``render_video``) have no service-layer implementation yet
 - deliberately out of scope for this phase - so they are simply absent from
 ``JOB_HANDLERS``. ``worker.runner`` treats a missing handler as a normal,
@@ -40,6 +41,7 @@ from edutoon.services import claim_extraction as claim_extraction_service
 from edutoon.services import evidence as evidence_service
 from edutoon.services import script_audio as script_audio_service
 from edutoon.services import scripts as scripts_service
+from edutoon.services import storyboard as storyboard_service
 from edutoon.services import topic_extraction as topic_extraction_service
 
 
@@ -49,10 +51,11 @@ class WorkerProviders:
     startup - the worker-process equivalent of ``app.state`` in ``main.py``.
 
     There are two LLM clients, one per configured model, and a handler uses the
-    one for its task: ``llm`` (``LLM_MODEL``) for claim judging and topic
-    extraction, ``script_llm`` (``SCRIPT_LLM_MODEL``) for writing scripts.
-    ``script_llm`` has no default on purpose: falling back to ``llm`` would make a
-    forgotten wiring silently write scripts with the wrong model.
+    one for its task: ``llm`` (``LLM_MODEL``) for claim judging, topic
+    extraction and - Phase 9 - storyboard scene composition, ``script_llm``
+    (``SCRIPT_LLM_MODEL``) for writing scripts. ``script_llm`` has no default
+    on purpose: falling back to ``llm`` would make a forgotten wiring
+    silently write scripts with the wrong model.
 
     ``storage`` and ``voices_dir`` are Phase 8's: ``script_audio``'s handler
     uploads synthesised audio to ``BUCKET_SEGMENTS`` and reads Piper voice
@@ -156,10 +159,22 @@ async def _handle_synthesise_voice(
     )
 
 
+async def _handle_generate_storyboard(
+    session: AsyncSession,
+    providers: WorkerProviders,
+    job_id: UUID,
+    sessionmaker: async_sessionmaker[AsyncSession] | None,
+) -> JobRecord:
+    return await storyboard_service.run_generate_storyboard_job(
+        session, providers.llm, job_id=job_id, sessionmaker=sessionmaker
+    )
+
+
 JOB_HANDLERS: dict[str, JobHandler] = {
     evidence_service.BUILD_EVIDENCE_JOB_KIND: _handle_build_evidence,
     scripts_service.GENERATE_SCRIPT_JOB_KIND: _handle_generate_script,
     topic_extraction_service.EXTRACT_TOPICS_JOB_KIND: _handle_extract_topics,
     claim_extraction_service.EXTRACT_CLAIMS_JOB_KIND: _handle_extract_claims,
     script_audio_service.SYNTHESISE_VOICE_JOB_KIND: _handle_synthesise_voice,
+    storyboard_service.GENERATE_STORYBOARD_JOB_KIND: _handle_generate_storyboard,
 }
