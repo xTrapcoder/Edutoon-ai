@@ -20,6 +20,14 @@ Two separate sessions/transactions per job, deliberately:
    doesn't re-implement their business logic). Keeping it a *second*
    transaction, separate from the claim, at least means the claim's lock
    is never the thing held open for that long.
+
+``sessionmaker`` is also handed to the handler itself (Phase 7): a
+long-running handler such as ``scripts.run_generate_script_job`` commits its
+own "running" transition right away, releasing that row's lock before its
+generation work begins, and then reports interim progress through short,
+independent sessions opened from this same ``sessionmaker`` - never through
+``session`` (which stays free for the handler's own reads and the single
+final write). Every other handler ignores the extra argument.
 """
 
 from __future__ import annotations
@@ -77,7 +85,7 @@ async def process_one_job(
 
     async with sessionmaker() as session:
         try:
-            result = await handler(session, providers, claimed.id)
+            result = await handler(session, providers, claimed.id, sessionmaker)
             await session.commit()
             log.info(
                 "worker.job_finished",

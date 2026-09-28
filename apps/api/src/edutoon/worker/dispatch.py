@@ -1,11 +1,13 @@
 """Job-kind -> handler dispatch table (Phase D).
 
-Every handler here has the same shape: given a session and the provider
-clients it needs, run exactly one existing ``services.*.run_*_job``
-function for the job named by ``job_id``. This module never implements job
-business logic itself - it only wires a job's ``kind`` (the ``jobs.kind``
-CHECK constraint from migration 0003, widened by migration 0012) to the
-service function that already knows how to run it.
+Every handler here has the same shape: given a session, the provider clients
+it needs, the job's id, and (Phase 7) an optional ``sessionmaker`` for a
+handler that reports interim progress from its own short, independent
+transactions, run exactly one existing ``services.*.run_*_job`` function for
+the job named by ``job_id``. This module never implements job business logic
+itself - it only wires a job's ``kind`` (the ``jobs.kind`` CHECK constraint
+from migration 0003, widened by migration 0012) to the service function that
+already knows how to run it.
 
 ``jobs.kind`` currently allows seven values; only four have a handler
 implemented anywhere in the service layer today
@@ -25,7 +27,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from uuid import UUID
 
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from edutoon.core.config import Settings
 from edutoon.providers.embeddings import Embeddings, get_embeddings_client
@@ -72,11 +74,17 @@ def build_worker_providers(settings: Settings) -> WorkerProviders:
     )
 
 
-JobHandler = Callable[[AsyncSession, WorkerProviders, UUID], Awaitable[JobRecord]]
+JobHandler = Callable[
+    [AsyncSession, WorkerProviders, UUID, "async_sessionmaker[AsyncSession] | None"],
+    Awaitable[JobRecord],
+]
 
 
 async def _handle_build_evidence(
-    session: AsyncSession, providers: WorkerProviders, job_id: UUID
+    session: AsyncSession,
+    providers: WorkerProviders,
+    job_id: UUID,
+    sessionmaker: async_sessionmaker[AsyncSession] | None,
 ) -> JobRecord:
     return await evidence_service.run_build_evidence_job(
         session, providers.embeddings, job_id=job_id
@@ -84,15 +92,21 @@ async def _handle_build_evidence(
 
 
 async def _handle_generate_script(
-    session: AsyncSession, providers: WorkerProviders, job_id: UUID
+    session: AsyncSession,
+    providers: WorkerProviders,
+    job_id: UUID,
+    sessionmaker: async_sessionmaker[AsyncSession] | None,
 ) -> JobRecord:
     return await scripts_service.run_generate_script_job(
-        session, providers.script_llm, job_id=job_id
+        session, providers.script_llm, job_id=job_id, sessionmaker=sessionmaker
     )
 
 
 async def _handle_extract_topics(
-    session: AsyncSession, providers: WorkerProviders, job_id: UUID
+    session: AsyncSession,
+    providers: WorkerProviders,
+    job_id: UUID,
+    sessionmaker: async_sessionmaker[AsyncSession] | None,
 ) -> JobRecord:
     return await topic_extraction_service.run_extract_topics_job(
         session, providers.llm, job_id=job_id
@@ -100,7 +114,10 @@ async def _handle_extract_topics(
 
 
 async def _handle_extract_claims(
-    session: AsyncSession, providers: WorkerProviders, job_id: UUID
+    session: AsyncSession,
+    providers: WorkerProviders,
+    job_id: UUID,
+    sessionmaker: async_sessionmaker[AsyncSession] | None,
 ) -> JobRecord:
     return await claim_extraction_service.run_extract_claims_job(
         session, providers.embeddings, providers.llm, job_id=job_id

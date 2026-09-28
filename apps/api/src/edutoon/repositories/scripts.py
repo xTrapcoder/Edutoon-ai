@@ -1,14 +1,13 @@
 """``scripts`` / ``script_segments`` / ``script_segment_claims`` - Script
-Generation Engine persistence (SG-1 shape, SG-3 write path). Still no
-service or API layer.
+Generation Engine persistence (SG-1 shape, SG-3 write path; Phase 7 changed
+when :func:`supersede_active` runs - see below).
 
 Persistence shape and the invariants the DB enforces:
 
 - ``scripts`` is a status machine. :func:`set_status` is the *only* update
-  path; :func:`supersede_active` is a bulk status write used to keep the
-  ``uq_scripts_project_id_active`` partial-unique invariant (at most one
-  ``pending`` / ``draft`` / ``approved`` script per project) satisfiable
-  before inserting a fresh one.
+  path; :func:`supersede_active` is a bulk status write used to keep
+  ``uq_scripts_project_id_active`` satisfiable before a script becomes
+  ``draft`` or ``approved``.
 - ``script_segments`` / ``script_segment_claims`` are append-only, exactly
   like ``claim_citations``: this module never issues UPDATE or DELETE on
   them. A regenerated script is a new ``scripts`` row.
@@ -16,10 +15,24 @@ Persistence shape and the invariants the DB enforces:
   ``claim_verifications`` row (FK ``ON DELETE RESTRICT``), so a script's
   traceability back to the Evidence Engine cannot silently disappear.
 
+**Phase 7 atomicity (migration 0013).** ``uq_scripts_project_id_active`` used
+to cover ``pending`` / ``draft`` / ``approved``, so queuing a new generation
+had to supersede the old ``approved`` script immediately, before the new one
+existed or anything was validated - a failed generation then left the
+project with nothing approved at all. The index now covers only ``draft`` /
+``approved`` (two pieces of actual content still can never coexist); a fresh
+``pending`` placeholder can coexist with the still-``approved`` script for as
+long as generation takes. :func:`attach_draft` is therefore the one place
+:func:`supersede_active` is called for a generation - inside the same
+``SAVEPOINT`` that writes the new script's segments and flips it to
+``draft`` - so the previous script is touched only in the same atomic step
+that proves the new one is ready to replace it, never before.
+
 Every function that names a script is project-scoped: a script belonging to
 another project is invisible, exactly as if it did not exist (rule 9).
 :func:`create_script` is the SG-3 entry point - it persists a validated
-draft (supersede + script + segments + claim links) as one atomic unit.
+draft (supersede + script + segments + claim links) as one atomic unit, for
+a caller with no pre-created pending row to fill.
 """
 
 from __future__ import annotations
@@ -30,7 +43,7 @@ from datetime import datetime
 from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import case, select
 from sqlalchemy.engine import CursorResult, RowMapping
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -231,6 +244,7 @@ async def create_script(
             segment_index=segment.segment_index,
             narration_text=segment.narration_text,
             estimated_duration_ms=segment.estimated_duration_ms,
+            topic_id=segment.topic_id,
             claim_verification_ids=segment.claim_verification_ids,
         )
         for segment in draft.segments
@@ -267,12 +281,18 @@ async def attach_draft(
     project, or is no longer ``pending`` (rule 9 for the first two). Any
     failure rolls the whole attachment back and leaves the script
     ``pending``.
+
+    Supersedes the project's other ``draft`` / ``approved`` script, if any, in
+    this same SAVEPOINT (Phase 7, migration 0013) - the one and only moment a
+    previously valid script is touched, and only once this one is already
+    proven ready to replace it.
     """
     new_segments = [
         NewScriptSegment(
             segment_index=segment.segment_index,
             narration_text=segment.narration_text,
             estimated_duration_ms=segment.estimated_duration_ms,
+            topic_id=segment.topic_id,
             claim_verification_ids=segment.claim_verification_ids,
         )
         for segment in draft.segments
@@ -281,6 +301,7 @@ async def attach_draft(
         script = await get_by_id_for_project(session, script_id, project_id)
         if script is None or script.status != "pending":
             return None
+        await supersede_active(session, project_id=project_id, except_id=script_id)
         await add_segments(session, script_id=script_id, segments=new_segments)
         return await set_status(
             session,
@@ -312,11 +333,25 @@ async def get_by_id_for_project(
 
 
 async def get_active(session: AsyncSession, project_id: UUID) -> ScriptRecord | None:
-    """The project's current ``pending`` / ``draft`` / ``approved`` script,
-    if any - there is at most one (``uq_scripts_project_id_active``).
+    """The project's current script: its ``draft`` / ``approved`` one (there
+    is at most one - ``uq_scripts_project_id_active``) if it has one, else
+    its newest ``pending`` placeholder, if any.
+
+    Phase 7 (migration 0013): a ``pending`` generation can now coexist with a
+    still-``approved`` script while it runs, so unlike ``draft`` / ``approved``
+    there can transiently be more than one ``pending`` row (e.g. two
+    generations queued back to back) - ordering by status then recency, and
+    taking the first, is what keeps this a single, well-defined answer instead
+    of an ambiguous multi-row result.
     """
-    stmt = select(scripts).where(
-        scripts.c.project_id == project_id, scripts.c.status.in_(ACTIVE_STATUSES)
+    stmt = (
+        select(scripts)
+        .where(scripts.c.project_id == project_id, scripts.c.status.in_(ACTIVE_STATUSES))
+        .order_by(
+            case((scripts.c.status.in_(("draft", "approved")), 0), else_=1),
+            scripts.c.created_at.desc(),
+        )
+        .limit(1)
     )
     row = (await session.execute(stmt)).mappings().one_or_none()
     return _script_from_row(row) if row is not None else None

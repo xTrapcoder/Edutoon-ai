@@ -243,6 +243,32 @@ async def list_supported_by_project(
     return [_verification_from_row(row) for row in rows]
 
 
+async def list_supported_by_topic(
+    session: AsyncSession, *, project_id: UUID, topic_id: UUID
+) -> list[ClaimVerificationRecord]:
+    """Every ``status='supported'`` verification extracted for ``topic_id``,
+    oldest first - the pool one Phase 7 section is allowed to cite. Project-
+    scoped defensively (rule 9), though a topic id is already only ever
+    resolved from within one project by every caller.
+
+    Deliberately strict, like :func:`list_supported_by_project`:
+    ``partially_supported`` is not included, and a hand-typed claim (whose
+    ``topic_id`` is always ``NULL``) never appears here - it belongs to no
+    topic's section.
+    """
+    stmt = (
+        select(claim_verifications)
+        .where(
+            claim_verifications.c.project_id == project_id,
+            claim_verifications.c.topic_id == topic_id,
+            claim_verifications.c.status == "supported",
+        )
+        .order_by(claim_verifications.c.created_at.asc(), claim_verifications.c.id.asc())
+    )
+    rows = (await session.execute(stmt)).mappings().all()
+    return [_verification_from_row(row) for row in rows]
+
+
 async def list_citations(
     session: AsyncSession, claim_verification_id: UUID
 ) -> list[ClaimCitationRecord]:
