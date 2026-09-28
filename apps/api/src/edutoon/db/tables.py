@@ -137,6 +137,11 @@ claim_verifications = sa.Table(
     sa.Column("rationale", sa.Text),
     sa.Column("embedding_model", sa.Text, nullable=False),
     sa.Column("llm_model", sa.Text, nullable=False),
+    # Migration 0012. NULL for a claim typed in by hand through the manual
+    # verification route; set for one extracted from a topic (Phase 6).
+    # ON DELETE SET NULL - a claim's own verdict and citations outlive the
+    # topic it came from.
+    sa.Column("topic_id", UUID(as_uuid=True)),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
 )
 

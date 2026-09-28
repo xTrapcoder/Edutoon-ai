@@ -30,6 +30,7 @@ class ClaimVerificationRecord:
     rationale: str | None
     embedding_model: str
     llm_model: str
+    topic_id: UUID | None
     created_at: datetime
 
 
@@ -51,6 +52,7 @@ def _verification_from_row(row: RowMapping) -> ClaimVerificationRecord:
         rationale=row["rationale"],
         embedding_model=row["embedding_model"],
         llm_model=row["llm_model"],
+        topic_id=row["topic_id"],
         created_at=row["created_at"],
     )
 
@@ -74,6 +76,7 @@ async def create(
     embedding_model: str,
     llm_model: str,
     rationale: str | None = None,
+    topic_id: UUID | None = None,
     citations: list[NewClaimCitation] | None = None,
 ) -> ClaimVerificationRecord:
     """Insert a verdict and (if any) the citations it relied on.
@@ -82,6 +85,10 @@ async def create(
     the same claim is a new row, not a mutation of an old one, so history is
     preserved (rule-4-adjacent, though this table has real FKs unlike the
     fully loose ``audit_logs``).
+
+    ``topic_id`` is ``None`` for a claim typed in by hand through the manual
+    verification route (unchanged default); Phase 6's claim extraction passes
+    the topic the candidate was drawn from.
     """
     stmt = (
         claim_verifications.insert()
@@ -92,6 +99,7 @@ async def create(
             rationale=rationale,
             embedding_model=embedding_model,
             llm_model=llm_model,
+            topic_id=topic_id,
         )
         .returning(*claim_verifications.c)
     )
@@ -160,13 +168,37 @@ async def get_by_id_for_project(
 
 
 async def list_by_project(
-    session: AsyncSession, project_id: UUID, *, limit: int = 50, cursor: str | None = None
+    session: AsyncSession,
+    project_id: UUID,
+    *,
+    topic_id: UUID | None = None,
+    limit: int = 50,
+    cursor: str | None = None,
 ) -> Page[ClaimVerificationRecord]:
+    """A project's claim verifications, newest first. ``topic_id`` narrows the
+    page to claims extracted for that one topic (Phase 6); omitted, every
+    verification of the project is returned, manual and extracted alike.
+    """
     stmt = select(claim_verifications).where(claim_verifications.c.project_id == project_id)
+    if topic_id is not None:
+        stmt = stmt.where(claim_verifications.c.topic_id == topic_id)
     rows, next_cursor = await paginate_rows(
         session, stmt, table=claim_verifications, limit=limit, cursor=cursor
     )
     return Page(items=[_verification_from_row(row) for row in rows], next_cursor=next_cursor)
+
+
+async def list_claim_texts_by_topic(session: AsyncSession, topic_id: UUID) -> list[str]:
+    """Every ``claim_text`` already extracted for ``topic_id``, in no
+    particular order - exactly what
+    :func:`edutoon.domain.claim_extraction.validate_candidates` needs as
+    ``existing_claim_texts`` so a replace/re-run never re-verifies a claim
+    this topic already has.
+    """
+    stmt = select(claim_verifications.c.claim_text).where(
+        claim_verifications.c.topic_id == topic_id
+    )
+    return list((await session.execute(stmt)).scalars().all())
 
 
 async def list_by_ids(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
@@ -231,6 +232,27 @@ async def list_by_project_in_order(
             source_chunks.c.source_id.asc(),
             source_chunks.c.chunk_index.asc(),
         )
+    )
+    rows = (await session.execute(stmt)).mappings().all()
+    return [_from_row(row) for row in rows]
+
+
+async def list_by_ids(
+    session: AsyncSession, *, project_id: UUID, chunk_ids: Sequence[UUID]
+) -> list[SourceChunkRecord]:
+    """Resolve ``chunk_ids`` to their records, scoped to ``project_id`` - an id
+    from another project is simply absent from the result (rule 9's shape,
+    the same defence ``search_by_similarity`` draws), never an error. Order is
+    not guaranteed. Returns ``[]`` for an empty ``chunk_ids``.
+
+    Used by claim extraction (Phase 6) to fetch the content of a topic's own
+    cited chunks - :func:`topic_citations.list_evidence_for_topics` resolves
+    which chunks a topic cites, not their text.
+    """
+    if not chunk_ids:
+        return []
+    stmt = select(source_chunks).where(
+        source_chunks.c.project_id == project_id, source_chunks.c.id.in_(chunk_ids)
     )
     rows = (await session.execute(stmt)).mappings().all()
     return [_from_row(row) for row in rows]

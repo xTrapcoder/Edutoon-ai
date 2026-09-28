@@ -358,3 +358,67 @@ async def test_count_by_project_counts_only_that_projects_chunks(db_session):
 
     assert await source_chunks_repo.count_by_project(db_session, project.id) == 3
     assert await source_chunks_repo.count_by_project(db_session, other.id) == 1
+
+
+# --- list_by_ids (Phase 6: claim extraction reading a topic's cited chunks) -----------
+
+
+async def test_list_by_ids_resolves_the_given_ids(db_session):
+    project, source = await _make_source(db_session)
+    [chunk_a, chunk_b] = await source_chunks_repo.create_many(
+        db_session,
+        [
+            NewSourceChunk(source_id=source.id, project_id=project.id, chunk_index=0, content="A"),
+            NewSourceChunk(source_id=source.id, project_id=project.id, chunk_index=1, content="B"),
+        ],
+    )
+
+    rows = await source_chunks_repo.list_by_ids(
+        db_session, project_id=project.id, chunk_ids=[chunk_a.id, chunk_b.id]
+    )
+
+    assert {row.id for row in rows} == {chunk_a.id, chunk_b.id}
+
+
+async def test_list_by_ids_never_returns_another_projects_chunk(db_session):
+    project, source = await _make_source(db_session)
+    other, other_source = await _make_source(db_session)
+    [mine] = await source_chunks_repo.create_many(
+        db_session,
+        [NewSourceChunk(source_id=source.id, project_id=project.id, chunk_index=0, content="M")],
+    )
+    [theirs] = await source_chunks_repo.create_many(
+        db_session,
+        [
+            NewSourceChunk(
+                source_id=other_source.id, project_id=other.id, chunk_index=0, content="T"
+            )
+        ],
+    )
+
+    rows = await source_chunks_repo.list_by_ids(
+        db_session, project_id=project.id, chunk_ids=[mine.id, theirs.id]
+    )
+
+    # theirs is simply absent, not an error.
+    assert [row.id for row in rows] == [mine.id]
+
+
+async def test_list_by_ids_with_no_ids_returns_empty(db_session):
+    project, _source = await _make_source(db_session)
+
+    assert (
+        await source_chunks_repo.list_by_ids(db_session, project_id=project.id, chunk_ids=[])
+        == []
+    )
+
+
+async def test_list_by_ids_with_unknown_ids_returns_empty(db_session):
+    project, _source = await _make_source(db_session)
+
+    assert (
+        await source_chunks_repo.list_by_ids(
+            db_session, project_id=project.id, chunk_ids=[uuid4()]
+        )
+        == []
+    )

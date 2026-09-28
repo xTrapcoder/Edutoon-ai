@@ -149,6 +149,7 @@ async def verify_claim(
     *,
     project_id: UUID,
     claim_text: str,
+    topic_id: UUID | None = None,
     limit: int = DEFAULT_SIMILARITY_LIMIT,
 ) -> ClaimVerificationRecord:
     """Verify ``claim_text`` against ``project_id``'s indexed source material.
@@ -164,6 +165,16 @@ async def verify_claim(
     confident without pointing at anything real), the stored status is
     downgraded to "unsupported" here. This is enforced at the point of
     persistence, not merely assumed from the model's own self-report.
+
+    ``topic_id`` is ``None`` for a claim typed in by hand through the manual
+    ``POST /claim-verifications`` route (unchanged); ``services.claim_extraction``
+    (Phase 6) passes the topic a candidate was drawn from, so the resulting
+    verdict is traceable back to it. It changes nothing about how the claim is
+    verified - retrieval and judging are exactly the same lookup either way,
+    still project-scoped, never narrowed to the topic's own material: a
+    keyword-only topic with nothing indexed genuinely has no material to
+    verify against, and this is exactly the "no candidates" branch below, not
+    a bypass of it.
     """
     [claim_vector] = await embeddings.embed([claim_text])
     candidates = await source_chunks_repo.search_by_similarity(
@@ -179,6 +190,7 @@ async def verify_claim(
             embedding_model=embeddings.model,
             llm_model=llm.model,
             rationale="No indexed source material exists for this project yet.",
+            topic_id=topic_id,
         )
 
     candidates_by_id = {str(chunk.id): (chunk, similarity) for chunk, similarity in candidates}
@@ -214,6 +226,7 @@ async def verify_claim(
         embedding_model=embeddings.model,
         llm_model=llm.model,
         rationale=verdict.rationale,
+        topic_id=topic_id,
         citations=citations,
     )
 
@@ -225,16 +238,18 @@ async def list_claim_verifications(
     session: AsyncSession,
     *,
     project_id: UUID,
+    topic_id: UUID | None = None,
     limit: int = DEFAULT_PAGE_SIZE,
     cursor: str | None = None,
 ) -> Page[ClaimVerificationRecord]:
     """A project's claim verifications, newest first (keyset-paginated).
+    ``topic_id`` narrows the page to claims extracted for that one topic.
 
     Not ownership-scoped itself - callers check the project belongs to the
     caller first (rule 9), exactly as the ``sources`` routes do.
     """
     return await claim_verifications_repo.list_by_project(
-        session, project_id, limit=limit, cursor=cursor
+        session, project_id, topic_id=topic_id, limit=limit, cursor=cursor
     )
 
 

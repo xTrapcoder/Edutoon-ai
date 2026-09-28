@@ -87,6 +87,23 @@ class Settings(BaseSettings):
     # worker starting the job.
     TOPIC_EXTRACTION_STALE_AFTER_SECONDS: int = Field(default=3600, ge=60)
 
+    # Candidate claim extraction (Phase 6). Turns each *accepted* topic into a
+    # handful of candidate factual claims, then runs each through the existing
+    # Evidence Engine unchanged. Every one is optional: an ``.env`` written
+    # before Phase 6 boots unchanged. ``CLAIM_INPUT_BUDGET_CHARS`` bounds how
+    # much of a topic's own cited material one topic's extraction call is
+    # shown - deliberately far smaller than ``TOPIC_INPUT_BUDGET_CHARS``,
+    # since it is per topic, not per document. They are the single home of the
+    # numbers ``domain.claim_extraction.ClaimCandidateLimits`` is built from.
+    CLAIM_INPUT_BUDGET_CHARS: int = Field(default=12_000, ge=1)
+    MAX_CLAIMS_PER_TOPIC: int = Field(default=6, ge=1)
+    MAX_CLAIM_TEXT_CHARS: int = Field(default=300, ge=1)
+
+    # Mirrors ``TOPIC_EXTRACTION_STALE_AFTER_SECONDS``: how long an
+    # ``extract_claims`` job may sit "running" with no worker holding it
+    # before it is treated as abandoned and failed.
+    CLAIM_EXTRACTION_STALE_AFTER_SECONDS: int = Field(default=3600, ge=60)
+
 
 class MissingSettingsError(RuntimeError):
     """Raised when one or more required settings are absent from the environment."""

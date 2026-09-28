@@ -75,7 +75,9 @@ unsupported claims ever reach the script or the screen.
   the writing style of the script and topic prompts), `orientation` and
   `target_duration_ms` (integer milliseconds, 1 to 60 minutes) - with their
   vocabulary and limits in `edutoon.domain.generation_settings` (migrations
-  0010, 0011).
+  0010, 0011). Migration 0012 (Phase 6) adds `claim_verifications.topic_id`
+  (nullable, `ON DELETE SET NULL` — which topic a claim was extracted for; `NULL`
+  for one typed in by hand) and widens `ck_jobs_kind` to add `extract_claims`.
 - `projects.status` is derived, never set by a client: `edutoon.domain.project_status` is the
   rule and `projects.refresh_status` applies it whenever a job is queued or ends or a PDF fails
   to parse (`apps/api/README.md`, "Project status"). Deleting a project removes its uploaded PDFs
@@ -84,31 +86,40 @@ unsupported claims ever reach the script or the screen.
 
 ## Current phase
 
-**Phase 5 — topic understanding: code-complete for everything that can be
-verified without provider credentials** (final provider-independent review done;
-checkpoint tag `phase5-code-complete`). Delivered: auth, projects, PDF upload and
+**Phase 6 — candidate claim extraction: code-complete for everything that can be
+verified without provider credentials.** Delivered: auth, projects, PDF upload and
 parsing, the Evidence Engine (claim verification), script generation and approval,
-the background worker, and topic extraction — topics from a PDF, from the user's
-keywords, or both, each with cited source pages (migrations 0001–0011; API in
-`apps/api/README.md`, "Topic understanding").
+the background worker, topic extraction — topics from a PDF, from the user's
+keywords, or both, each with cited source pages (Phase 5; migrations 0001–0011;
+API in `apps/api/README.md`, "Topic understanding") — and now turning a project's
+*accepted* topics into candidate factual claims and verifying each one through the
+same, unmodified Evidence Engine (`POST .../claim-verifications/extraction`;
+migration 0012; API in `apps/api/README.md`, "Candidate claim extraction"). A
+topic's summary/keywords are never themselves treated as verified; only a claim
+that has gone through `services.evidence.verify_claim` carries a status and
+citations, and script generation still only ever reads `status='supported'`
+claims of the project, typed by hand or extracted alike.
 
 **Pending real-provider verification when company API keys become available**
 (nothing below is verified; see `apps/api/README.md`, "Testing, and what is not yet
 verified against a real provider"): the keys and model availability
 (`LLM_MODEL`, `EMBEDDING_MODEL`), keywords-only extraction, long-PDF extraction,
-`apps/api/scripts/smoke_test_phase4.py` run unmodified, and the real quality,
-latency and token behaviour of the prompts. No test calls a provider; those that
-involve one carry `pytest.mark.provider_mocked`.
+the quality of candidate claim extraction, `apps/api/scripts/smoke_test_phase4.py`
+run unmodified, and the real quality, latency and token behaviour of the prompts.
+No test calls a provider; those that involve one carry `pytest.mark.provider_mocked`.
 
 **The web front end is built** (`apps/web`, see its README): landing, Clerk sign-in,
 dashboard, project list, create-project wizard, project workspace, topic review with
-evidence, script review and approval. It uses only what the API does today, so the Script
-step shows "Verification required" until a project has a supported claim (nothing yet
-turns topics into claims). Real Clerk sign-in is **unverified** - the Clerk keys are
-placeholders - as are the real providers.
+evidence, script review and approval. It predates Phase 6 and has not been touched by
+it: the Script step still shows "Verification required" until a project has a
+supported claim, with no UI yet to trigger candidate claim extraction (the API route
+exists; nothing in the front end calls it). Real Clerk sign-in is **unverified** - the
+Clerk keys are placeholders - as are the real providers.
 
-Not built yet: turning topics into candidate claims, voice/TTS, animation, rendering.
-**Phase 6 has not started and needs the owner's explicit approval.**
+Not built yet: a front end for candidate claim extraction, script generation reading
+from topics (it still only reads the project's supported claims directly), scenes,
+voice/TTS, animation, rendering. **Phase 7 has not started and needs the owner's
+explicit approval.**
 
 ## Commands
 
@@ -138,7 +149,7 @@ apps/
   api/        FastAPI service (uv, src/edutoon)
     src/edutoon/          api/ (routers, schemas) · services/ · domain/ (pure) ·
                           repositories/ · providers/ · worker/ · db/ · core/
-    alembic/              migration environment + versions/0001..0011
+    alembic/              migration environment + versions/0001..0012
   parser/     PDF/topic parser — not yet initialised
   render/     Remotion render worker — not yet initialised
 packages/

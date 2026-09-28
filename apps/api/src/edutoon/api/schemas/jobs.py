@@ -1,9 +1,10 @@
 """Request/response schemas for ``/v1/projects/{project_id}/jobs``.
 
 ``kind``/``status`` are ``Literal`` types mirroring the ``ck_jobs_kind`` /
-``ck_jobs_status`` CHECK constraints in migration 0003 exactly, the same
-pattern as ``UploadedSourceResponse`` and ``ScriptResponse``. Read-only:
-there is no request schema because this router has no mutating routes.
+``ck_jobs_status`` CHECK constraints (migration 0003, ``kind`` widened by
+0012) exactly, the same pattern as ``UploadedSourceResponse`` and
+``ScriptResponse``. Read-only: there is no request schema because this
+router has no mutating routes.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from edutoon.repositories.jobs import JobRecord
 JobKind = Literal[
     "parse_source",
     "extract_topics",
+    "extract_claims",
     "build_evidence",
     "generate_script",
     "synthesise_voice",

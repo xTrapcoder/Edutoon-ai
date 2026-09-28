@@ -52,6 +52,7 @@ from edutoon.repositories import uploaded_sources as uploaded_sources_repo
 from edutoon.repositories import users as users_repo
 from edutoon.repositories.claim_verifications import NewClaimCitation
 from edutoon.repositories.source_chunks import NewSourceChunk
+from edutoon.services import claim_extraction as claim_extraction_service
 from edutoon.services import evidence as evidence_service
 from edutoon.services import job_errors
 from edutoon.services import scripts as scripts_service
@@ -154,6 +155,26 @@ def _fake_topics_llm(
         role="assistant",
         type="message",
         usage=AnthropicUsage(input_tokens=11, output_tokens=22),
+    )
+    monkeypatch.setattr(client.messages, "create", AsyncMock(return_value=message))
+    return LLM(client, model=model)
+
+
+def _fake_claims_llm(
+    monkeypatch: Any, claims: list[dict[str, Any]], *, model: str = LLM_MODEL
+) -> LLM:
+    client = AsyncAnthropic(api_key="sk-ant-test-not-a-real-key")
+    message = Message(
+        id="msg_1",
+        content=[
+            ToolUseBlock(
+                type="tool_use", id="toolu_1", name="submit_claims", input={"claims": claims}
+            )
+        ],
+        model=model,
+        role="assistant",
+        type="message",
+        usage=AnthropicUsage(input_tokens=5, output_tokens=7),
     )
     monkeypatch.setattr(client.messages, "create", AsyncMock(return_value=message))
     return LLM(client, model=model)
@@ -466,7 +487,12 @@ async def _project_with_a_user_topic(db_session: AsyncSession):
 
 
 def test_the_worker_has_a_handler_for_each_implemented_job_kind_and_no_others():
-    assert set(JOB_HANDLERS) == {"build_evidence", "generate_script", "extract_topics"}
+    assert set(JOB_HANDLERS) == {
+        "build_evidence",
+        "generate_script",
+        "extract_topics",
+        "extract_claims",
+    }
 
 
 async def test_process_one_job_runs_the_extract_topics_handler(
@@ -561,6 +587,107 @@ async def test_process_one_job_marks_a_corrupt_extract_topics_payload_failed_wit
 ):
     project = await _make_project(db_session)
     job = await jobs_repo.create(db_session, project_id=project.id, kind="extract_topics")
+    await db_session.commit()
+
+    providers = _idle_providers()
+    claimed_something = await process_one_job(worker_sessionmaker, providers)
+
+    assert claimed_something is True
+    finished = await jobs_repo.get_by_id(db_session, job.id)
+    assert finished is not None
+    assert finished.status == "failed"
+    assert "project_id" in finished.error
+    assert finished.finished_at is not None
+
+
+# --- process_one_job: extract_claims (Phase 6) --------------------------------------
+
+
+async def test_process_one_job_runs_the_extract_claims_handler(
+    db_session, worker_sessionmaker, monkeypatch
+):
+    project, seed = await _project_with_a_user_topic(db_session)
+    enqueued = await claim_extraction_service.enqueue_claim_extraction(
+        db_session, project_id=project.id, owner_id=project.owner_id, idempotency_key="k"
+    )
+    await db_session.commit()  # release the savepoint so the worker's own session sees it
+
+    llm = _fake_claims_llm(
+        monkeypatch, [{"text": "Photosynthesis converts light energy into chemical energy."}]
+    )
+    providers = WorkerProviders(
+        embeddings=_fake_embeddings(monkeypatch), llm=llm, script_llm=_idle_llm()
+    )
+
+    claimed_something = await process_one_job(worker_sessionmaker, providers)
+
+    assert claimed_something is True
+    finished = await jobs_repo.get_by_id(db_session, enqueued.job.id)
+    assert finished is not None
+    assert finished.status == "succeeded"
+    assert finished.result == {
+        "topics_eligible": 1,
+        "topics_processed": 1,
+        "topics_skipped_already_extracted": 0,
+        "topics_failed": 0,
+        "candidates_generated": 1,
+        "claims_verified": 1,
+        # No source material is indexed for this project, so the claim is
+        # correctly "unsupported" - the same "no candidates" outcome a
+        # hand-typed claim against an unindexed project would get.
+        "claims_by_status": {"unsupported": 1},
+        "failures": [],
+        "replace": False,
+        "input_tokens": 5,
+        "output_tokens": 7,
+        "embedding_model": EMBEDDING_MODEL,
+        "llm_model": LLM_MODEL,
+    }
+    claims = await claim_verifications_repo.list_by_project(
+        db_session, project.id, topic_id=seed.id
+    )
+    [claim] = claims.items
+    assert claim.claim_text == "Photosynthesis converts light energy into chemical energy."
+    assert claim.status == "unsupported"
+    assert claim.topic_id == seed.id
+
+
+async def test_process_one_job_marks_extract_claims_failed_on_a_provider_error(
+    db_session, worker_sessionmaker
+):
+    project, seed = await _project_with_a_user_topic(db_session)
+    enqueued = await claim_extraction_service.enqueue_claim_extraction(
+        db_session, project_id=project.id, owner_id=project.owner_id, idempotency_key="k"
+    )
+    await db_session.commit()
+
+    client = AsyncAnthropic(api_key="sk-ant-test-not-a-real-key")
+    client.messages.create = AsyncMock(  # type: ignore[method-assign]
+        side_effect=RuntimeError("anthropic is unreachable")
+    )
+    providers = WorkerProviders(
+        embeddings=_idle_embeddings(), llm=LLM(client, model=LLM_MODEL), script_llm=_idle_llm()
+    )
+
+    claimed_something = await process_one_job(worker_sessionmaker, providers)
+
+    assert claimed_something is True
+    finished = await jobs_repo.get_by_id(db_session, enqueued.job.id)
+    assert finished is not None
+    assert finished.status == "failed"
+    assert "unreachable" not in finished.error
+    assert "every eligible topic" in finished.error
+    assert finished.finished_at is not None
+    # Nothing was verified - the user's own topic has no claims recorded.
+    claims = await claim_verifications_repo.list_by_project(db_session, project.id)
+    assert claims.items == []
+
+
+async def test_process_one_job_marks_a_corrupt_extract_claims_payload_failed_without_crashing(
+    db_session, worker_sessionmaker
+):
+    project = await _make_project(db_session)
+    job = await jobs_repo.create(db_session, project_id=project.id, kind="extract_claims")
     await db_session.commit()
 
     providers = _idle_providers()

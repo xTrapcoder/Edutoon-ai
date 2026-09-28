@@ -28,10 +28,13 @@ from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey, RSAPubl
 from edutoon.api.dependencies import get_current_user, get_embeddings, get_llm
 from edutoon.core.config import get_settings
 from edutoon.db.session import get_session
+from edutoon.domain.claim_extraction import ClaimCandidateDraft, ClaimExtractionDraft
 from edutoon.main import create_app
 from edutoon.providers import clerk
 from edutoon.providers.cache import get_redis_client
-from edutoon.providers.llm import Passage, Verdict
+from edutoon.providers.llm import ClaimTopicBrief, Passage, TokenUsage, Verdict
+from edutoon.repositories import claim_verifications as claim_verifications_repo
+from edutoon.repositories import project_topics as project_topics_repo
 from edutoon.repositories import source_chunks as source_chunks_repo
 from edutoon.repositories import uploaded_sources as uploaded_sources_repo
 from edutoon.repositories.source_chunks import NewSourceChunk
@@ -69,9 +72,11 @@ class _StubLLM:
 
     def __init__(self) -> None:
         self.calls: list[str] = []
+        self.extract_calls: list[str] = []  # topic titles asked about
         self._status = "unsupported"
         self._rationale = "Not mentioned in the source."
         self._cite = "none"  # "none" | "all"
+        self._candidates: list[str] = []
 
     def will_return(
         self, status: str, *, rationale: str = "As judged.", cite: str = "none"
@@ -80,12 +85,27 @@ class _StubLLM:
         self._rationale = rationale
         self._cite = cite
 
+    def will_propose(self, *texts: str) -> None:
+        """What ``extract_claims`` (Phase 6) proposes as candidates for the
+        next topic it is asked about.
+        """
+        self._candidates = list(texts)
+
     async def judge_claim(self, claim: str, passages: list[Passage]) -> Verdict:
         self.calls.append(claim)
         cited = [p.id for p in passages] if self._cite == "all" else []
         return Verdict(
             status=self._status, rationale=self._rationale, cited_passage_ids=cited
         )
+
+    async def extract_claims(
+        self, topic: ClaimTopicBrief, passages: list, *, limits
+    ) -> tuple[ClaimExtractionDraft, TokenUsage]:
+        self.extract_calls.append(topic.title)
+        draft = ClaimExtractionDraft(
+            candidates=tuple(ClaimCandidateDraft(text=text) for text in self._candidates)
+        )
+        return draft, TokenUsage(input_tokens=1, output_tokens=1)
 
 
 # --- auth plumbing (mirrors test_projects_api.py) -------------------------------------
@@ -211,6 +231,12 @@ async def _seed_indexed_chunk(
 
 def _verify_headers(headers: dict[str, str], key: str | None = None) -> dict[str, str]:
     return {**headers, "Idempotency-Key": key or str(uuid4())}
+
+
+async def _seed_accepted_topic(db_session, project_id: str, title: str = "A topic"):
+    return await project_topics_repo.create(
+        db_session, project_id=project_id, title=title, status="accepted"
+    )
 
 
 # --- POST: happy path --------------------------------------------------------------
@@ -674,3 +700,218 @@ async def test_an_idempotency_key_of_the_maximum_length_is_accepted(client_facto
         )
 
     assert response.status_code == 201, response.text
+
+
+# --- topic_id on the response (Phase 6) -------------------------------------------
+
+
+async def test_a_manually_created_claim_has_no_topic_id(client_factory, auth_headers):
+    headers = auth_headers()
+    async with client_factory() as client:
+        project_id = await _create_project(client, headers)
+        response = await client.post(
+            f"/v1/projects/{project_id}/claim-verifications",
+            json={"claim_text": "Typed in by hand."},
+            headers=_verify_headers(headers),
+        )
+
+    assert response.status_code == 201
+    assert response.json()["topic_id"] is None
+
+
+# --- POST .../extraction (Phase 6: candidate claim extraction) -----------------------
+
+
+async def test_extraction_returns_202_with_a_queued_job(client_factory, auth_headers, db_session):
+    headers = auth_headers()
+    async with client_factory() as client:
+        project_id = await _create_project(client, headers)
+        await _seed_accepted_topic(db_session, project_id)
+        response = await client.post(
+            f"/v1/projects/{project_id}/claim-verifications/extraction",
+            headers=_verify_headers(headers),
+        )
+
+    assert response.status_code == 202
+    body = response.json()
+    assert body["kind"] == "extract_claims"
+    assert body["status"] == "queued"
+    assert body["project_id"] == project_id
+    assert body["payload"] == {"project_id": project_id, "replace": False}
+    assert body["result"] is None
+
+
+async def test_extraction_passes_replace_through_to_the_job(
+    client_factory, auth_headers, db_session
+):
+    headers = auth_headers()
+    async with client_factory() as client:
+        project_id = await _create_project(client, headers)
+        await _seed_accepted_topic(db_session, project_id)
+        response = await client.post(
+            f"/v1/projects/{project_id}/claim-verifications/extraction",
+            json={"replace": True},
+            headers=_verify_headers(headers),
+        )
+
+    assert response.status_code == 202
+    assert response.json()["payload"]["replace"] is True
+
+
+@pytest.mark.parametrize("body", [{"replace": "maybe"}, {"replace": False, "extra": "x"}, [1]])
+async def test_extraction_rejects_a_malformed_body_with_422(
+    client_factory, auth_headers, db_session, body
+):
+    headers = auth_headers()
+    async with client_factory() as client:
+        project_id = await _create_project(client, headers)
+        await _seed_accepted_topic(db_session, project_id)
+        response = await client.post(
+            f"/v1/projects/{project_id}/claim-verifications/extraction",
+            json=body,
+            headers=_verify_headers(headers),
+        )
+        assert response.status_code == 422
+        jobs = await client.get(f"/v1/projects/{project_id}/jobs", headers=headers)
+    assert jobs.json()["items"] == []
+
+
+async def test_extraction_requires_an_idempotency_key(client_factory, auth_headers, db_session):
+    headers = auth_headers()
+    async with client_factory() as client:
+        project_id = await _create_project(client, headers)
+        await _seed_accepted_topic(db_session, project_id)
+        response = await client.post(
+            f"/v1/projects/{project_id}/claim-verifications/extraction", headers=headers
+        )
+    assert response.status_code == 422
+
+
+async def test_extraction_with_no_accepted_topics_is_400(client_factory, auth_headers):
+    headers = auth_headers()
+    async with client_factory() as client:
+        project_id = await _create_project(client, headers)
+        response = await client.post(
+            f"/v1/projects/{project_id}/claim-verifications/extraction",
+            headers=_verify_headers(headers),
+        )
+        assert response.status_code == 400
+        jobs = await client.get(f"/v1/projects/{project_id}/jobs", headers=headers)
+    assert jobs.json()["items"] == []
+
+
+async def test_extraction_replays_the_same_job_for_the_same_key(
+    client_factory, auth_headers, db_session
+):
+    headers = auth_headers()
+    async with client_factory() as client:
+        project_id = await _create_project(client, headers)
+        await _seed_accepted_topic(db_session, project_id)
+        key = str(uuid4())
+        first = await client.post(
+            f"/v1/projects/{project_id}/claim-verifications/extraction",
+            headers=_verify_headers(headers, key),
+        )
+        second = await client.post(
+            f"/v1/projects/{project_id}/claim-verifications/extraction",
+            headers=_verify_headers(headers, key),
+        )
+        jobs = await client.get(f"/v1/projects/{project_id}/jobs", headers=headers)
+
+    assert first.status_code == second.status_code == 202
+    assert first.json()["id"] == second.json()["id"]
+    assert len(jobs.json()["items"]) == 1
+
+
+async def test_a_second_extraction_while_one_is_queued_is_409(
+    client_factory, auth_headers, db_session
+):
+    headers = auth_headers()
+    async with client_factory() as client:
+        project_id = await _create_project(client, headers)
+        await _seed_accepted_topic(db_session, project_id)
+        first = await client.post(
+            f"/v1/projects/{project_id}/claim-verifications/extraction",
+            headers=_verify_headers(headers),
+        )
+        second = await client.post(
+            f"/v1/projects/{project_id}/claim-verifications/extraction",
+            headers=_verify_headers(headers),
+        )
+        jobs = await client.get(f"/v1/projects/{project_id}/jobs", headers=headers)
+
+    assert first.status_code == 202
+    assert second.status_code == 409
+    assert len(jobs.json()["items"]) == 1
+
+
+async def test_extraction_for_another_users_project_is_404(
+    client_factory, auth_headers, db_session
+):
+    owner, intruder = auth_headers(), auth_headers()
+    async with client_factory() as client:
+        project_id = await _create_project(client, owner)
+        await _seed_accepted_topic(db_session, project_id)
+        response = await client.post(
+            f"/v1/projects/{project_id}/claim-verifications/extraction",
+            headers=_verify_headers(intruder),
+        )
+        jobs = await client.get(f"/v1/projects/{project_id}/jobs", headers=owner)
+    assert response.status_code == 404
+    assert jobs.json()["items"] == []
+
+
+async def test_extraction_for_nonexistent_project_is_404(client_factory, auth_headers):
+    async with client_factory() as client:
+        response = await client.post(
+            f"/v1/projects/{uuid4()}/claim-verifications/extraction",
+            headers=_verify_headers(auth_headers()),
+        )
+    assert response.status_code == 404
+
+
+# --- GET list filtered by topic_id (Phase 6) ------------------------------------------
+
+
+async def test_list_filters_by_topic_id(client_factory, auth_headers, db_session):
+    """Claims are only ever extracted asynchronously (via the job), so this
+    seeds them the way ``_seed_indexed_chunk`` seeds a chunk: straight through
+    the repository, exactly what a finished ``extract_claims`` job would have
+    written.
+    """
+    headers = auth_headers()
+    async with client_factory() as client:
+        project_id = await _create_project(client, headers)
+        topic_a = await _seed_accepted_topic(db_session, project_id, "Topic A")
+        topic_b = await project_topics_repo.create(
+            db_session, project_id=project_id, title="Topic B", status="accepted", position=1
+        )
+        for_a = await claim_verifications_repo.create(
+            db_session,
+            project_id=project_id,
+            claim_text="Claim for A.",
+            status="unsupported",
+            embedding_model=EMBEDDING_MODEL,
+            llm_model=LLM_MODEL,
+            topic_id=topic_a.id,
+        )
+        await claim_verifications_repo.create(
+            db_session,
+            project_id=project_id,
+            claim_text="Claim for B.",
+            status="unsupported",
+            embedding_model=EMBEDDING_MODEL,
+            llm_model=LLM_MODEL,
+            topic_id=topic_b.id,
+        )
+
+        response = await client.get(
+            f"/v1/projects/{project_id}/claim-verifications",
+            params={"topic_id": str(topic_a.id)},
+            headers=headers,
+        )
+
+    assert response.status_code == 200
+    [item] = response.json()["items"]
+    assert item["id"] == str(for_a.id)
+    assert item["topic_id"] == str(topic_a.id)

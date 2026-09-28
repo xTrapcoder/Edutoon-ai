@@ -241,8 +241,63 @@ no separate topic model. Extraction needs `ANTHROPIC_API_KEY`; the test suite
 never calls the network (it replaces `messages.create` on a real client), so the
 prompt in `providers/llm.py` has not yet been tried against a live model.
 
-**Not built yet:** turning topics into candidate claims. Claims are still typed
-in by hand, so a script's facts do not yet flow from the topic outline.
+## Candidate claim extraction
+
+Before Phase 6, a claim had to be typed in by hand through
+`POST /v1/projects/{id}/claim-verifications`. That route is unchanged; this adds
+the other way a claim comes to exist: turning a project's *accepted* topics into
+candidate factual claims and verifying each one exactly the same way.
+
+| Route                                                           | What it does |
+| ---------------------------------------------------------------- | ------------ |
+| `POST /v1/projects/{id}/claim-verifications/extraction`         | `202` with the queued `extract_claims` job. Optional body `{"replace": true}`. |
+| `GET /v1/projects/{id}/claim-verifications?topic_id=...`         | The existing list route, narrowed to one topic's claims. |
+
+**How it runs.** For each of the project's accepted topics (`domain.topic_tree.accepted_topics`
+- a topic only counts if it and every ancestor is accepted), unless it already has extracted
+claims and `replace` was not asked for:
+
+1. Gather the topic's own cited passages, budgeted the same way topic extraction budgets a
+   whole document (`CLAIM_INPUT_BUDGET_CHARS`, far smaller since it is per topic) - empty for a
+   keyword-only topic with nothing indexed.
+2. **One model call** (`LLM.extract_claims`) proposes candidate claim text for this topic alone.
+   Candidates are structure only, exactly like `extract_topics`'s topics: a candidate is never
+   itself a verified fact, and the prompt says so explicitly.
+3. `domain.claim_extraction.validate_candidates` cleans the candidates and drops any that
+   duplicate one this topic already has (case/whitespace-insensitive) - so a `replace` re-run is
+   genuinely incremental, never re-verifying (and re-recording) the same wording.
+4. Each surviving candidate is run through **`services.evidence.verify_claim`, completely
+   unmodified** - the same embed → retrieve → judge → persist flow a hand-typed claim already
+   gets, with the topic's id attached (`claim_verifications.topic_id`, migration 0012; `NULL`
+   for a manually created claim).
+
+**One topic's failure never destroys another topic's successful claims.** Each topic's writes
+are one SAVEPOINT; a malformed model response or a database error for one topic is recorded in
+the job's `failures` list and the run moves on. The job itself only ends `failed` if every
+eligible topic failed and nothing was verified - otherwise it `succeeded`, and its result reports
+`topics_eligible`, `topics_processed`, `topics_skipped_already_extracted`, `topics_failed`,
+`candidates_generated`, `claims_verified`, `claims_by_status` and any `failures`.
+
+- **Additive, not all-or-nothing.** Unlike topic extraction there is no "already extracted, pass
+  `replace`" `409` at enqueue time: accepting more topics later and calling the route again is the
+  ordinary, idempotent way to cover them. `replace=True` re-examines every accepted topic instead
+  of only the new ones.
+- **Keyword-only projects.** A topic with no uploaded PDF has no indexed material, so
+  `verify_claim`'s retrieval finds no candidates and every claim from it is correctly
+  `unsupported`, with a rationale saying so - not a bypass of verification, and no new
+  "knowledge source" invented to work around it. This is expected: it becomes visible to the
+  owner once a PDF is added and the topic's claims are re-run with `replace`.
+- **One job at a time, independent of topic extraction.** Guarded and stale-recovered the same
+  way as `extract_topics` (`CLAIM_EXTRACTION_STALE_AFTER_SECONDS`), on its own lock keyed to
+  `extract_claims` - a topic extraction in flight for the same project does not block this.
+
+Settings (all optional): `CLAIM_INPUT_BUDGET_CHARS`, `MAX_CLAIMS_PER_TOPIC`,
+`MAX_CLAIM_TEXT_CHARS`, `CLAIM_EXTRACTION_STALE_AFTER_SECONDS`. They use `LLM_MODEL`, the same
+model claim judging and topic extraction already use.
+
+**Not built yet:** script generation does not read from topics at all yet - it still reads every
+`status='supported'` claim of the project (`claim_verifications_repo.list_supported_by_project`,
+unchanged), whether typed by hand or extracted from a topic.
 
 ## Testing, and what is not yet verified against a real provider
 
@@ -273,13 +328,15 @@ how a real provider behaves, and none of them is real-provider verification.
    `providers/llm.py`, latency, token use against the output-token allowance
    (`_topics_max_tokens`), and that a real provider error maps to the message
    `providers/errors.py` gives it (for example, that an unavailable model is a `404`).
+6. **Candidate claim extraction** (Phase 6): the quality of `LLM.extract_claims`'s
+   proposals against a live model, and token use against `_claims_max_tokens`.
 
 ## Known limitations
 
 - **No way to cancel a job.** An extraction queued while no worker is running holds
   the project's keyword and wording edits (`409`) until a worker takes it.
-- **Only extraction jobs are recovered after a worker crash.** An abandoned
-  `build_evidence` or `generate_script` job stays `running`.
+- **Only `extract_topics` and `extract_claims` jobs are recovered after a worker
+  crash.** An abandoned `build_evidence` or `generate_script` job stays `running`.
 - **No retries.** A failed job is run again by a new request with a new key.
 - **One model call over a budgeted sample.** A long document is sampled evenly
   (`truncated` says so), not read in windows; an outline the model returns that is
@@ -290,6 +347,10 @@ how a real provider behaves, and none of them is real-provider verification.
   them.** The check is repeated immediately before the delete, which narrows the
   window to milliseconds but does not close it. Nothing links scripts to topics
   yet; whatever does must take a lock shared with topic replacement.
+- **Claim extraction cost scales with topic count.** One model call per accepted
+  topic plus one embed-and-judge round trip per surviving candidate, with no
+  batching across topics - a project with many accepted topics means many paid
+  calls. Credits come with the ledger, in a later phase.
 - **A retry after a failed commit repeats the work.** Every mutating route commits
   before it caches its result, so a failed commit is never cached as a success - but
   the client's retry then runs the handler again. For claim verification that

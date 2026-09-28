@@ -8,6 +8,11 @@ CHECK constraint in migration 0006 exactly - it is the same set of verdicts
 ``VerifyClaimRequest`` forbids unknown fields (rule 10) and rejects a blank
 claim (mirroring ``ck_claim_verifications_claim_text_not_blank``); both come
 back as a 422 through FastAPI's ``RequestValidationError`` handler.
+
+``ClaimExtractionRequest`` (Phase 6) is the body of ``POST
+.../claim-verifications/extraction``, mirroring
+``schemas.topics.TopicExtractionRequest`` exactly: an optional ``replace``,
+defaulting to ``False``.
 """
 
 from __future__ import annotations
@@ -37,6 +42,12 @@ class VerifyClaimRequest(BaseModel):
         return value
 
 
+class ClaimExtractionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    replace: bool = False
+
+
 class ClaimCitationResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -60,6 +71,7 @@ class ClaimVerificationResponse(BaseModel):
     rationale: str | None
     embedding_model: str
     llm_model: str
+    topic_id: UUID | None
     created_at: datetime
     citations: list[ClaimCitationResponse]
 

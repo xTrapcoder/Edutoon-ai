@@ -14,8 +14,9 @@ from sqlalchemy import delete
 from sqlalchemy.exc import IntegrityError
 
 from edutoon.core.errors import ConflictError
-from edutoon.db.tables import source_chunks
+from edutoon.db.tables import project_topics, source_chunks
 from edutoon.repositories import claim_verifications as claim_verifications_repo
+from edutoon.repositories import project_topics as project_topics_repo
 from edutoon.repositories import projects as projects_repo
 from edutoon.repositories import source_chunks as source_chunks_repo
 from edutoon.repositories import uploaded_sources as uploaded_sources_repo
@@ -303,3 +304,167 @@ async def test_list_by_ids_with_no_ids_returns_empty(db_session):
         )
         == []
     )
+
+
+# --- topic_id (Phase 6, migration 0012) -----------------------------------------------
+
+
+async def test_create_defaults_topic_id_to_none(db_session):
+    project, _ = await _make_chunk(db_session)
+
+    verification = await claim_verifications_repo.create(
+        db_session,
+        project_id=project.id,
+        claim_text="Typed in by hand.",
+        status="unsupported",
+        embedding_model="text-embedding-3-small",
+        llm_model="claude-sonnet-5",
+    )
+
+    assert verification.topic_id is None
+
+
+async def test_create_persists_the_given_topic_id(db_session):
+    project, _ = await _make_chunk(db_session)
+    topic = await project_topics_repo.create(db_session, project_id=project.id, title="A topic")
+
+    verification = await claim_verifications_repo.create(
+        db_session,
+        project_id=project.id,
+        claim_text="Extracted from a topic.",
+        status="unsupported",
+        embedding_model="text-embedding-3-small",
+        llm_model="claude-sonnet-5",
+        topic_id=topic.id,
+    )
+
+    assert verification.topic_id == topic.id
+    fetched = await claim_verifications_repo.get_by_id(db_session, verification.id)
+    assert fetched is not None
+    assert fetched.topic_id == topic.id
+
+
+async def test_deleting_a_topic_clears_its_claims_topic_id_rather_than_blocking(db_session):
+    """Unlike ``claim_citations`` (``ON DELETE RESTRICT``), a claim's own
+    verdict and citations outlive the topic it was extracted for.
+    """
+    project, _ = await _make_chunk(db_session)
+    topic = await project_topics_repo.create(db_session, project_id=project.id, title="A topic")
+    verification = await claim_verifications_repo.create(
+        db_session,
+        project_id=project.id,
+        claim_text="Outlives its topic.",
+        status="unsupported",
+        embedding_model="text-embedding-3-small",
+        llm_model="claude-sonnet-5",
+        topic_id=topic.id,
+    )
+
+    await db_session.execute(delete(project_topics).where(project_topics.c.id == topic.id))
+
+    fetched = await claim_verifications_repo.get_by_id(db_session, verification.id)
+    assert fetched is not None
+    assert fetched.topic_id is None
+
+
+async def test_list_claim_texts_by_topic_returns_only_that_topics_texts(db_session):
+    project, _ = await _make_chunk(db_session)
+    topic_a = await project_topics_repo.create(db_session, project_id=project.id, title="A")
+    topic_b = await project_topics_repo.create(
+        db_session, project_id=project.id, title="B", position=1
+    )
+    await claim_verifications_repo.create(
+        db_session,
+        project_id=project.id,
+        claim_text="Claim for A.",
+        status="unsupported",
+        embedding_model="text-embedding-3-small",
+        llm_model="claude-sonnet-5",
+        topic_id=topic_a.id,
+    )
+    await claim_verifications_repo.create(
+        db_session,
+        project_id=project.id,
+        claim_text="Claim for B.",
+        status="unsupported",
+        embedding_model="text-embedding-3-small",
+        llm_model="claude-sonnet-5",
+        topic_id=topic_b.id,
+    )
+    await claim_verifications_repo.create(
+        db_session,
+        project_id=project.id,
+        claim_text="Typed in by hand, no topic.",
+        status="unsupported",
+        embedding_model="text-embedding-3-small",
+        llm_model="claude-sonnet-5",
+    )
+
+    assert await claim_verifications_repo.list_claim_texts_by_topic(db_session, topic_a.id) == [
+        "Claim for A."
+    ]
+
+
+async def test_list_claim_texts_by_topic_is_empty_for_a_topic_with_none(db_session):
+    project, _ = await _make_chunk(db_session)
+    topic = await project_topics_repo.create(db_session, project_id=project.id, title="A")
+
+    assert await claim_verifications_repo.list_claim_texts_by_topic(db_session, topic.id) == []
+
+
+async def test_list_by_project_filters_by_topic_id(db_session):
+    project, _ = await _make_chunk(db_session)
+    topic_a = await project_topics_repo.create(db_session, project_id=project.id, title="A")
+    topic_b = await project_topics_repo.create(
+        db_session, project_id=project.id, title="B", position=1
+    )
+    for_a = await claim_verifications_repo.create(
+        db_session,
+        project_id=project.id,
+        claim_text="Claim for A.",
+        status="unsupported",
+        embedding_model="text-embedding-3-small",
+        llm_model="claude-sonnet-5",
+        topic_id=topic_a.id,
+    )
+    await claim_verifications_repo.create(
+        db_session,
+        project_id=project.id,
+        claim_text="Claim for B.",
+        status="unsupported",
+        embedding_model="text-embedding-3-small",
+        llm_model="claude-sonnet-5",
+        topic_id=topic_b.id,
+    )
+
+    page = await claim_verifications_repo.list_by_project(
+        db_session, project.id, topic_id=topic_a.id
+    )
+
+    assert [v.id for v in page.items] == [for_a.id]
+
+
+async def test_list_by_project_without_topic_id_returns_manual_and_extracted_alike(db_session):
+    project, _ = await _make_chunk(db_session)
+    topic = await project_topics_repo.create(db_session, project_id=project.id, title="A")
+    extracted = await claim_verifications_repo.create(
+        db_session,
+        project_id=project.id,
+        claim_text="Extracted.",
+        status="unsupported",
+        embedding_model="text-embedding-3-small",
+        llm_model="claude-sonnet-5",
+        topic_id=topic.id,
+    )
+    manual = await claim_verifications_repo.create(
+        db_session,
+        project_id=project.id,
+        claim_text="Manual.",
+        status="unsupported",
+        embedding_model="text-embedding-3-small",
+        llm_model="claude-sonnet-5",
+    )
+
+    page = await claim_verifications_repo.list_by_project(db_session, project.id)
+
+    assert {v.id for v in page.items} == {extracted.id, manual.id}
