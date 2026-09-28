@@ -628,7 +628,8 @@ function advance(job_: Row) {
           .filter((s) => s.script_id === sc.id)
           .sort((x, y) => (x.segment_index as number) - (y.segment_index as number));
         for (let i = segmentAudio.length - 1; i >= 0; i--) {
-          if (segs.some((s) => s.id === segmentAudio[i]!.script_segment_id)) segmentAudio.splice(i, 1);
+          if (segs.some((s) => s.id === segmentAudio[i]!.script_segment_id))
+            segmentAudio.splice(i, 1);
         }
         const created = segs.map((seg) => readySegmentAudio(seg, p.language as string));
         sc.measured_duration_ms = created.reduce(
@@ -1012,7 +1013,9 @@ async function route(req: IncomingMessage, res: ServerResponse) {
         if (method === 'GET') {
           const latest = jobs
             .filter((j) => j.project_id === pid && j.kind === 'synthesise_voice')
-            .sort((x, y) => Date.parse(y.created_at as string) - Date.parse(x.created_at as string))[0];
+            .sort(
+              (x, y) => Date.parse(y.created_at as string) - Date.parse(x.created_at as string),
+            )[0];
           const segs = segments
             .filter((s) => s.script_id === sc.id)
             .sort((x, y) => (x.segment_index as number) - (y.segment_index as number));
