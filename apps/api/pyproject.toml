@@ -20,6 +20,7 @@ dependencies = [
     "openai",
     "pgvector",
     "anthropic",
+    "piper-tts>=1.3,<2",
 ]
 
 [dependency-groups]
@@ -59,4 +60,10 @@ packages = ["edutoon"]
 # strict-mode violations into the rest of the codebase.
 [[tool.mypy.overrides]]
 module = ["boto3.*", "botocore.*"]
+ignore_missing_imports = true
+
+# piper ships no inline types and no stub package is installed; confined to
+# providers/tts.py (rule 3), same reasoning as boto3/botocore above.
+[[tool.mypy.overrides]]
+module = ["piper.*"]
 ignore_missing_imports = true

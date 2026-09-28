@@ -201,6 +201,10 @@ scripts = sa.Table(
     sa.Column("status", sa.Text, nullable=False),
     sa.Column("llm_model", sa.Text, nullable=False),
     sa.Column("estimated_duration_ms", sa.BigInteger),
+    # Migration 0014 (Phase 8). The sum of the script's segments' measured
+    # audio durations, once every segment has valid audio - never derived
+    # from estimated_duration_ms, which stays the Phase 7 WPM estimate.
+    sa.Column("measured_duration_ms", sa.BigInteger),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
 )
@@ -229,4 +233,30 @@ script_segment_claims = sa.Table(
     sa.Column("script_segment_id", UUID(as_uuid=True), nullable=False),
     sa.Column("claim_verification_id", UUID(as_uuid=True), nullable=False),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+)
+
+# Migration 0014 (Phase 8). One *current* row per segment (unlike
+# script_segments/script_segment_claims, this table is not append-only: a
+# re-synthesis overwrites its segment's row via INSERT ... ON CONFLICT ...
+# DO UPDATE). A row exists only once an attempt has finished - "ready" or
+# "failed" - never a separate "pending" state; absence means not yet
+# attempted.
+script_segment_audio = sa.Table(
+    "script_segment_audio",
+    metadata,
+    sa.Column("id", UUID(as_uuid=True), primary_key=True, server_default=sa.FetchedValue()),
+    sa.Column("script_segment_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("status", sa.Text, nullable=False),
+    sa.Column("storage_bucket", sa.Text),
+    sa.Column("storage_key", sa.Text),
+    sa.Column("format", sa.Text),
+    sa.Column("sample_rate", sa.Integer),
+    sa.Column("channels", sa.Integer),
+    sa.Column("measured_duration_ms", sa.BigInteger),
+    sa.Column("voice_model", sa.Text, nullable=False),
+    sa.Column("is_temporary_voice_substitute", sa.Boolean, nullable=False),
+    sa.Column("content_hash", sa.Text, nullable=False),
+    sa.Column("error", sa.Text),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
 )

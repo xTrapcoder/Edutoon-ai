@@ -23,3 +23,6 @@ dist/
 
 # Captured test output
 test-output*.txt
+
+# Downloaded local model files (Piper TTS voices - `make voices`)
+apps/api/var/

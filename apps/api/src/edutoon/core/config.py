@@ -164,6 +164,52 @@ class Settings(BaseSettings):
     # is treated as abandoned by a crashed worker and failed.
     SCRIPT_GENERATION_STALE_AFTER_SECONDS: int = Field(default=3600, ge=60)
 
+    # Local narration synthesis with Piper (Phase 8). Every one is optional: an .env
+    # written before Phase 8 boots unchanged. Piper is entirely local, open-source and
+    # free to run - no company API key is needed for any of this.
+    #
+    # PIPER_VOICES_DIR holds the downloaded .onnx/.onnx.json voice files
+    # (make voices / scripts/download_piper_voices.py); never committed to git.
+    #
+    # Piper has no genuine Indian-English voice in its catalogue (see
+    # apps/api/README.md, "Text-to-speech"). PIPER_VOICE_EN_IN is therefore, by
+    # default, the identical catalogue id as PIPER_VOICE_EN_GB, and
+    # PIPER_EN_IN_IS_TEMPORARY_SUBSTITUTE records that fact explicitly rather than
+    # letting it be inferred - domain.tts_voice, the API and the frontend all read
+    # this flag so an en-IN segment's audio is always labelled as the temporary
+    # substitution it is, never silently presented as Indian English.
+    PIPER_VOICES_DIR: str = "var/piper-voices"
+    PIPER_VOICE_EN_GB: str = "en_GB-cori-medium"
+    PIPER_VOICE_EN_IN: str = "en_GB-cori-medium"
+    PIPER_EN_IN_IS_TEMPORARY_SUBSTITUTE: bool = True
+
+    # Safety caps on one synthesis job, all generous defaults - never required, never
+    # meant to bind in ordinary use. MAX_TTS_CHARS_PER_CALL bounds one internal Piper
+    # invocation (domain.script_audio splits a segment's text into chunks at sentence
+    # boundaries under this, then concatenates their audio - never exposed as separate
+    # segments). MAX_TTS_CHARS_PER_SEGMENT and MAX_TTS_CHARS_PER_SCRIPT are refused at
+    # enqueue/synthesis time before any audio is generated, the same "cheap check
+    # first" discipline as script generation's own MAX_SCRIPT_SECTIONS.
+    MAX_TTS_CHARS_PER_CALL: int = Field(default=1000, ge=1)
+    MAX_TTS_CHARS_PER_SEGMENT: int = Field(default=8000, ge=1)
+    MAX_TTS_CHARS_PER_SCRIPT: int = Field(default=200_000, ge=1)
+
+    # How many segments may synthesise at once. Piper is CPU-bound and fast (see
+    # apps/api/README.md for measured real-time factors); 1 keeps a synthesis job's
+    # resource use predictable and avoids contending for the same worker process.
+    MAX_CONCURRENT_TTS: int = Field(default=1, ge=1)
+
+    # How long a single segment's synthesis (all of its internal chunks) may run
+    # before it is treated as failed - comfortably above the worst real measurement
+    # (see apps/api/README.md), never expected to bind for Piper's typical text
+    # lengths.
+    TTS_SEGMENT_TIMEOUT_SECONDS: int = Field(default=120, ge=1)
+
+    # Mirrors the other STALE_AFTER_SECONDS settings: how long a synthesise_voice job
+    # may sit "running" with no worker holding it (same released-lock-immediately
+    # shape as generate_script) before it is treated as abandoned and failed.
+    SYNTHESIS_STALE_AFTER_SECONDS: int = Field(default=3600, ge=60)
+
     @model_validator(mode="after")
     def _section_duration_bounds_are_consistent(self) -> Settings:
         if self.MAX_SECTION_DURATION_MS < self.MIN_SECTION_DURATION_MS:

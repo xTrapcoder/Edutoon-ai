@@ -72,6 +72,7 @@ class ScriptRecord:
     status: str
     llm_model: str
     estimated_duration_ms: int | None
+    measured_duration_ms: int | None
     created_at: datetime
     updated_at: datetime
 
@@ -102,6 +103,7 @@ def _script_from_row(row: RowMapping) -> ScriptRecord:
         status=row["status"],
         llm_model=row["llm_model"],
         estimated_duration_ms=row["estimated_duration_ms"],
+        measured_duration_ms=row["measured_duration_ms"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
@@ -465,6 +467,31 @@ async def set_status(
         scripts.update()
         .where(scripts.c.id == script_id, scripts.c.project_id == project_id)
         .values(**values)
+        .returning(*scripts.c)
+    )
+    try:
+        result = await session.execute(stmt)
+    except IntegrityError as exc:
+        raise_conflict_from_integrity_error(exc)
+    row = result.mappings().one_or_none()
+    return _script_from_row(row) if row is not None else None
+
+
+async def set_measured_duration(
+    session: AsyncSession, *, project_id: UUID, script_id: UUID, measured_duration_ms: int
+) -> ScriptRecord | None:
+    """Set the script's authoritative, post-audio duration (Phase 8) -
+    never ``estimated_duration_ms``, which stays exactly the Phase 7 WPM
+    estimate this never touches. Callers only ever set this once every one
+    of the script's segments has valid audio (``services.script_audio`` -
+    a partial synthesis is never presented as complete), never
+    incrementally. Project-scoped: returns ``None`` if the script doesn't
+    exist or belongs to another project (rule 9).
+    """
+    stmt = (
+        scripts.update()
+        .where(scripts.c.id == script_id, scripts.c.project_id == project_id)
+        .values(measured_duration_ms=measured_duration_ms)
         .returning(*scripts.c)
     )
     try:

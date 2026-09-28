@@ -179,6 +179,24 @@ async def list_by_project(
     return Page(items=[_from_row(row) for row in rows], next_cursor=next_cursor)
 
 
+async def get_latest_by_project_kind(
+    session: AsyncSession, *, project_id: UUID, kind: str
+) -> JobRecord | None:
+    """The most recently created job of ``kind`` for ``project_id``, whatever
+    its status - the "what happened last" read a status view wants, distinct
+    from :func:`get_active_by_project_kind` (which only ever returns an
+    in-flight one).
+    """
+    stmt = (
+        select(jobs)
+        .where(jobs.c.project_id == project_id, jobs.c.kind == kind)
+        .order_by(jobs.c.created_at.desc(), jobs.c.id.desc())
+        .limit(1)
+    )
+    row = (await session.execute(stmt)).mappings().one_or_none()
+    return _from_row(row) if row is not None else None
+
+
 # A job in either of these states is *in flight*: it will still run, or is
 # running now. ``succeeded`` / ``failed`` / ``cancelled`` are terminal.
 ACTIVE_STATUSES: tuple[str, ...] = ("queued", "running")

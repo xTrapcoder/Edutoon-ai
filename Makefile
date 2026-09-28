@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help install up down reset migrate migrate-create migrate-down history seed dev worker test lint format typecheck contracts contracts-check
+.PHONY: help install up down reset migrate migrate-create migrate-down history seed dev worker test lint format typecheck contracts contracts-check voices
 
 help: ## List available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -34,6 +34,9 @@ history: ## Show the migration history and current revision
 
 seed: ## Seed development data (placeholder)
 	@echo "seed: nothing to do yet (Phase 1)"
+
+voices: ## Download the local Piper TTS voice files narration synthesis needs
+	cd apps/api && uv run python scripts/download_piper_voices.py
 
 dev: ## Run the API (:8000), web (:3000) and job worker together with prefixed output
 	@echo "Starting api (:8000), web (:3000) and worker — press Ctrl-C to stop"

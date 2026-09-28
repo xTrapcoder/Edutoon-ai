@@ -44,6 +44,7 @@ class ScriptResponse(BaseModel):
     status: ScriptStatus
     llm_model: str
     estimated_duration_ms: int | None
+    measured_duration_ms: int | None
     created_at: datetime
     updated_at: datetime
 

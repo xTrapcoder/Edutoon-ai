@@ -10,6 +10,7 @@ presenting the same async-first shape as ``providers/cache.py``.
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from typing import Any
 
 import boto3
@@ -17,6 +18,25 @@ from botocore.client import Config as BotoConfig
 from botocore.exceptions import ClientError
 
 _NOT_FOUND_ERROR_CODES = {"404", "NoSuchKey"}
+
+
+class ObjectNotFoundError(Exception):
+    """Raised by :meth:`Storage.get_object` for a bucket/key that doesn't
+    exist - never a bare ``botocore`` traceback."""
+
+
+@dataclass(frozen=True, slots=True)
+class ObjectData:
+    """One ``get_object`` read: either the whole object (``status_code=200``)
+    or, when ``range_header`` was given and the server honoured it, exactly
+    the requested byte range (``status_code=206``, ``content_range`` set).
+    """
+
+    body: bytes
+    content_length: int
+    content_type: str
+    content_range: str | None
+    status_code: int
 
 
 class Storage:
@@ -44,6 +64,36 @@ class Storage:
                 return False
             raise
         return True
+
+    async def get_object(
+        self, *, bucket: str, key: str, range_header: str | None = None
+    ) -> ObjectData:
+        """Read an object, or (with ``range_header``, an HTTP ``Range``
+        header value such as ``bytes=0-1023``) one byte range of it - passed
+        straight through to the S3-compatible server, which does the actual
+        range arithmetic; this method only reports back what it returned.
+
+        Raises :class:`ObjectNotFoundError` for a missing bucket/key.
+        """
+        kwargs: dict[str, Any] = {"Bucket": bucket, "Key": key}
+        if range_header:
+            kwargs["Range"] = range_header
+        try:
+            response = await asyncio.to_thread(self._client.get_object, **kwargs)
+        except ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code")
+            if code in _NOT_FOUND_ERROR_CODES or code == "InvalidRange":
+                raise ObjectNotFoundError(f"{bucket}/{key} not found.") from exc
+            raise
+        body = await asyncio.to_thread(response["Body"].read)
+        content_range = response.get("ContentRange")
+        return ObjectData(
+            body=body,
+            content_length=response["ContentLength"],
+            content_type=response.get("ContentType", "application/octet-stream"),
+            content_range=content_range,
+            status_code=206 if content_range else 200,
+        )
 
     async def delete_object(self, *, bucket: str, key: str) -> None:
         await asyncio.to_thread(self._client.delete_object, Bucket=bucket, Key=key)

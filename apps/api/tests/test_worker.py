@@ -20,6 +20,7 @@ pattern instead - the real engine, real commits, manual cleanup.
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock
 from uuid import uuid4
@@ -42,6 +43,7 @@ from edutoon.db.tables import users as users_table
 from edutoon.providers import errors as provider_errors
 from edutoon.providers.embeddings import Embeddings
 from edutoon.providers.llm import LLM
+from edutoon.providers.storage import Storage
 from edutoon.repositories import claim_verifications as claim_verifications_repo
 from edutoon.repositories import jobs as jobs_repo
 from edutoon.repositories import project_topics as project_topics_repo
@@ -110,9 +112,26 @@ def _idle_embeddings() -> Embeddings:
     return Embeddings(AsyncOpenAI(api_key="sk-test-not-a-real-key"), model=EMBEDDING_MODEL)
 
 
+def _idle_storage() -> Storage:
+    """A storage client never expected to be called - for tests that don't
+    exercise the ``synthesise_voice`` handler but still need to fill
+    ``WorkerProviders.storage``.
+    """
+    return Storage(client=None)
+
+
+_IDLE_VOICES_DIR = Path("var/piper-voices")
+
+
 def _idle_providers() -> WorkerProviders:
     """Providers none of which is expected to be called."""
-    return WorkerProviders(embeddings=_idle_embeddings(), llm=_idle_llm(), script_llm=_idle_llm())
+    return WorkerProviders(
+        embeddings=_idle_embeddings(),
+        llm=_idle_llm(),
+        script_llm=_idle_llm(),
+        storage=_idle_storage(),
+        voices_dir=_IDLE_VOICES_DIR,
+    )
 
 
 # A project created with no explicit generation settings gets
@@ -305,7 +324,11 @@ async def test_process_one_job_runs_the_build_evidence_handler(
     await db_session.commit()  # release the savepoint so the worker's own session sees it
 
     providers = WorkerProviders(
-        embeddings=_fake_embeddings(monkeypatch), llm=_idle_llm(), script_llm=_idle_llm()
+        embeddings=_fake_embeddings(monkeypatch),
+        llm=_idle_llm(),
+        script_llm=_idle_llm(),
+        storage=_idle_storage(),
+        voices_dir=_IDLE_VOICES_DIR,
     )
     claimed_something = await process_one_job(worker_sessionmaker, providers)
 
@@ -340,6 +363,8 @@ async def test_process_one_job_marks_build_evidence_failed_on_a_provider_error(
         embeddings=Embeddings(client, model=EMBEDDING_MODEL),
         llm=_idle_llm(),
         script_llm=_idle_llm(),
+        storage=_idle_storage(),
+        voices_dir=_IDLE_VOICES_DIR,
     )
 
     claimed_something = await process_one_job(worker_sessionmaker, providers)
@@ -365,7 +390,13 @@ async def test_process_one_job_runs_the_generate_script_handler(
     await db_session.commit()
 
     llm = _fake_script_llm(monkeypatch, topic_id=topic.id, claim_id=claim.id)
-    providers = WorkerProviders(embeddings=_idle_embeddings(), llm=_idle_llm(), script_llm=llm)
+    providers = WorkerProviders(
+        embeddings=_idle_embeddings(),
+        llm=_idle_llm(),
+        script_llm=llm,
+        storage=_idle_storage(),
+        voices_dir=_IDLE_VOICES_DIR,
+    )
 
     claimed_something = await process_one_job(worker_sessionmaker, providers)
 
@@ -409,7 +440,13 @@ async def test_script_generation_runs_on_the_script_client_and_never_the_general
     # Mocked (not `_idle_llm()`) so `_create_of` below can assert it was never awaited.
     general = _fake_script_llm(monkeypatch, topic_id=uuid4(), claim_id=uuid4(), model=GENERAL_MODEL)
     script = _fake_script_llm(monkeypatch, topic_id=topic.id, claim_id=claim.id, model=SCRIPT_MODEL)
-    providers = WorkerProviders(embeddings=_idle_embeddings(), llm=general, script_llm=script)
+    providers = WorkerProviders(
+        embeddings=_idle_embeddings(),
+        llm=general,
+        script_llm=script,
+        storage=_idle_storage(),
+        voices_dir=_IDLE_VOICES_DIR,
+    )
 
     await process_one_job(worker_sessionmaker, providers)
 
@@ -432,7 +469,11 @@ async def test_the_script_records_the_model_that_actually_wrote_it(
     assert queued is not None and queued.llm_model == QUEUED_FOR_MODEL
     script = _fake_script_llm(monkeypatch, topic_id=topic.id, claim_id=claim.id, model=SCRIPT_MODEL)
     providers = WorkerProviders(
-        embeddings=_idle_embeddings(), llm=_idle_llm(), script_llm=script
+        embeddings=_idle_embeddings(),
+        llm=_idle_llm(),
+        script_llm=script,
+        storage=_idle_storage(),
+        voices_dir=_IDLE_VOICES_DIR,
     )
 
     await process_one_job(worker_sessionmaker, providers)
@@ -455,6 +496,8 @@ async def test_a_script_that_fails_still_records_the_model_that_attempted_it(
         embeddings=_idle_embeddings(),
         llm=_idle_llm(),
         script_llm=LLM(client, model=SCRIPT_MODEL),
+        storage=_idle_storage(),
+        voices_dir=_IDLE_VOICES_DIR,
     )
 
     await process_one_job(worker_sessionmaker, providers)
@@ -488,7 +531,13 @@ async def test_topic_extraction_stays_on_the_general_client_and_never_the_script
         model=GENERAL_MODEL,
     )
     script = _fake_script_llm(monkeypatch, topic_id=uuid4(), claim_id=uuid4(), model=SCRIPT_MODEL)
-    providers = WorkerProviders(embeddings=_idle_embeddings(), llm=general, script_llm=script)
+    providers = WorkerProviders(
+        embeddings=_idle_embeddings(),
+        llm=general,
+        script_llm=script,
+        storage=_idle_storage(),
+        voices_dir=_IDLE_VOICES_DIR,
+    )
 
     await process_one_job(worker_sessionmaker, providers)
 
@@ -516,6 +565,7 @@ def test_the_worker_has_a_handler_for_each_implemented_job_kind_and_no_others():
         "generate_script",
         "extract_topics",
         "extract_claims",
+        "synthesise_voice",
     }
 
 
@@ -549,7 +599,13 @@ async def test_process_one_job_runs_the_extract_topics_handler(
             },
         ],
     )
-    providers = WorkerProviders(embeddings=_idle_embeddings(), llm=llm, script_llm=_idle_llm())
+    providers = WorkerProviders(
+        embeddings=_idle_embeddings(),
+        llm=llm,
+        script_llm=_idle_llm(),
+        storage=_idle_storage(),
+        voices_dir=_IDLE_VOICES_DIR,
+    )
 
     claimed_something = await process_one_job(worker_sessionmaker, providers)
 
@@ -589,7 +645,11 @@ async def test_process_one_job_marks_extract_topics_failed_on_a_provider_error(
         side_effect=RuntimeError("anthropic is unreachable")
     )
     providers = WorkerProviders(
-        embeddings=_idle_embeddings(), llm=LLM(client, model=LLM_MODEL), script_llm=_idle_llm()
+        embeddings=_idle_embeddings(),
+        llm=LLM(client, model=LLM_MODEL),
+        script_llm=_idle_llm(),
+        storage=_idle_storage(),
+        voices_dir=_IDLE_VOICES_DIR,
     )
 
     claimed_something = await process_one_job(worker_sessionmaker, providers)
@@ -640,7 +700,11 @@ async def test_process_one_job_runs_the_extract_claims_handler(
         monkeypatch, [{"text": "Photosynthesis converts light energy into chemical energy."}]
     )
     providers = WorkerProviders(
-        embeddings=_fake_embeddings(monkeypatch), llm=llm, script_llm=_idle_llm()
+        embeddings=_fake_embeddings(monkeypatch),
+        llm=llm,
+        script_llm=_idle_llm(),
+        storage=_idle_storage(),
+        voices_dir=_IDLE_VOICES_DIR,
     )
 
     claimed_something = await process_one_job(worker_sessionmaker, providers)
@@ -690,7 +754,11 @@ async def test_process_one_job_marks_extract_claims_failed_on_a_provider_error(
         side_effect=RuntimeError("anthropic is unreachable")
     )
     providers = WorkerProviders(
-        embeddings=_idle_embeddings(), llm=LLM(client, model=LLM_MODEL), script_llm=_idle_llm()
+        embeddings=_idle_embeddings(),
+        llm=LLM(client, model=LLM_MODEL),
+        script_llm=_idle_llm(),
+        storage=_idle_storage(),
+        voices_dir=_IDLE_VOICES_DIR,
     )
 
     claimed_something = await process_one_job(worker_sessionmaker, providers)
@@ -817,7 +885,11 @@ async def test_a_project_is_processing_until_the_worker_finishes_its_job_then_re
     assert await _status_of(db_session, project) == "processing"
 
     providers = WorkerProviders(
-        embeddings=_fake_embeddings(monkeypatch), llm=_idle_llm(), script_llm=_idle_llm()
+        embeddings=_fake_embeddings(monkeypatch),
+        llm=_idle_llm(),
+        script_llm=_idle_llm(),
+        storage=_idle_storage(),
+        voices_dir=_IDLE_VOICES_DIR,
     )
     await process_one_job(worker_sessionmaker, providers)
 
@@ -844,6 +916,8 @@ async def test_a_handled_provider_failure_leaves_the_project_failed(
         embeddings=Embeddings(client, model=EMBEDDING_MODEL),
         llm=_idle_llm(),
         script_llm=_idle_llm(),
+        storage=_idle_storage(),
+        voices_dir=_IDLE_VOICES_DIR,
     )
 
     await process_one_job(worker_sessionmaker, providers)

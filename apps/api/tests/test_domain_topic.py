@@ -193,6 +193,8 @@ _STDLIB_ALLOWED = {
     "__future__",
     "collections",
     "dataclasses",
+    "hashlib",
+    "re",
     "typing",
     "unicodedata",
     "uuid",
