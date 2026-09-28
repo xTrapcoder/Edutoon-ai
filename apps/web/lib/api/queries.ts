@@ -37,6 +37,8 @@ export const queryKeys = {
   jobs: (id: string) => ['projects', id, 'jobs'] as const,
   scripts: (id: string) => ['projects', id, 'scripts'] as const,
   script: (id: string, scriptId: string) => ['projects', id, 'scripts', scriptId] as const,
+  synthesis: (id: string, scriptId: string) =>
+    ['projects', id, 'scripts', scriptId, 'synthesis'] as const,
   claims: (id: string) => ['projects', id, 'claims'] as const,
 };
 
@@ -98,6 +100,19 @@ export function useScriptDetail(projectId: string, scriptId: string | undefined)
     queryKey: queryKeys.script(projectId, scriptId ?? ''),
     queryFn: () => api.getScript(projectId, scriptId as string),
     enabled: scriptId !== undefined,
+  });
+}
+
+/** A script's synthesis status, polled while its most recent job is still queued or running. */
+export function useSynthesisStatus(projectId: string, scriptId: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.synthesis(projectId, scriptId ?? ''),
+    queryFn: () => api.getSynthesisStatus(projectId, scriptId as string),
+    enabled: scriptId !== undefined,
+    refetchInterval: (query) => {
+      const job = query.state.data?.job;
+      return job && isActiveJob(job) ? POLL_INTERVAL_MS : false;
+    },
   });
 }
 
@@ -412,4 +427,13 @@ export function useApproveScript(projectId: string) {
       },
     },
   );
+}
+
+export function useEnqueueSynthesis(projectId: string, scriptId: string) {
+  const queryClient = useQueryClient();
+  return useIdempotentMutation((_: void, key) => api.enqueueSynthesis(projectId, scriptId, key), {
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.synthesis(projectId, scriptId) });
+    },
+  });
 }

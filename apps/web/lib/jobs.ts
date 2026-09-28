@@ -177,6 +177,71 @@ export function scriptGenerationStageLabel(progress: ScriptGenerationProgress): 
   return SCRIPT_GENERATION_STAGE_LABELS[progress.stage] ?? 'Writing your script';
 }
 
+export interface SynthesisProgress {
+  stage: string;
+  segmentIndex: number | null;
+  segmentCount: number | null;
+}
+
+/**
+ * What a `synthesise_voice` job's interim `payload.progress` reports while it is still running
+ * (Phase 8 - see `services.script_audio` on the API side). Same untyped, field-by-field reading
+ * as `readScriptGenerationProgress`.
+ */
+export function readSynthesisProgress(job: Job | undefined): SynthesisProgress | null {
+  if (!job || job.status !== 'running' || !isRecord(job.payload)) return null;
+  const progress = job.payload.progress;
+  if (!isRecord(progress) || typeof progress.stage !== 'string') return null;
+  return {
+    stage: progress.stage,
+    segmentIndex: asCount(progress.segment_index),
+    segmentCount: asCount(progress.segment_count),
+  };
+}
+
+const SYNTHESIS_STAGE_LABELS: Record<string, string> = {
+  preparing: 'Preparing narration',
+  synthesising_segment: 'Narrating your script',
+  finalising: 'Finishing up',
+};
+
+/** A one-line label for a synthesis job's current stage, naming the section when known. */
+export function synthesisStageLabel(progress: SynthesisProgress): string {
+  if (
+    progress.stage === 'synthesising_segment' &&
+    progress.segmentIndex !== null &&
+    progress.segmentCount !== null
+  ) {
+    return `Narrating section ${progress.segmentIndex + 1} of ${progress.segmentCount}`;
+  }
+  return SYNTHESIS_STAGE_LABELS[progress.stage] ?? 'Narrating your script';
+}
+
+export interface SynthesisResultSummary {
+  segmentCount: number | null;
+  readySegmentCount: number | null;
+  failedSegmentIds: string[];
+}
+
+/**
+ * What a finished `synthesise_voice` job reported - how many segments actually ended up with
+ * valid audio, and which ones did not, so a partial run is never mistaken for a clean one.
+ */
+export function readSynthesisResult(job: Job | undefined): SynthesisResultSummary | null {
+  if (!job || (job.status !== 'succeeded' && job.status !== 'failed') || !isRecord(job.result)) {
+    return null;
+  }
+  const result = job.result;
+  const failedSegmentIds = Array.isArray(result.failed_segment_ids)
+    ? result.failed_segment_ids.filter((value): value is string => typeof value === 'string')
+    : [];
+  return {
+    segmentCount: asCount(result.segment_count),
+    readySegmentCount: asCount(result.ready_segment_count),
+    failedSegmentIds,
+  };
+}
+
 export type WaitLevel = 'normal' | 'slow' | 'stalled';
 
 export interface WaitAssessment {

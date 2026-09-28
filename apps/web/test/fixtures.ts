@@ -4,7 +4,9 @@ import type {
   Project,
   Script,
   ScriptDetail,
+  SegmentAudio,
   Source,
+  SynthesisStatus,
   Topic,
 } from '@edutoon/contracts';
 
@@ -97,6 +99,7 @@ export function script(over: Partial<Script> = {}): Script {
     status: 'draft',
     llm_model: 'test-model',
     estimated_duration_ms: 290_000,
+    measured_duration_ms: null,
     created_at: AT,
     updated_at: AT,
     ...over,
@@ -123,6 +126,37 @@ export function scriptDetail(over: Partial<ScriptDetail> = {}): ScriptDetail {
             created_at: AT,
           },
         ],
+      },
+    ],
+    ...over,
+  };
+}
+
+export function segmentAudio(over: Partial<SegmentAudio> = {}): SegmentAudio {
+  return {
+    status: 'ready',
+    format: 'wav',
+    sample_rate: 22050,
+    channels: 1,
+    measured_duration_ms: 58_000,
+    voice_model: 'en_GB-cori-medium',
+    is_temporary_voice_substitute: false,
+    error: null,
+    updated_at: AT,
+    ...over,
+  };
+}
+
+export function synthesisStatus(over: Partial<SynthesisStatus> = {}): SynthesisStatus {
+  return {
+    script: script({ status: 'approved' }),
+    job: null,
+    segments: [
+      {
+        id: ID(50),
+        segment_index: 0,
+        estimated_duration_ms: 60_000,
+        audio: null,
       },
     ],
     ...over,

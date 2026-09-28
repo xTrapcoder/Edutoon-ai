@@ -6,25 +6,38 @@ import {
   CheckCircle2,
   Clock,
   FileText,
+  Mic,
   RefreshCw,
   Settings2,
   ShieldCheck,
+  Volume2,
 } from 'lucide-react';
 import Link from 'next/link';
 import { useState } from 'react';
 import { toast } from 'sonner';
-import type { Project, ScriptDetail, Topic } from '@edutoon/contracts';
+import type { Project, ScriptDetail, SegmentAudio, Topic } from '@edutoon/contracts';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardBody, CardHeader } from '@/components/ui/card';
-import { Alert } from '@/components/ui/feedback';
+import { Alert, Progress } from '@/components/ui/feedback';
 import { Modal } from '@/components/ui/modal';
 import { EditSettingsModal } from '@/components/workspace/edit-settings-modal';
 import { describeError } from '@/lib/api/errors';
-import { useApproveScript, useGenerateScript } from '@/lib/api/queries';
+import {
+  useApproveScript,
+  useEnqueueSynthesis,
+  useGenerateScript,
+  useSynthesisStatus,
+} from '@/lib/api/queries';
 import { cn } from '@/lib/cn';
 import { formatDateTime, formatDuration, formatElapsed } from '@/lib/format';
 import { languageLabel, orientationLabel } from '@/lib/generation-settings';
+import {
+  isActiveJob,
+  jobFailureMessage,
+  readSynthesisProgress,
+  synthesisStageLabel,
+} from '@/lib/jobs';
 import {
   compareDuration,
   paragraphs,
@@ -32,6 +45,7 @@ import {
   segmentTitle,
   VERDICT,
 } from './script-model';
+import { SegmentAudioPlayer } from './segment-audio-player';
 
 interface ScriptStudioProps {
   project: Project;
@@ -107,12 +121,14 @@ function SectionContent({
   selected,
   onSelect,
   projectId,
+  segmentAudio,
 }: {
   script: ScriptDetail;
   topics: readonly Topic[];
   selected: number;
   onSelect: (index: number) => void;
   projectId: string;
+  segmentAudio: SegmentAudio | undefined;
 }) {
   const segment = script.segments[selected];
   if (!segment) return null;
@@ -141,10 +157,21 @@ function SectionContent({
               </Link>
             ) : null}
           </div>
-          <Badge tone="neutral">
-            <Clock className="size-3" aria-hidden />
-            About {formatElapsed(segment.estimated_duration_ms)}
-          </Badge>
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <Badge tone="neutral">
+              <Clock className="size-3" aria-hidden />
+              About {formatElapsed(segment.estimated_duration_ms)} estimated
+            </Badge>
+            {segmentAudio?.status === 'ready' && segmentAudio.measured_duration_ms !== null ? (
+              <Badge tone="success" dot>
+                {formatElapsed(segmentAudio.measured_duration_ms)} narrated
+              </Badge>
+            ) : segmentAudio?.status === 'failed' ? (
+              <Badge tone="danger" dot>
+                Narration failed
+              </Badge>
+            ) : null}
+          </div>
         </div>
 
         <section aria-labelledby="narration-heading" className="space-y-3">
@@ -156,6 +183,21 @@ function SectionContent({
               <p key={index}>{paragraph}</p>
             ))}
           </div>
+          {segmentAudio?.status === 'ready' ? (
+            <div className="space-y-1.5 rounded-lg border border-line bg-surface-sunken p-3">
+              <SegmentAudioPlayer
+                projectId={projectId}
+                scriptId={script.id}
+                segmentId={segment.id}
+              />
+              {segmentAudio.is_temporary_voice_substitute ? (
+                <p className="text-[12px] text-ink-500">
+                  Narrated in British English, standing in until a genuine Indian-English voice is
+                  available - see the note in the narration panel.
+                </p>
+              ) : null}
+            </div>
+          ) : null}
         </section>
 
         <section aria-labelledby="claims-heading" className="space-y-3 border-t border-line pt-5">
@@ -364,9 +406,132 @@ function ApprovalCard({ project, script }: { project: Project; script: ScriptDet
   );
 }
 
+/**
+ * Local narration synthesis (Piper - see apps/api/README.md, "Text-to-speech"). Only an approved
+ * script may be narrated. en-IN projects currently narrate with the same British-English voice as
+ * en-GB - a deliberate, explicit temporary substitution, never presented as Indian English.
+ */
+function SynthesisCard({ project, script }: { project: Project; script: ScriptDetail }) {
+  const approved = script.status === 'approved';
+  const { data: status } = useSynthesisStatus(project.id, approved ? script.id : undefined);
+  const enqueue = useEnqueueSynthesis(project.id, script.id);
+
+  if (!approved) return null;
+
+  const job = status?.job ?? null;
+  const segments = status?.segments ?? [];
+  const total = segments.length;
+  const readyCount = segments.filter((segment) => segment.audio?.status === 'ready').length;
+  const failedCount = segments.filter((segment) => segment.audio?.status === 'failed').length;
+  const complete = total > 0 && readyCount === total;
+  const active = job !== null && isActiveJob(job);
+  const progress = readSynthesisProgress(job ?? undefined);
+  const percent = total > 0 ? Math.round((readyCount / total) * 100) : undefined;
+  const voiceModel = segments.find((segment) => segment.audio)?.audio?.voice_model ?? null;
+  const isTemporarySubstitute = segments.some(
+    (segment) => segment.audio?.is_temporary_voice_substitute,
+  );
+
+  const enqueueError = enqueue.isError
+    ? describeError(enqueue.error, { action: 'start narration' })
+    : null;
+
+  return (
+    <Card>
+      <CardHeader title="Narration" icon={<Volume2 className="size-4" aria-hidden />} as="h2" />
+      <CardBody className="space-y-4">
+        {project.language === 'en-IN' ? (
+          <Alert tone="info">
+            This project&apos;s language is Indian English. A genuine Indian-English voice
+            isn&apos;t available in the local narration engine yet, so narration temporarily uses
+            the same British-English voice as en-GB projects.
+          </Alert>
+        ) : null}
+
+        {complete ? (
+          <>
+            <Badge tone="success" dot>
+              All sections narrated
+            </Badge>
+            {status?.script.measured_duration_ms ? (
+              <p className="text-sm text-ink-600">
+                Actual runtime:{' '}
+                <span className="font-semibold text-ink-950">
+                  {formatDuration(status.script.measured_duration_ms)}
+                </span>
+              </p>
+            ) : null}
+          </>
+        ) : active ? (
+          <>
+            <Badge tone="brand" dot busy>
+              {progress ? synthesisStageLabel(progress) : 'Narrating your script'}
+            </Badge>
+            <Progress value={percent} label="Narration progress" />
+            <p className="text-[13px] text-ink-500">
+              {readyCount} of {total} sections narrated so far.
+            </p>
+          </>
+        ) : job && job.status === 'failed' && readyCount === 0 ? (
+          <Alert tone="danger" title="Narration failed">
+            {jobFailureMessage(job)}
+          </Alert>
+        ) : failedCount > 0 ? (
+          <Alert
+            tone="warning"
+            title={`${failedCount} section${failedCount === 1 ? '' : 's'} couldn't be narrated`}
+          >
+            {readyCount} of {total} sections narrated. Retrying only narrates what is missing.
+          </Alert>
+        ) : (
+          <p className="text-sm text-ink-600">
+            Turn this script into narrated audio, section by section, using a local, offline voice.
+          </p>
+        )}
+
+        {voiceModel ? (
+          <p className="text-[13px] text-ink-500">
+            Voice: <span className="font-medium text-ink-700">{voiceModel}</span>
+            {isTemporarySubstitute ? ' (temporary British-English stand-in)' : ''}
+          </p>
+        ) : null}
+
+        {enqueueError ? (
+          <Alert tone="danger" title={enqueueError.title}>
+            {enqueueError.message}
+          </Alert>
+        ) : null}
+
+        {!active ? (
+          <Button
+            className="w-full"
+            variant={complete ? 'secondary' : 'primary'}
+            onClick={() => enqueue.mutate()}
+            loading={enqueue.isPending}
+            leadingIcon={<Mic className="size-4" aria-hidden />}
+          >
+            {complete
+              ? 'Re-narrate this script'
+              : readyCount > 0
+                ? 'Retry remaining sections'
+                : 'Narrate this script'}
+          </Button>
+        ) : null}
+      </CardBody>
+    </Card>
+  );
+}
+
 function ProjectSettingsCard({ project, script }: { project: Project; script: ScriptDetail }) {
   const [editing, setEditing] = useState(false);
   const comparison = compareDuration(script.estimated_duration_ms, project.target_duration_ms);
+  // The live-polled synthesis status is the freshest source for measured_duration_ms - script
+  // itself is only refetched on demand, not while a narration job is running.
+  const { data: status } = useSynthesisStatus(
+    project.id,
+    script.status === 'approved' ? script.id : undefined,
+  );
+  const measuredDurationMs = status?.script.measured_duration_ms ?? script.measured_duration_ms;
 
   const rows: [string, string][] = [
     ['Orientation', orientationLabel(project.orientation)],
@@ -401,11 +566,20 @@ function ProjectSettingsCard({ project, script }: { project: Project; script: Sc
           </dl>
           {script.estimated_duration_ms ? (
             <div className="rounded-md bg-brand-50/60 p-3 text-[13px] text-ink-600">
-              This script runs about{' '}
+              Estimated (before narration):{' '}
               <span className="font-semibold text-ink-950">
                 {formatDuration(script.estimated_duration_ms)}
               </span>
               {comparison?.note ? ` - ${comparison.note.toLowerCase()}` : ', close to your target'}.
+            </div>
+          ) : null}
+          {measuredDurationMs ? (
+            <div className="rounded-md bg-success-50 p-3 text-[13px] text-ink-600">
+              Actual narrated runtime:{' '}
+              <span className="font-semibold text-ink-950">
+                {formatDuration(measuredDurationMs)}
+              </span>
+              .
             </div>
           ) : null}
         </CardBody>
@@ -458,6 +632,10 @@ function DetailsCard({ script }: { script: ScriptDetail }) {
 export function ScriptStudio({ project, script, topics }: ScriptStudioProps) {
   const [selected, setSelected] = useState(0);
   const index = Math.min(selected, Math.max(0, script.segments.length - 1));
+  const { data: synthesisStatus } = useSynthesisStatus(
+    project.id,
+    script.status === 'approved' ? script.id : undefined,
+  );
 
   if (script.segments.length === 0) {
     return (
@@ -466,6 +644,11 @@ export function ScriptStudio({ project, script, topics }: ScriptStudioProps) {
       </Alert>
     );
   }
+
+  const currentSegment = script.segments[index];
+  const currentSegmentAudio = currentSegment
+    ? synthesisStatus?.segments.find((entry) => entry.id === currentSegment.id)?.audio
+    : undefined;
 
   return (
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-[220px_minmax(0,1fr)] xl:grid-cols-[240px_minmax(0,1fr)_320px]">
@@ -479,6 +662,7 @@ export function ScriptStudio({ project, script, topics }: ScriptStudioProps) {
           selected={index}
           onSelect={setSelected}
           projectId={project.id}
+          segmentAudio={currentSegmentAudio ?? undefined}
         />
       </div>
       <aside
@@ -486,6 +670,7 @@ export function ScriptStudio({ project, script, topics }: ScriptStudioProps) {
         className="space-y-6 lg:col-span-2 lg:grid lg:grid-cols-3 lg:gap-6 lg:space-y-0 xl:col-span-1 xl:block xl:space-y-6"
       >
         <ApprovalCard project={project} script={script} />
+        <SynthesisCard project={project} script={script} />
         <ProjectSettingsCard project={project} script={script} />
         <DetailsCard script={script} />
       </aside>

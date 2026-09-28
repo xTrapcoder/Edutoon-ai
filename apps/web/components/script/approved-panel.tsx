@@ -1,4 +1,4 @@
-import { CheckCircle2, Clapperboard, FolderOpen, Mic, Plus, Video } from 'lucide-react';
+import { CheckCircle2, Clapperboard, FolderOpen, Plus, Video } from 'lucide-react';
 import { ButtonLink } from '@/components/ui/button';
 import { Card, CardBody } from '@/components/ui/card';
 
@@ -9,11 +9,6 @@ const UPCOMING = [
     body: 'Each section of the script is turned into scenes to show on screen.',
   },
   {
-    icon: Mic,
-    title: 'Narration',
-    body: 'The script is read aloud to accompany the scenes.',
-  },
-  {
     icon: Video,
     title: 'Rendering',
     body: 'Scenes and narration are put together into the finished video.',
@@ -22,7 +17,9 @@ const UPCOMING = [
 
 /**
  * Shown once a script is approved: what was done, and - without pretending anything else works
- * yet - what the next production stages will be.
+ * yet - what the next production stages will be. Narration (Phase 8) is real, not upcoming, so it
+ * is deliberately not listed here - it is offered directly below, in Script Studio's own
+ * narration panel.
  */
 export function ApprovedPanel({ projectId }: { projectId: string }) {
   return (

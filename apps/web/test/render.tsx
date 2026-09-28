@@ -3,7 +3,17 @@ import { render } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
 import type { ReactElement, ReactNode } from 'react';
 import { WorkspaceShell } from '@/components/workspace/workspace-shell';
-import { claim, job, project, script, scriptDetail, source, topic, PROJECT_ID } from './fixtures';
+import {
+  claim,
+  job,
+  project,
+  script,
+  scriptDetail,
+  source,
+  synthesisStatus,
+  topic,
+  PROJECT_ID,
+} from './fixtures';
 import { navigation } from './navigation';
 import { API, server } from './server';
 
@@ -29,6 +39,7 @@ export interface ProjectApi {
   jobs?: ReturnType<typeof job>[];
   scripts?: ReturnType<typeof script>[];
   scriptDetail?: ReturnType<typeof scriptDetail>;
+  synthesisStatus?: ReturnType<typeof synthesisStatus>;
   claims?: ReturnType<typeof claim>[];
 }
 
@@ -48,6 +59,21 @@ export function serveProject(data: ProjectApi = {}) {
         ? HttpResponse.json(data.scriptDetail)
         : new HttpResponse(null, { status: 404 }),
     ),
+    http.get(`${base}/scripts/:scriptId/synthesis`, () => {
+      if (data.synthesisStatus) return HttpResponse.json(data.synthesisStatus);
+      if (!data.scriptDetail) return new HttpResponse(null, { status: 404 });
+      return HttpResponse.json(
+        synthesisStatus({
+          script: data.scriptDetail,
+          segments: data.scriptDetail.segments.map((segment) => ({
+            id: segment.id,
+            segment_index: segment.segment_index,
+            estimated_duration_ms: segment.estimated_duration_ms,
+            audio: null,
+          })),
+        }),
+      );
+    }),
     http.get(`${base}/claim-verifications`, () => HttpResponse.json(page(data.claims ?? []))),
   );
 }

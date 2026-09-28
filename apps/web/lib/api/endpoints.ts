@@ -8,10 +8,13 @@ import type {
   ScriptDetail,
   Source,
   SourceChunk,
+  SynthesisStatus,
   Topic,
   TopicUpdateRequest,
 } from '@edutoon/contracts';
-import { getApiClient, timeoutSignal, UPLOAD_TIMEOUT_MS, unwrap } from './client';
+import { getApiToken } from '@/lib/auth/token';
+import { API_BASE_URL, getApiClient, timeoutSignal, UPLOAD_TIMEOUT_MS, unwrap } from './client';
+import { apiErrorFromResponse } from './errors';
 
 /**
  * One function per API route the product uses, each returning the API's own typed response.
@@ -258,4 +261,53 @@ export function approveScript(projectId: string, scriptId: string, key: string):
       signal: timeoutSignal(),
     }),
   );
+}
+
+// --- synthesis (Phase 8) -----------------------------------------------------------------
+
+export function enqueueSynthesis(projectId: string, scriptId: string, key: string): Promise<Job> {
+  return unwrap(
+    getApiClient().POST('/v1/projects/{project_id}/scripts/{script_id}/synthesis', {
+      params: { path: { project_id: projectId, script_id: scriptId }, header: idempotent(key) },
+      signal: timeoutSignal(),
+    }),
+  );
+}
+
+export function getSynthesisStatus(projectId: string, scriptId: string): Promise<SynthesisStatus> {
+  return unwrap(
+    getApiClient().GET('/v1/projects/{project_id}/scripts/{script_id}/synthesis', {
+      params: { path: { project_id: projectId, script_id: scriptId } },
+      signal: timeoutSignal(),
+    }),
+  );
+}
+
+/**
+ * A playable, same-origin object URL for one segment's current audio.
+ *
+ * A plain `<audio src="...">` cannot carry the `Authorization` header the API requires, so this
+ * fetches the audio itself (with the caller's token, like every other request) and hands back a
+ * `blob:` URL instead of the bare API URL. The caller owns the URL's lifetime and must revoke it
+ * (`URL.revokeObjectURL`) once it is no longer shown, typically when the player unmounts.
+ */
+export async function fetchSegmentAudioUrl(
+  projectId: string,
+  scriptId: string,
+  segmentId: string,
+): Promise<string> {
+  const token = await getApiToken();
+  const response = await fetch(
+    `${API_BASE_URL}/v1/projects/${projectId}/scripts/${scriptId}/segments/${segmentId}/audio`,
+    {
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      signal: timeoutSignal(UPLOAD_TIMEOUT_MS),
+    },
+  );
+  if (!response.ok) {
+    const body = await response.json().catch(() => undefined);
+    throw apiErrorFromResponse(response, body);
+  }
+  const blob = await response.blob();
+  return URL.createObjectURL(blob);
 }
