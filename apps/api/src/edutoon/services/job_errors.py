@@ -31,6 +31,8 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from edutoon.core.errors import AppError
 from edutoon.domain.script_provenance import UnsourcedSegmentError
+from edutoon.domain.storyboard_provenance import FabricatedContentError
+from edutoon.domain.storyboard_template import StoryboardContentError
 from edutoon.domain.topic_tree import TopicError
 from edutoon.providers.errors import describe_provider_error
 from edutoon.providers.llm import LLMResponseError
@@ -50,7 +52,14 @@ CONNECTION_ERROR = "A connection to a required service failed. Please try again.
 TIMEOUT_ERROR = "An operation timed out while running this job. Please try again."
 
 # Exceptions whose message was written by this codebase, for people to read.
-_OWN_MESSAGE = (AppError, TopicError, UnsourcedSegmentError, LLMResponseError)
+_OWN_MESSAGE = (
+    AppError,
+    TopicError,
+    UnsourcedSegmentError,
+    LLMResponseError,
+    StoryboardContentError,
+    FabricatedContentError,
+)
 
 
 def public_job_error(exc: BaseException) -> str:

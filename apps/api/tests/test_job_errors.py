@@ -22,6 +22,8 @@ from sqlalchemy.exc import DBAPIError, IntegrityError, OperationalError
 
 from edutoon.core.errors import ConflictError, JobError, NotFoundError, ValidationError
 from edutoon.domain.script_provenance import UnsourcedSegmentError
+from edutoon.domain.storyboard_provenance import FabricatedContentError, ProvenanceViolation
+from edutoon.domain.storyboard_template import StoryboardContentError
 from edutoon.domain.topic_tree import CyclicHierarchyError, TopicLimitError
 from edutoon.providers import errors as provider_errors
 from edutoon.providers.llm import LLMResponseError
@@ -171,6 +173,13 @@ def test_an_unexpected_exception_is_reported_generically(exc):
         (CyclicHierarchyError("t1"), None),
         (UnsourcedSegmentError(2), None),
         (LLMResponseError("Topic 3: title must be a string."), "Topic 3: title must be a string."),
+        (StoryboardContentError("'bullets' is required."), "'bullets' is required."),
+        (
+            FabricatedContentError(
+                [ProvenanceViolation(slot_path="title", kind="number", token="42")]
+            ),
+            None,
+        ),
     ],
 )
 def test_our_own_deliberate_messages_are_shown_as_written(exc, expected):

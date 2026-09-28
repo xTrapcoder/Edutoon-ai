@@ -24,7 +24,10 @@ VALID_CONTENT: dict[str, dict[str, object]] = {
     "bullet_points": {"title": "Recap", "bullets": ["Sunlight", "Water", "Carbon dioxide"]},
     "labelled_diagram": {
         "illustration": {"description": "A leaf cross-section", "subject_labels": ["leaf"]},
-        "labels": [{"text": "Stoma", "position": "bottom"}, {"text": "Chloroplast", "position": "centre"}],
+        "labels": [
+            {"text": "Stoma", "position": "bottom"},
+            {"text": "Chloroplast", "position": "centre"},
+        ],
     },
     "split_text_illustration": {
         "text": "Chlorophyll absorbs sunlight to power the reaction.",
@@ -46,14 +49,14 @@ VALID_CONTENT: dict[str, dict[str, object]] = {
 
 
 def test_templates_is_exactly_the_six_documented_values() -> None:
-    assert TEMPLATES == {
+    assert {
         "title_card",
         "bullet_points",
         "labelled_diagram",
         "split_text_illustration",
         "full_bleed_illustration",
         "formula_or_code",
-    }
+    } == TEMPLATES
 
 
 @pytest.mark.parametrize("template", sorted(TEMPLATES))
@@ -69,7 +72,7 @@ def test_there_is_no_section_recap_template() -> None:
 
 
 def test_text_only_templates_are_exactly_the_documented_three() -> None:
-    assert TEXT_ONLY_TEMPLATES == {"title_card", "bullet_points", "formula_or_code"}
+    assert {"title_card", "bullet_points", "formula_or_code"} == TEXT_ONLY_TEMPLATES
 
 
 @pytest.mark.parametrize("template", sorted(TEXT_ONLY_TEMPLATES))
@@ -148,9 +151,7 @@ def test_bullet_points_rejects_an_empty_bullet() -> None:
 
 def test_labelled_diagram_requires_an_illustration() -> None:
     with pytest.raises(StoryboardContentError, match="illustration"):
-        validate_scene_content(
-            "labelled_diagram", {"labels": [{"text": "A", "position": "top"}]}
-        )
+        validate_scene_content("labelled_diagram", {"labels": [{"text": "A", "position": "top"}]})
 
 
 def test_labelled_diagram_requires_at_least_one_label() -> None:
@@ -207,9 +208,7 @@ def test_labelled_diagram_rejects_an_over_length_label() -> None:
 
 def test_split_text_illustration_requires_text() -> None:
     with pytest.raises(StoryboardContentError, match="text"):
-        validate_scene_content(
-            "split_text_illustration", {"illustration": {"description": "d"}}
-        )
+        validate_scene_content("split_text_illustration", {"illustration": {"description": "d"}})
 
 
 def test_split_text_illustration_requires_an_illustration() -> None:
@@ -371,5 +370,7 @@ def test_every_arrangement_tag_is_globally_unique() -> None:
     stronger guarantee than "differs from its own other orientation", so a
     mutation that copied one template's layout onto another is also caught.
     """
-    tags = [layout_for(t, o).arrangement for t in sorted(TEMPLATES) for o in ("horizontal", "vertical")]
+    tags = [
+        layout_for(t, o).arrangement for t in sorted(TEMPLATES) for o in ("horizontal", "vertical")
+    ]
     assert len(tags) == len(set(tags))

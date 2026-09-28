@@ -144,9 +144,7 @@ def test_require_provenance_does_not_raise_for_honest_content() -> None:
 
 def test_require_provenance_reports_every_violation_not_just_the_first() -> None:
     with pytest.raises(FabricatedContentError) as excinfo:
-        require_provenance(
-            {"title": "42 facts from Napoleon in 1850"}, NARRATION
-        )
+        require_provenance({"title": "42 facts from Napoleon in 1850"}, NARRATION)
     assert len(excinfo.value.violations) >= 3
 
 

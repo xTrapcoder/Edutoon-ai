@@ -22,39 +22,28 @@ from edutoon.domain.storyboard_timing import (
 
 def test_a_generous_segment_is_capped_at_the_maximum() -> None:
     assert (
-        effective_scene_count(
-            1_000_000, max_scenes_per_segment=6, min_scene_duration_ms=1_500
-        )
-        == 6
+        effective_scene_count(1_000_000, max_scenes_per_segment=6, min_scene_duration_ms=1_500) == 6
     )
 
 
 def test_a_short_segment_gets_fewer_than_the_maximum() -> None:
     # 5000ms / 1500ms = 3 (floor), well under the cap of 6.
-    assert (
-        effective_scene_count(5_000, max_scenes_per_segment=6, min_scene_duration_ms=1_500) == 3
-    )
+    assert effective_scene_count(5_000, max_scenes_per_segment=6, min_scene_duration_ms=1_500) == 3
 
 
 def test_a_segment_too_short_for_even_one_scene_returns_zero() -> None:
     """The degenerate case (spec section 11): never squeeze a scene under the
     minimum - a segment shorter than the floor gets no scenes at all.
     """
-    assert (
-        effective_scene_count(1_000, max_scenes_per_segment=6, min_scene_duration_ms=1_500) == 0
-    )
+    assert effective_scene_count(1_000, max_scenes_per_segment=6, min_scene_duration_ms=1_500) == 0
 
 
 def test_a_segment_exactly_at_the_floor_gets_exactly_one_scene() -> None:
-    assert (
-        effective_scene_count(1_500, max_scenes_per_segment=6, min_scene_duration_ms=1_500) == 1
-    )
+    assert effective_scene_count(1_500, max_scenes_per_segment=6, min_scene_duration_ms=1_500) == 1
 
 
 def test_a_segment_one_millisecond_short_of_the_floor_gets_zero_scenes() -> None:
-    assert (
-        effective_scene_count(1_499, max_scenes_per_segment=6, min_scene_duration_ms=1_500) == 0
-    )
+    assert effective_scene_count(1_499, max_scenes_per_segment=6, min_scene_duration_ms=1_500) == 0
 
 
 @pytest.mark.parametrize(
