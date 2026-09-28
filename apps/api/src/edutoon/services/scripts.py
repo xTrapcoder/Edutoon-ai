@@ -77,10 +77,11 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
+import structlog
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from edutoon.core.config import Settings, get_settings
@@ -117,11 +118,20 @@ from edutoon.services import audit_logs as audit_logs_service
 from edutoon.services import projects as projects_service
 from edutoon.services.job_errors import describe_job_failure
 
+log = structlog.get_logger()
+
 GENERATE_SCRIPT_JOB_KIND = "generate_script"
 
 AUDIT_ENTITY_TYPE = "script"
 AUDIT_ACTION_ENQUEUED = "script.generation_enqueued"
 AUDIT_ACTION_APPROVED = "script.approved"
+AUDIT_ACTION_RECOVERED = "script.generation_recovered"
+
+STALE_GENERATION_ERROR = (
+    "The worker stopped before finishing this script generation, so it was marked as "
+    "failed. The previously approved script, if any, was never touched - write a new "
+    "version to try again."
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -187,6 +197,8 @@ async def enqueue_script_generation(
     if existing_job is not None:
         script = await _script_from_job(session, existing_job)
         return ScriptGenerationEnqueued(script=script, job=existing_job, replayed=True)
+
+    await _recover_stale_generations(session, project_id=project_id)
 
     settings = get_settings()
 
@@ -256,6 +268,62 @@ async def _script_from_job(session: AsyncSession, job: JobRecord) -> ScriptRecor
     if script is None:  # the job outlived its script - should never happen
         raise NotFoundError(f"Script {script_id} not found.")
     return script
+
+
+async def _recover_stale_generations(session: AsyncSession, *, project_id: UUID) -> None:
+    """Fail any ``generate_script`` job a crashed worker left ``running``, so it cannot
+    block the project for ever. Mirrors
+    ``topic_extraction._recover_stale_extractions`` /
+    ``claim_extraction._recover_stale_extractions`` exactly: this handler also commits
+    its "running" transition immediately and releases the job row's claim lock before
+    generation begins (see the module docstring, "Progress"), so - like topic and claim
+    extraction, unlike every other job kind - a crashed worker leaves nothing holding
+    the row. Without this, that job sits ``running`` for ever and (pre-migration-0013)
+    would also have permanently blocked a fresh generation via
+    ``uq_scripts_project_id_active``.
+
+    A job that is genuinely being worked on is never touched: recovery needs it to be
+    older than ``SCRIPT_GENERATION_STALE_AFTER_SECONDS`` *and* not held by a live worker
+    (see ``jobs.fail_stale_running``).
+
+    Unlike the extraction services, ``enqueue_script_generation`` does not refuse a
+    second concurrent generation (Phase 7 deliberately allows a fresh ``pending``
+    generation to coexist with the still-``approved`` script while it runs) - this call
+    only recovers abandoned jobs, it never blocks a new one.
+    """
+    stale_after = get_settings().SCRIPT_GENERATION_STALE_AFTER_SECONDS
+    recovered = await jobs_repo.fail_stale_running(
+        session,
+        project_id=project_id,
+        kind=GENERATE_SCRIPT_JOB_KIND,
+        stale_after=timedelta(seconds=stale_after),
+        error=STALE_GENERATION_ERROR,
+    )
+    for job in recovered:
+        log.warning(
+            "scripts.stale_generation_recovered",
+            job_id=str(job.id),
+            project_id=str(project_id),
+            started_at=job.started_at.isoformat() if job.started_at else None,
+            stale_after_seconds=stale_after,
+        )
+        script_id_raw = job.payload.get("script_id")
+        if script_id_raw is not None:
+            await scripts_repo.set_status(
+                session,
+                project_id=project_id,
+                script_id=UUID(str(script_id_raw)),
+                status="failed",
+            )
+        await audit_logs_service.record_audit_log(
+            session,
+            action=AUDIT_ACTION_RECOVERED,
+            entity_type=AUDIT_ENTITY_TYPE,
+            entity_id=job.id,
+            project_id=project_id,
+            actor_type="system",
+            context={"job_id": str(job.id), "stale_after_seconds": stale_after},
+        )
 
 
 # --- run (background job) --------------------------------------------------------

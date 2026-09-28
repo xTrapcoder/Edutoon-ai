@@ -158,6 +158,12 @@ class Settings(BaseSettings):
     # than a whole script, so passing it never approaches a single huge call.
     CONTINUITY_CONTEXT_CHARS: int = Field(default=600, ge=1)
 
+    # Mirrors TOPIC_EXTRACTION_STALE_AFTER_SECONDS / CLAIM_EXTRACTION_STALE_AFTER_SECONDS:
+    # how long a generate_script job may sit "running" with no worker holding it (the
+    # handler releases its row lock immediately, same as topic/claim extraction) before it
+    # is treated as abandoned by a crashed worker and failed.
+    SCRIPT_GENERATION_STALE_AFTER_SECONDS: int = Field(default=3600, ge=60)
+
     @model_validator(mode="after")
     def _section_duration_bounds_are_consistent(self) -> Settings:
         if self.MAX_SECTION_DURATION_MS < self.MIN_SECTION_DURATION_MS:
