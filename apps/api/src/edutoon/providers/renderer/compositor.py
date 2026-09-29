@@ -1,7 +1,7 @@
 """The Pillow scene compositor: draws one Phase 9 scene, frame by frame.
 
 A scene is turned into a small list of :class:`Layer` objects (a panel, a title, a bullet, a
-placeholder ...), each a pre-drawn RGBA picture with its own start time. A frame is then just
+diagram box ...), each a pre-drawn RGBA picture with its own start time. A frame is then just
 the background with each layer pasted at the opacity / offset / reveal width the animation
 functions in ``domain.render_animation`` give for that frame's local time. Nothing is drawn
 per frame except a handful of pastes, so a whole scene costs roughly as much as its distinct
@@ -9,10 +9,12 @@ frames, and consecutive frames whose animation state is identical are the very s
 (:meth:`SceneCompositor.state_key`) - a still scene is drawn once.
 
 **All six Phase 9 templates render from text alone.** ``title_card``, ``bullet_points`` and
-``formula_or_code`` never had an illustration; the other three show a deliberate *illustration
-placeholder* - a labelled "Illustration" panel with the scene's own description and subject
-labels - so a missing picture reads as intended, never as a broken image. No image is ever
-generated (Phase 10 is out of image generation).
+``formula_or_code`` never had an illustration. The other three - ``labelled_diagram``,
+``split_text_illustration``, ``full_bleed_illustration`` - draw a *procedural visual* (Phase 11:
+process flow, cycle, hierarchy, comparison, labelled components - see ``domain.visual``) when the
+scene has a valid one that fits, and otherwise a deliberate text fallback (numbered parts, the
+sentence at full width, or a statement card). None of them ever draws an empty panel or implies a
+picture exists; no image is ever generated.
 
 Layout follows ``domain.storyboard_template.layout_for`` (the arrangement tag chosen for the
 scene's orientation), and every size is derived from the canvas so the same code serves
@@ -22,7 +24,7 @@ scene's orientation), and every size is derived from the canvas so the same code
 from __future__ import annotations
 
 import threading
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -33,6 +35,7 @@ from PIL import Image, ImageDraw, ImageFont
 from edutoon.domain import render_animation as anim
 from edutoon.domain.storyboard_template import layout_for
 from edutoon.domain.text_glyphs import Primary, plan_runs
+from edutoon.domain.visual_layout import Rect, Units, VisualLayout
 
 _FONT_DIR = Path(__file__).parent / "assets" / "fonts"
 _SANS = _FONT_DIR / "NotoSans-VF.ttf"
@@ -411,32 +414,6 @@ def _dashed_outline(
         draw.arc(box, start, start + 90, fill=fill, width=stroke)
 
 
-def _icon(size: int, colour_a: tuple[int, int, int], colour_b: tuple[int, int, int]) -> Image.Image:
-    """A small "picture" glyph - frame, sun, two hills - drawn from shapes (no font glyph and no
-    image file involved)."""
-    big = size * SUPERSAMPLE
-    image = Image.new("RGBA", (big, big), (*colour_a, 0))
-    draw = ImageDraw.Draw(image)
-    stroke = max(2, big // 16)
-    inset = stroke // 2
-    draw.rounded_rectangle(
-        (inset, inset, big - 1 - inset, big - 1 - inset),
-        big // 6,
-        outline=(*colour_a, 255),
-        width=stroke,
-    )
-    draw.ellipse((big * 0.60, big * 0.16, big * 0.82, big * 0.38), fill=(*colour_b, 255))
-    draw.polygon(
-        [(big * 0.12, big * 0.84), (big * 0.40, big * 0.42), (big * 0.66, big * 0.84)],
-        fill=(*colour_a, 255),
-    )
-    draw.polygon(
-        [(big * 0.46, big * 0.84), (big * 0.68, big * 0.56), (big * 0.90, big * 0.84)],
-        fill=(*colour_b, 255),
-    )
-    return image.resize((size, size), Image.Resampling.LANCZOS)
-
-
 def pill(
     text: str,
     *,
@@ -493,95 +470,6 @@ def pill(
     elif dot:
         d = round(size * 0.42)
         draw.ellipse((pad, (height - d) // 2, pad + d, (height + d) // 2), fill=(*dot, 255))
-    return base
-
-
-def illustration_placeholder(
-    width: int,
-    height: int,
-    *,
-    description: str,
-    subject_labels: Sequence[str],
-    unit: Callable[[float], int],
-    compact: bool = False,
-) -> Image.Image:
-    """The deliberate stand-in for a picture that does not exist (yet): a soft panel with a
-    dashed edge, a picture glyph, the word "Illustration", the scene's own description and its
-    subject labels. It states plainly that a figure belongs here, so the frame never looks
-    broken and never shows a blank hole."""
-    radius = unit(28)
-    base = panel(
-        width,
-        height,
-        radius,
-        ACCENT_SOFT,
-        outline=ACCENT_LINE,
-        outline_width=max(2, unit(4)),
-        dashed=True,
-    )
-    pad = unit(36)
-    inner_w = width - 2 * pad
-
-    icon_size = max(unit(56), min(round(min(width, height) * 0.2), unit(180)))
-    heading = fit_text(
-        "ILLUSTRATION",
-        max_width=inner_w,
-        max_height=unit(60),
-        max_size=unit(28),
-        min_size=12,
-        weight=700,
-    )
-    chips = [label for label in subject_labels if label.strip()][:3]
-    chip_size = unit(26)
-    chip_images = (
-        []
-        if compact
-        else [
-            pill(
-                label,
-                size=chip_size,
-                max_width=inner_w,
-                fill=WHITE,
-                ink=INK_MUTED,
-                border=ACCENT_LINE,
-                dot=None,
-                weight=500,
-            )
-            for label in chips
-        ]
-    )
-    chips_h = (max(c.height for c in chip_images) + unit(10)) if chip_images else 0
-
-    gap = unit(18)
-    desc_max_h = max(height - 2 * pad - icon_size - heading.height - chips_h - 3 * gap, unit(40))
-    description_fit = fit_text(
-        description,
-        max_width=inner_w,
-        max_height=desc_max_h,
-        max_size=unit(40),
-        min_size=max(12, unit(20)),
-        weight=500,
-        gap_ratio=0.0,
-    )
-    total = icon_size + gap + heading.height + gap + description_fit.height
-    if chip_images:
-        total += gap + chips_h
-    top = max(pad, (height - total) // 2)
-
-    icon = _icon(icon_size, (108, 132, 221), (157, 176, 238))
-    base.alpha_composite(icon, ((width - icon_size) // 2, top))
-    y = top + icon_size + gap
-    base.alpha_composite(text_layer(heading, ACCENT_DEEP, width=inner_w, align="center"), (pad, y))
-    y += heading.height + gap
-    base.alpha_composite(text_layer(description_fit, INK, width=inner_w, align="center"), (pad, y))
-    y += description_fit.height + gap
-    if chip_images:
-        spacing = unit(14)
-        row_w = sum(c.width for c in chip_images) + spacing * (len(chip_images) - 1)
-        x = (width - row_w) // 2
-        for chip in chip_images:
-            base.alpha_composite(chip, (max(x, pad // 2), y))
-            x += chip.width + spacing
     return base
 
 
@@ -645,7 +533,7 @@ class SceneCompositor:
         return (
             description.strip()
             if isinstance(description, str) and description.strip()
-            else "A figure for this idea",
+            else "Key idea",
             [label for label in labels if isinstance(label, str)]
             if isinstance(labels, list)
             else [],
@@ -780,82 +668,199 @@ class SceneCompositor:
             self._add(card, mx, row_y, start)
             row_y += card_h + gap
 
-    def _panel_layer(
-        self, x: int, y: int, w: int, h: int, start: float, *, compact: bool = False
-    ) -> None:
-        description, labels = self._illustration()
-        self._add(
-            illustration_placeholder(
-                w, h, description=description, subject_labels=labels, unit=self.u, compact=compact
-            ),
-            x,
-            y,
-            start,
+    # -- illustrated templates: a procedural visual, or a deterministic text fallback -----------
+    #
+    # ``labelled_diagram``, ``split_text_illustration`` and ``full_bleed_illustration`` may carry
+    # a procedural visual (``domain.visual``): one of five diagram forms laid out by
+    # ``domain.visual_layout`` and painted by ``visual_scene``. Without one - or if it does not
+    # fit its region cleanly (``LayoutOverflow``) - each draws a deliberate text fallback, never
+    # an empty panel and never anything that implies a picture exists.
+
+    def _visual_layout(self, region: Rect) -> VisualLayout | None:
+        """The scene's visual laid out in ``region``, or ``None`` if it has no valid visual or
+        the visual does not fit (the caller then draws the fallback)."""
+        from edutoon.domain.visual import visual_of
+        from edutoon.domain.visual_layout import LayoutOverflow, layout_visual
+        from edutoon.providers.renderer.visual_text import PillowTextMeasurer
+
+        visual = visual_of(self.content)
+        if visual is None:
+            return None
+        try:
+            return layout_visual(
+                visual,
+                orientation=self.orientation,
+                region=region,
+                short_side=min(self.width, self.height),
+                measurer=PillowTextMeasurer(),
+            )
+        except LayoutOverflow:
+            return None
+
+    def _paint_visual(self, layout: VisualLayout) -> None:
+        from edutoon.providers.renderer.visual_scene import paint_visual
+
+        starts = anim.item_reveal_starts(self.duration_ms, layout.steps)
+        units = Units(min(self.width, self.height))
+        self.layers.extend(paint_visual(layout, units=units, starts=starts))
+
+    def _idea(self) -> str:
+        """The words a text fallback is built on: the caption if there is one, else the
+        illustration's description. Never labelled as a picture."""
+        caption = self._string("caption")
+        if caption:
+            return caption
+        description, _labels = self._illustration()
+        return description
+
+    def _chips(self, top: int, centre_x: int, max_width: int, start: float) -> None:
+        """The illustration's subject labels as small outlined pills, centred on ``centre_x``."""
+        _description, labels = self._illustration()
+        shown = [label for label in labels if label.strip()][:3]
+        spacing = self.u(16)
+        share = (max_width - spacing * max(0, len(shown) - 1)) // max(1, len(shown))
+        images = [
+            pill(
+                label,
+                size=self.u(30),
+                max_width=share,
+                fill=WHITE,
+                ink=INK_MUTED,
+                border=ACCENT_LINE,
+                dot=None,
+                weight=500,
+            )
+            for label in shown
+        ]
+        if not images:
+            return
+        row = sum(i.width for i in images) + spacing * (len(images) - 1)
+        x = centre_x - row // 2
+        for image in images:
+            self._add(image, max(x, self.margin_x // 2), top, start)
+            x += image.width + spacing
+
+    def _chips_height(self) -> int:
+        _description, labels = self._illustration()
+        return (self.u(30) * 2 + self.u(40)) if any(label.strip() for label in labels) else 0
+
+    def _statement(self, x: int, y: int, w: int, h: int, *, start: float = 0) -> None:
+        """A deliberate, full-strength statement of the idea - large text on a solid panel with
+        an accent bar - occupying ``x, y, w, h``; the subject labels sit beneath it."""
+        u = self.u
+        self._add(panel(w, h, u(48), ACCENT, gradient_to=ACCENT_DEEP), x, y, start, slide=False)
+        inner_w = w - 2 * u(80 if self.vertical else 120)
+        chips_h = self._chips_height()
+        text = fit_text(
+            self._idea(),
+            max_width=inner_w,
+            max_height=round(h * 0.55),
+            max_size=u(92 if self.vertical else 96),
+            min_size=u(36),
+            weight=700,
+            gap_ratio=0.0,
         )
+        bar_h, gap = u(10), u(34)
+        total = bar_h + gap + text.height + ((gap + chips_h) if chips_h else 0)
+        top = y + (h - total) // 2
+        self._add(panel(u(120), bar_h, bar_h // 2, WARM), x + (w - u(120)) // 2, top, start + 200)
+        top += bar_h + gap
+        self._add(
+            text_layer(text, WHITE, width=inner_w, align="center"),
+            x + (w - inner_w) // 2,
+            top,
+            start + 300,
+        )
+        if chips_h:
+            self._chips(top + text.height + gap, x + w // 2, inner_w, start + 800)
+
+    def _parts_fallback(self) -> None:
+        """``labelled_diagram`` without a usable visual: its labels as numbered parts, honestly
+        a list of labelled parts (their positions are not used, and no figure is implied)."""
+        raw = self.content.get("labels")
+        labels = [
+            str(item.get("text", "")).strip()
+            for item in (raw if isinstance(raw, list) else [])
+            if isinstance(item, Mapping) and str(item.get("text", "")).strip()
+        ]
+        w, h, u = self.width, self.height, self.u
+        mx, my = self.margin_x, self.margin_y
+        if not labels:
+            self._statement(u(40), u(40), w - 2 * u(40), h - 2 * u(40))
+            return
+        content_w = w - 2 * mx
+        columns = 1 if self.vertical or len(labels) <= 3 else 2
+        gap_x, gap_y = u(60), u(30 if self.vertical else 36)
+        column_w = min((content_w - (columns - 1) * gap_x) // columns, u(760))
+        size = u(62 if self.vertical else 56)
+        starts = anim.item_reveal_starts(self.duration_ms, len(labels))
+        images = [
+            pill(text, size=size, max_width=column_w, badge=str(index + 1), weight=600)
+            for index, text in enumerate(labels)
+        ]
+        cell_w = max(image.width for image in images)  # centre what is actually drawn
+        block_w = columns * cell_w + (columns - 1) * gap_x
+        left = mx + (content_w - block_w) // 2
+        rows = -(-len(images) // columns)
+        row_h = [
+            max(i.height for i in images[r * columns : (r + 1) * columns]) for r in range(rows)
+        ]
+        title_h = 0
+        _description, subject = self._illustration()
+        title = subject[0].strip() if subject and subject[0].strip() else ""
+        if title:
+            fitted = fit_text(
+                title,
+                max_width=content_w,
+                max_height=round(h * 0.16),
+                max_size=u(72),
+                min_size=u(36),
+                weight=750,
+                gap_ratio=0.0,
+            )
+            self._add(text_layer(fitted, INK, width=content_w), mx, my, 0)
+            self._add(panel(u(140), u(10), u(5), WARM), mx, my + fitted.height + u(16), 150)
+            title_h = fitted.height + u(16) + u(10) + u(40)
+        block_h = sum(row_h) + gap_y * (rows - 1)
+        top = my + title_h + max((h - my - (my + title_h) - block_h) // 2, 0)
+        for index, image in enumerate(images):
+            row, column = divmod(index, columns)
+            x = left + column * (cell_w + gap_x)
+            y = top + sum(row_h[:row]) + gap_y * row
+            self._add(image, x, y, starts[index])
+
+    def _text_collapse(self) -> None:
+        """``split_text_illustration`` without a usable visual: the sentence takes the whole
+        width (no empty panel beside it), with the subject labels beneath."""
+        w, h, u = self.width, self.height, self.u
+        mx, my = self.margin_x, self.margin_y
+        text_w = min(w - 2 * mx, u(1240))
+        chips_h = self._chips_height()
+        fitted = fit_text(
+            self._string("text"),
+            max_width=text_w,
+            max_height=h - 2 * my - chips_h - u(60),
+            max_size=u(80 if self.vertical else 84),
+            min_size=u(32),
+            weight=500,
+            gap_ratio=0.0,
+        )
+        total = fitted.height + ((u(50) + chips_h) if chips_h else 0)
+        top = (h - total) // 2
+        left = (w - text_w) // 2
+        self._add(panel(u(10), fitted.height, u(5), WARM), left - u(26), top, 100, slide=False)
+        self._add(text_layer(fitted, INK, width=text_w), left, top, 350)
+        if chips_h:
+            self._chips(top + fitted.height + u(50), w // 2, text_w, 900)
 
     def _build_labelled_diagram(self) -> None:
-        w, h, u = self.width, self.height, self.u
-        raw = self.content.get("labels")
-        labels = (
-            [item for item in raw if isinstance(item, Mapping)] if isinstance(raw, list) else []
-        )
-        starts = anim.item_reveal_starts(self.duration_ms, len(labels))
-        size = u(34)
-        if self.vertical:
-            mx = self.margin_x
-            panel_h = round(h * 0.5)
-            self._panel_layer(mx, self.margin_y, w - 2 * mx, panel_h, 0, compact=True)
-            y = self.margin_y + panel_h + u(44)
-            gap = u(22)
-            for index, (label, start) in enumerate(zip(labels, starts, strict=True)):
-                image = pill(
-                    str(label.get("text", "")),
-                    size=size,
-                    max_width=w - 2 * mx,
-                    badge=str(index + 1),
-                )
-                self._add(image, mx, y, start)
-                y += image.height + gap
-            return
-        panel_w, panel_h = round(w * 0.42), round(h * 0.56)
-        px, py = (w - panel_w) // 2, (h - panel_h) // 2
-        self._panel_layer(px, py, panel_w, panel_h, 0, compact=True)
-        side_w = px - self.margin_x - u(30)
-        groups: dict[str, list[tuple[Mapping[str, Any], float]]] = {}
-        for label, start in zip(labels, starts, strict=True):
-            groups.setdefault(str(label.get("position", "centre")), []).append((label, start))
-        for position, members in groups.items():
-            images = [
-                (
-                    pill(
-                        str(label.get("text", "")),
-                        size=size,
-                        max_width=side_w if position in ("left", "right") else round(panel_w * 0.9),
-                    ),
-                    start,
-                )
-                for label, start in members
-            ]
-            if position in ("left", "right"):
-                total = sum(img.height for img, _ in images) + u(22) * (len(images) - 1)
-                y = py + (panel_h - total) // 2
-                for img, at in images:
-                    x = self.margin_x if position == "left" else w - self.margin_x - img.width
-                    self._add(img, x, y, at)
-                    y += img.height + u(22)
-            elif position in ("top", "bottom"):
-                total = sum(img.width for img, _ in images) + u(22) * (len(images) - 1)
-                x = (w - total) // 2
-                for img, at in images:
-                    y = py - img.height - u(26) if position == "top" else py + panel_h + u(26)
-                    self._add(img, x, y, at)
-                    x += img.width + u(22)
-            else:  # centre: over the lower part of the figure
-                total = sum(img.height for img, _ in images) + u(16) * (len(images) - 1)
-                y = py + panel_h - total - u(34)
-                for img, at in images:
-                    self._add(img, px + (panel_w - img.width) // 2, y, at)
-                    y += img.height + u(16)
+        w, h = self.width, self.height
+        mx, my = self.margin_x, self.margin_y
+        layout = self._visual_layout(Rect(mx, my, w - 2 * mx, h - 2 * my))
+        if layout is not None:
+            self._paint_visual(layout)
+        else:
+            self._parts_fallback()
 
     def _build_split_text_illustration(self) -> None:
         w, h, u = self.width, self.height, self.u
@@ -863,7 +868,11 @@ class SceneCompositor:
         text = self._string("text")
         if self.vertical:
             panel_h = round(h * 0.42)
-            self._panel_layer(mx, my, w - 2 * mx, panel_h, 0)
+            layout = self._visual_layout(Rect(mx, my, w - 2 * mx, panel_h))
+            if layout is None:
+                self._text_collapse()
+                return
+            self._paint_visual(layout)
             region_y = my + panel_h + u(50)
             region_h = h - my - region_y
             fitted = fit_text(
@@ -883,6 +892,11 @@ class SceneCompositor:
             )
             return
         col_w = round((w - 2 * mx) * 0.46)
+        px = mx + col_w + u(70)
+        layout = self._visual_layout(Rect(px, my, w - mx - px, h - 2 * my))
+        if layout is None:
+            self._text_collapse()
+            return
         fitted = fit_text(
             text,
             max_width=col_w,
@@ -895,28 +909,41 @@ class SceneCompositor:
         top = (h - fitted.height) // 2
         self._add(panel(u(10), fitted.height, u(5), WARM), mx - u(26), top, 100, slide=False)
         self._add(text_layer(fitted, INK, width=col_w), mx, top, 350)
-        px = mx + col_w + u(70)
-        self._panel_layer(px, my, w - mx - px, h - 2 * my, 200)
+        self._paint_visual(layout)
 
     def _build_full_bleed_illustration(self) -> None:
         w, h, u = self.width, self.height, self.u
-        inset = u(40)
-        self._panel_layer(inset, inset, w - 2 * inset, h - 2 * inset, 0)
+        mx, my = self.margin_x, self.margin_y
         caption = self._string("caption")
-        if caption:
-            max_w = round(w * (0.86 if self.vertical else 0.66))
-            image = pill(
+        pill_image = (
+            pill(
                 caption,
                 size=u(40),
-                max_width=max_w,
+                max_width=round(w * (0.86 if self.vertical else 0.66)),
                 fill=INK,
                 ink=WHITE,
                 border=None,
                 dot=None,
                 alpha=235,
             )
-            y = h - (u(300) if self.vertical else u(170)) - image.height // 2
-            self._add(image, (w - image.width) // 2, y, 700)
+            if caption
+            else None
+        )
+        caption_y = 0
+        region_bottom = h - my
+        if pill_image is not None:
+            caption_y = h - (u(300) if self.vertical else u(170)) - pill_image.height // 2
+            region_bottom = min(region_bottom, caption_y - u(28))
+        region = Rect(mx, my, w - 2 * mx, region_bottom - my)
+        layout = self._visual_layout(region) if region.h > u(300) else None
+        if layout is None:
+            # The statement card: the caption (or the description) as the whole scene.
+            inset = u(40)
+            self._statement(inset, inset, w - 2 * inset, h - 2 * inset)
+            return
+        self._paint_visual(layout)
+        if pill_image is not None:
+            self._add(pill_image, (w - pill_image.width) // 2, caption_y, 700)
 
     def _build_formula_or_code(self) -> None:
         w, h, u = self.width, self.height, self.u

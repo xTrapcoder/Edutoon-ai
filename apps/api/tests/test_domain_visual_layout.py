@@ -504,9 +504,9 @@ def test_a_word_wider_than_its_box_is_an_overflow_never_a_split_or_a_cut():
 def test_it_retries_at_smaller_type_and_reports_which_size_it_used():
     spec = flow(4)
     roomy = lay(spec)
-    assert roomy.font_percent == 100
+    assert roomy.font_percent == vl.FONT_PERCENTS[0]  # as big as the ladder allows
     cramped = lay(spec, measurer=FixedMeasurer(max_size=vl.Units(1080).u(33)))  # 36 px does not fit
-    assert cramped.font_percent < 100
+    assert cramped.font_percent < roomy.font_percent
     assert_clean(cramped, region_for("horizontal"))
     for box in cramped.boxes:
         for placed in box.texts:
@@ -519,7 +519,7 @@ def test_text_is_never_drawn_below_a_roles_minimum_even_if_that_means_overflow()
 
 
 def test_the_ladder_is_the_documented_one_and_every_role_has_a_floor_below_its_size():
-    assert vl.FONT_PERCENTS == (100, 92, 84, 76)
+    assert vl.FONT_PERCENTS == (140, 125, 110, 100, 92, 84, 76)
     for role, (base, smallest, weight) in vl.ROLE_SPECS.items():
         assert smallest <= base and 100 <= weight <= 900, role
     assert vl.ROLE_SPECS["label"][1] >= 30 and vl.ROLE_SPECS["detail"][1] >= 24
@@ -548,7 +548,9 @@ def test_the_measurer_is_asked_at_the_roles_size_and_weight():
 
     lay(flow(2, title="T"), measurer=Spy())
     sizes = {size for size, _w, _l in seen}
-    assert vl.Units(1080).u(44) in sizes and vl.Units(1080).u(36) in sizes
+    top = vl.FONT_PERCENTS[0]  # the first rung the ladder tries
+    assert vl.Units(1080).u(44 * top // 100) in sizes  # the title role's reference size
+    assert vl.Units(1080).u(36 * top // 100) in sizes  # the label role's
     assert {weight for _s, weight, _l in seen} == {700, 600}
 
 

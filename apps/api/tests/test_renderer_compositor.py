@@ -12,7 +12,6 @@ import pytest
 
 from edutoon.domain.storyboard_template import TEMPLATES, validate_scene_content
 from edutoon.providers.renderer.compositor import (
-    ACCENT_SOFT,
     SceneCompositor,
     background,
     fit_text,
@@ -54,7 +53,10 @@ def _differs_from_background(image) -> np.ndarray:
 def test_every_template_draws_something_readable_from_text_alone(template, orientation):
     frame = _compositor(template, orientation).frame(DURATION_MS / 2)
     changed = _differs_from_background(frame)
-    assert changed.mean() > 0.04, f"{template}/{orientation} looks blank"
+    # A sentence set large on an otherwise empty frame is deliberately sparse; every other
+    # template fills more of it.
+    floor = 0.01 if template == "split_text_illustration" else 0.04
+    assert changed.mean() > floor, f"{template}/{orientation} looks blank"
     # More than a flat fill: real content has many distinct colours (text, borders, shapes).
     assert len(np.unique(_pixels(frame).reshape(-1, 3), axis=0)) > 20
 
@@ -74,29 +76,6 @@ def test_nothing_touches_the_edge_of_the_frame(template, orientation):
 
 
 @pytest.mark.parametrize("orientation", ["horizontal", "vertical"])
-@pytest.mark.parametrize("template", sorted(ILLUSTRATED))
-def test_a_missing_illustration_shows_a_deliberate_placeholder(template, orientation):
-    frame = _compositor(template, orientation).frame(DURATION_MS / 2)
-    pixels = _pixels(frame)
-    soft = np.all(pixels == np.array(ACCENT_SOFT), axis=2)
-    assert soft.mean() > 0.08, "the placeholder panel is not visible"
-
-
-def test_the_description_and_subject_labels_are_drawn_in_the_placeholder():
-    content = {
-        "illustration": {"description": "A leaf in sunlight", "subject_labels": ["leaf", "sun"]},
-        "caption": "Light becomes food",
-    }
-    with_labels = _compositor("full_bleed_illustration", "horizontal", content).frame(4_000)
-    without = _compositor(
-        "full_bleed_illustration",
-        "horizontal",
-        {"illustration": {"description": "A leaf in sunlight"}, "caption": "Light becomes food"},
-    ).frame(4_000)
-    assert not np.array_equal(_pixels(with_labels), _pixels(without))
-
-
-@pytest.mark.parametrize("orientation", ["horizontal", "vertical"])
 @pytest.mark.parametrize("template", sorted(TEMPLATES))
 def test_a_scene_dips_to_the_background_at_both_ends(template, orientation):
     compositor = _compositor(template, orientation)
@@ -109,7 +88,7 @@ def test_drawing_is_deterministic(template):
     first = _compositor(template, "horizontal")
     second = _compositor(template, "horizontal")
     for t in (0, 700, 2_345, 5_000, 7_900):
-        assert first.frame(t).tobytes() == second.frame(t).tobytes()
+        assert first.frame(t).tobytes() == second.frame(t).tobytes(), "drawing is not deterministic"
         assert first.state_key(t) == second.state_key(t)
 
 

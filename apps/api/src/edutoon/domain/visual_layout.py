@@ -22,7 +22,9 @@ draws the deterministic fallback. Text is **never** ellipsised, trimmed or split
 the measurer reports "does not fit" instead.
 
 **Each orientation is designed, not scaled.** Horizontal and vertical have separate layout
-functions per visual type (see :data:`_LAYOUTS`):
+functions per visual type (see :data:`_LAYOUTS`). Inside a *narrow* region (the half of a landscape
+frame a split scene gives a visual) a horizontal design that would be cramped uses its form's
+column-oriented design instead (a flow wraps into shorter rows, a hub becomes subject-above-parts):
 
 ======================  ==============================  ===================================
 type                    horizontal                      vertical
@@ -164,9 +166,10 @@ ROLE_SPECS: Final[dict[str, tuple[int, int, int]]] = {
     "subject": (42, 32, 700),
     "relation": (30, 26, 700),
 }
-# The type-size ladder: every role is tried at these percentages of its reference size (never
-# below its own minimum) before a visual is given up on.
-FONT_PERCENTS: Final = (100, 92, 84, 76)
+# The type-size ladder: every role is tried at these percentages of its reference size, largest
+# first, so a visual is drawn as big as it cleanly fits; it is given up on only when even the
+# smallest rung (never below a role's own minimum) does not fit.
+FONT_PERCENTS: Final = (140, 125, 110, 100, 92, 84, 76)
 
 # reference-pixel design constants
 PAD_X: Final = 22
@@ -358,6 +361,8 @@ class _Ctx:
     def placed(
         self, role: str, block: TextBlock, x: int, y: int, width: int, align: str = "left"
     ) -> PlacedText:
+        if block.width > width:  # never hand the painter text wider than the room it is given
+            raise _FitError(f"a {role} is wider than its slot")
         return PlacedText(
             role=role,
             lines=block.lines,
@@ -479,8 +484,9 @@ def _text_box(
     step: int,
     align: str = "center",
     accent: bool = False,
+    pad: int | None = None,
 ) -> LayoutBox:
-    pad_x = ctx.u(PAD_X)
+    pad_x = ctx.u(PAD_X) if pad is None else pad
     top = rect.y + (rect.h - block.height) // 2
     text = ctx.placed(role, block, rect.x + pad_x, top, rect.w - 2 * pad_x, align)
     return LayoutBox(kind=kind, rect=rect, texts=(text,), step=step, accent=accent)
@@ -502,16 +508,25 @@ def _need(ok: bool, why: str) -> None:
 # --- process_flow ------------------------------------------------------------------------------
 
 
-def _flow_rows(count: int) -> list[int]:
-    """Nodes per row for a horizontal flow: up to four in one row, otherwise rows of three."""
-    if count <= 4:
-        return [count]
-    return [3, count - 3]
+def _flow_rows(ctx: _Ctx, count: int) -> list[int]:
+    """Nodes per row for a horizontal flow: as many per row as the region allows - up to four
+    (three when there are more than four steps) - each at least 260 reference pixels wide, so a
+    narrow region (the half a split scene gives a visual) wraps into more, shorter rows."""
+    gap_x = ctx.u(96)
+    columns = 1
+    for candidate in range(min(4 if count <= 4 else 3, count), 0, -1):
+        if (ctx.body.w - (candidate - 1) * gap_x) // candidate >= ctx.u(260):
+            columns = candidate
+            break
+    rows = [columns] * (count // columns)
+    if count % columns:
+        rows.append(count % columns)
+    return rows
 
 
 def _flow_horizontal(ctx: _Ctx, visual: ProcessFlow) -> _Draft:
     body, draft = ctx.body, _Draft()
-    rows = _flow_rows(len(visual.nodes))
+    rows = _flow_rows(ctx, len(visual.nodes))
     columns = rows[0]
     gap_x, gap_y = ctx.u(96), ctx.u(90)
     node_w = min(ctx.u(420), (body.w - (columns - 1) * gap_x) // columns)
@@ -607,7 +622,7 @@ def _flow_vertical(ctx: _Ctx, visual: ProcessFlow) -> _Draft:
 def _cycle_horizontal(ctx: _Ctx, visual: Cycle) -> _Draft:
     body, draft = ctx.body, _Draft()
     count = len(visual.nodes)
-    node_w = min(ctx.u(360), body.w // 3)
+    node_w = min(ctx.u(460), body.w // 3)
     contents = [_measure_node(ctx, node, node_w, True) for node in visual.nodes]
     node_h = max(_node_height(ctx, c, True) for c in contents)
     radius_x = (body.w - node_w) // 2 - 1
@@ -708,7 +723,8 @@ def _hierarchy_horizontal(ctx: _Ctx, visual: Hierarchy) -> _Draft:
     place(0)
     slot_w = body.w // leaves
     node_w = min(ctx.u(340), slot_w - ctx.u(24))
-    _need(node_w >= ctx.u(150), "the tree is too wide")
+    if node_w < ctx.u(150):  # too narrow for a tree: the same hierarchy as an outline
+        return _hierarchy_vertical(ctx, visual)
     left = body.x + (body.w - leaves * slot_w) // 2
 
     levels = [visual.level_of(i) for i in range(len(visual.nodes))]
@@ -815,7 +831,8 @@ def _comparison_horizontal(ctx: _Ctx, visual: Comparison) -> _Draft:
     gap = ctx.u(120)
     column_w = (body.w - (count - 1) * gap) // count
     inner = column_w - 2 * ctx.u(PAD_X)
-    _need(inner >= ctx.u(160), "the columns are too narrow")
+    if inner < ctx.u(160):  # too narrow for columns: stack them as bands
+        return _comparison_vertical(ctx, visual)
     headings = [ctx.text("heading", c.heading, inner, 2) for c in visual.columns]
     heading_h = max(_text_box_height(ctx, b) for b in headings)
     rows = max(len(c.points) for c in visual.columns)
@@ -848,11 +865,11 @@ def _comparison_horizontal(ctx: _Ctx, visual: Comparison) -> _Draft:
         if visual.relation == "before_after":
             draft.connect("arrow", [(left.right, left.cy), (right.x, left.cy)], 0)
         else:
-            marker = ctx.text("relation", RELATION_LABEL, ctx.u(76), 1)
             size = ctx.u(76)
+            marker = ctx.text("relation", RELATION_LABEL, size, 1)
             centre = left.right + gap // 2
             rect = Rect(centre - size // 2, left.cy - size // 2, size, size)
-            draft.boxes.append(_text_box(ctx, "relation", "relation", marker, rect, step=0))
+            draft.boxes.append(_text_box(ctx, "relation", "relation", marker, rect, step=0, pad=0))
     return draft
 
 
@@ -898,11 +915,13 @@ def _comparison_vertical(ctx: _Ctx, visual: Comparison) -> _Draft:
         if visual.relation == "before_after":
             draft.connect("arrow", [(above.cx, above.bottom), (above.cx, below.y)], c + 1)
         else:
-            marker = ctx.text("relation", RELATION_LABEL, ctx.u(76), 1)
             size = ctx.u(76)
+            marker = ctx.text("relation", RELATION_LABEL, size, 1)
             middle = (above.bottom + below.y) // 2
             rect = Rect(body.cx - size // 2, middle - size // 2, size, size)
-            draft.boxes.append(_text_box(ctx, "relation", "relation", marker, rect, step=c + 1))
+            draft.boxes.append(
+                _text_box(ctx, "relation", "relation", marker, rect, step=c + 1, pad=0)
+            )
     return draft
 
 
@@ -918,7 +937,8 @@ def _components_horizontal(ctx: _Ctx, visual: LabelledComponents) -> _Draft:
     hub_h = max(_text_box_height(ctx, subject), ctx.u(160))
     gap_x, gap_y = ctx.u(110), ctx.u(22)
     side_w = (body.w - hub_w - 2 * gap_x) // 2
-    _need(side_w >= ctx.u(240), "the parts are too narrow")
+    if side_w < ctx.u(240):  # too narrow for parts either side: the subject above its parts
+        return _components_vertical(ctx, visual)
     contents = [_measure_node(ctx, part, side_w, True) for part in visual.parts]
     heights = [_node_height(ctx, c, True) for c in contents]
     sides: dict[str, list[int]] = {"left": [], "right": []}
@@ -959,12 +979,13 @@ def _components_horizontal(ctx: _Ctx, visual: LabelledComponents) -> _Draft:
 
 def _layers_horizontal(ctx: _Ctx, visual: LabelledComponents) -> _Draft:
     body, draft = ctx.body, _Draft()
-    subject_w = min(ctx.u(340), body.w // 4)
+    subject_w = min(ctx.u(420), body.w // 3)
     subject = ctx.text("subject", visual.subject, subject_w - 2 * ctx.u(PAD_X), 3)
     subject_h = max(_text_box_height(ctx, subject), ctx.u(140))
     gap_x, gap = ctx.u(110), ctx.u(12)
     band_w = body.w - subject_w - gap_x
-    _need(band_w >= ctx.u(320), "the bands are too narrow")
+    if band_w < ctx.u(320):  # too narrow to put the subject beside the bands: put it above
+        return _components_vertical(ctx, visual)
     contents = [_measure_node(ctx, part, band_w, True) for part in visual.parts]
     band_h = max(_node_height(ctx, c, True) for c in contents)
     total = _stack_height([band_h] * len(contents), gap)
