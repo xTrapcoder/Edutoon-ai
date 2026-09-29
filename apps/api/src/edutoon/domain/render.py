@@ -31,6 +31,12 @@ chunk's fingerprint):
     storyboard scene (template + content) ────────┘               ▲
     narration audio (per segment, at its start)  ────────────────┘ (audio track only)
 
+* An illustrated scene's content may hold a procedural visual (Phase 11), so an edit to a visual
+  is an edit to that scene's content and changes only that scene's fingerprint. Such a scene's
+  fingerprint also carries the drawing versions of the code that draws it
+  (``domain.visual.visual_drawing_id``: the shared framework, the visual's form, the template's
+  fallback) - so bumping one form's version re-renders only that form's scenes, and text-only
+  templates, which carry none, are never touched by a change to visual drawing.
 * A chunk is *video only*. It depends on the scene's template, content and duration - not
   on the narration audio itself, and not on where in the video it sits. Re-narrating one
   segment therefore changes the durations (and, via the storyboard, the content) of that
@@ -73,6 +79,7 @@ from edutoon.domain.generation_settings import ORIENTATIONS
 from edutoon.domain.source_storage import project_storage_prefix
 from edutoon.domain.storyboard_template import StoryboardContentError, validate_scene_content
 from edutoon.domain.storyboard_timing import segment_absolute_starts
+from edutoon.domain.visual import visual_drawing_id
 
 # --- production constants -----------------------------------------------------------
 
@@ -381,22 +388,31 @@ def chunk_fingerprint(
     Deliberately absent: the chunk's position, its absolute start, its segment id and the
     narration - none of them change what is drawn, so a chunk that merely moves keeps its
     fingerprint (and is reused), and two identical scenes share one artifact.
+
+    Present for an illustrated scene, on top of its content (which holds any visual): the
+    drawing versions of the code that draws it (``domain.visual.visual_drawing_id``).
     """
     profile = profile_for(quality)
-    return _sha256(
-        {
-            "renderer": RENDERER_VERSION,
-            "template": template,
-            "content": content,
-            "duration_ms": duration_ms,
-            "canonical_frames": canonical_frames(duration_ms, fps),
-            "orientation": orientation,
-            "size": output_size(orientation, quality),
-            "fps": fps,
-            "encoder": encoder,
-            "encoding": profile.fingerprint_fields(),
-        }
-    )
+    inputs: dict[str, Any] = {
+        "renderer": RENDERER_VERSION,
+        "template": template,
+        "content": content,
+        "duration_ms": duration_ms,
+        "canonical_frames": canonical_frames(duration_ms, fps),
+        "orientation": orientation,
+        "size": output_size(orientation, quality),
+        "fps": fps,
+        "encoder": encoder,
+        "encoding": profile.fingerprint_fields(),
+    }
+    # An illustrated scene (which may carry a procedural visual, itself part of ``content``) also
+    # depends on the drawing code that draws it - the versions of exactly those parts, so a change
+    # to one form's layout re-renders only that form's scenes. Text-only templates have none, and
+    # keep the very fingerprint they always had.
+    drawing = visual_drawing_id(template, content)
+    if drawing is not None:
+        inputs["visual"] = drawing
+    return _sha256(inputs)
 
 
 def output_fingerprint(

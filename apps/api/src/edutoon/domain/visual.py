@@ -474,6 +474,43 @@ def parse_visual(raw: object, *, path: str = "visual") -> Visual:
     )
 
 
+# --- drawing versions (part of an illustrated scene's render fingerprint) ----------------------
+# What a chunk looks like depends on the drawing code as well as the scene's data. Rather than one
+# global "renderer version" (which would re-render every chunk whenever any drawing changed), each
+# illustrated scene's fingerprint carries the versions of exactly the drawing code that draws it:
+#
+# - VISUAL_FRAMEWORK_VERSION - the shared pieces: primitives, palette, box/number styling, the
+#   reveal of visuals. Bump it and every visual and every fallback scene re-renders.
+# - VISUAL_TYPE_VERSIONS[type] - that form's layout and painting. Bump ``cycle`` and only cycle
+#   scenes re-render.
+# - FALLBACK_VERSIONS[template] - the deterministic text fallback of that template. A scene with a
+#   visual carries it too (a visual that overflows its region falls back to it), so bumping it
+#   re-renders that template's fallback scenes and its visual scenes, and no other template's.
+#
+# Bump a number whenever a change alters the pixels of the scenes it names; a golden-pixel test
+# fails if drawing changes without one. Text-only templates carry none of these, so a change to
+# visual drawing never touches them (their fingerprint is exactly the Phase 10 one).
+
+VISUAL_FRAMEWORK_VERSION: Final = 1
+VISUAL_TYPE_VERSIONS: Final[dict[str, int]] = {visual_type: 1 for visual_type in VISUAL_TYPES}
+FALLBACK_VERSIONS: Final[dict[str, int]] = {template: 1 for template in TEMPLATE_REGION}
+
+
+def visual_drawing_id(template: str, content: Mapping[str, object]) -> str | None:
+    """The drawing-version identifier that goes into the chunk fingerprint of a scene, or ``None``
+    for a template that has no visual drawing (title, bullets, formula/code - which is what keeps
+    their Phase 10 fingerprints unchanged)."""
+    fallback_version = FALLBACK_VERSIONS.get(template)
+    if fallback_version is None:
+        return None
+    fallback = f"fallback/{template}/{fallback_version}"
+    visual = visual_of(content)
+    if visual is None:
+        return f"framework/{VISUAL_FRAMEWORK_VERSION}+{fallback}"
+    kind = f"{visual.type}/{VISUAL_TYPE_VERSIONS[visual.type]}"
+    return f"framework/{VISUAL_FRAMEWORK_VERSION}+{kind}+{fallback}"
+
+
 # --- reading a visual out of a scene's content -------------------------------------------------
 
 
