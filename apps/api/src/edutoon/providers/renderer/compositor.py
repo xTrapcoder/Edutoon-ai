@@ -25,13 +25,14 @@ import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 from edutoon.domain import render_animation as anim
 from edutoon.domain.storyboard_template import layout_for
+from edutoon.domain.text_glyphs import Primary, plan_runs
 
 _FONT_DIR = Path(__file__).parent / "assets" / "fonts"
 _SANS = _FONT_DIR / "NotoSans-VF.ttf"
@@ -68,6 +69,114 @@ def font(*, mono: bool, weight: int, size: int) -> ImageFont.FreeTypeFont:
         face.set_variation_by_axes([weight, 100])
         cache[key] = face
     return face
+
+
+class Measurable(Protocol):
+    def getlength(self, text: str) -> float: ...
+
+
+FALLBACK_SCALE = 1.18
+
+
+class TextFace:
+    """One font at one size and weight that can draw every character the scene may contain.
+
+    Noto Sans has no glyph for ``-> <= >= ~= ✓`` and many other symbols, which used to come out as
+    the font's missing-glyph box. ``domain.text_glyphs`` plans each line into runs: text the face's
+    own font has is drawn as it always was; a symbol only the *other* bundled font has (a Mono
+    arrow inside a Sans sentence) is drawn from that font at the same size and baseline; check and
+    cross marks are drawn as small shapes; what nothing can draw is dropped. A line with nothing
+    unusual in it is one run and is drawn by the very same call as before, pixel for pixel.
+    """
+
+    __slots__ = ("_kind", "fallback", "primary", "size")
+
+    def __init__(self, *, mono: bool, weight: int, size: int) -> None:
+        self.primary = font(mono=mono, weight=weight, size=size)
+        # Mono's arrows and operators are drawn a little small beside Sans letters; a modest
+        # boost (a fixed ratio, so layout stays deterministic) makes them read as intended.
+        self.fallback = font(mono=not mono, weight=weight, size=round(size * FALLBACK_SCALE))
+        self._kind: Primary = "mono" if mono else "sans"
+        self.size = size
+
+    def getmetrics(self) -> tuple[int, int]:
+        return self.primary.getmetrics()
+
+    def _mark_advance(self) -> int:
+        return max(1, round(self.size * 0.9))
+
+    def getlength(self, text: str) -> float:
+        total = 0.0
+        for run in plan_runs(text, primary=self._kind):
+            if run.kind == "primary":
+                total += self.primary.getlength(run.text)
+            elif run.kind == "fallback":
+                total += self.fallback.getlength(run.text)
+            else:
+                total += self._mark_advance() * len(run.text)
+        return total
+
+    def draw_line(
+        self,
+        image: Image.Image,
+        draw: ImageDraw.ImageDraw,
+        x: float,
+        y: float,
+        text: str,
+        fill: tuple[int, int, int],
+    ) -> None:
+        """Draw ``text`` with its top at ``y`` (the font's ascender line, as ``ImageDraw.text``
+        does by default) onto ``image`` (RGBA), which ``draw`` draws on."""
+        runs = plan_runs(text, primary=self._kind)
+        if len(runs) == 1 and runs[0].kind == "primary" and runs[0].text == text:
+            draw.text((x, y), text, font=self.primary, fill=(*fill, 255))
+            return
+        baseline = y + self.primary.getmetrics()[0]
+        cursor = x
+        for run in runs:
+            if run.kind in ("primary", "fallback"):
+                face = self.primary if run.kind == "primary" else self.fallback
+                draw.text((cursor, baseline), run.text, font=face, fill=(*fill, 255), anchor="ls")
+                cursor += face.getlength(run.text)
+            else:
+                for _ in run.text:
+                    self._draw_mark(image, run.kind, round(cursor), round(baseline), fill)
+                    cursor += self._mark_advance()
+
+    def _draw_mark(
+        self,
+        image: Image.Image,
+        kind: str,
+        x: int,
+        baseline: int,
+        fill: tuple[int, int, int],
+    ) -> None:
+        """A check or cross mark, drawn from shapes (anti-aliased at 2x) about as tall as a
+        capital letter and standing on the baseline."""
+        width = max(4, round(self.size * 0.78))
+        height = max(4, round(self.size * 0.72))
+        sample = SUPERSAMPLE
+        big_w, big_h = width * sample, height * sample
+        stroke = max(2, round(self.size * 0.11)) * sample
+        mark = Image.new("RGBA", (big_w, big_h), (*fill, 0))
+        pen = ImageDraw.Draw(mark)
+        if kind == "tick":
+            points = [(0.06, 0.56), (0.36, 0.90), (0.94, 0.10)]
+            strokes = [points]
+        else:
+            strokes = [[(0.12, 0.12), (0.88, 0.88)], [(0.88, 0.12), (0.12, 0.88)]]
+        for path in strokes:
+            scaled = [(round(px * (big_w - 1)), round(py * (big_h - 1))) for px, py in path]
+            pen.line(scaled, fill=(*fill, 255), width=stroke, joint="curve")
+            for cx, cy in (scaled[0], scaled[-1]):
+                pen.ellipse(
+                    (cx - stroke // 2, cy - stroke // 2, cx + stroke // 2, cy + stroke // 2),
+                    fill=(*fill, 255),
+                )
+        mark = mark.resize((width, height), Image.Resampling.LANCZOS)
+        left = max(0, x + round(self.size * 0.05))
+        top = max(0, baseline - height)
+        image.alpha_composite(mark, (left, top))
 
 
 # --- primitives ---------------------------------------------------------------------
@@ -112,12 +221,12 @@ def background(width: int, height: int) -> Image.Image:
         return cached
 
 
-def _line_pitch(face: ImageFont.FreeTypeFont, gap_ratio: float) -> int:
+def _line_pitch(face: TextFace, gap_ratio: float) -> int:
     ascent, descent = face.getmetrics()
     return round((ascent + descent) * (1.0 + gap_ratio))
 
 
-def wrap_text(text: str, face: ImageFont.FreeTypeFont, max_width: int) -> list[str]:
+def wrap_text(text: str, face: Measurable, max_width: int) -> list[str]:
     """Greedy word wrap honouring explicit newlines and each line's leading indentation; a
     word wider than the line is split by character rather than allowed to overflow."""
     lines: list[str] = []
@@ -146,7 +255,7 @@ def wrap_text(text: str, face: ImageFont.FreeTypeFont, max_width: int) -> list[s
 
 @dataclass(slots=True)
 class FittedText:
-    face: ImageFont.FreeTypeFont
+    face: TextFace
     lines: list[str]
     pitch: int
     size: int
@@ -177,7 +286,7 @@ def fit_text(
     allowed to run off the frame."""
     size = max_size
     while True:
-        face = font(mono=mono, weight=weight, size=size)
+        face = TextFace(mono=mono, weight=weight, size=size)
         lines = wrap_text(text, face, max_width)
         pitch = _line_pitch(face, gap_ratio)
         fits = pitch * len(lines) <= max_height and (max_lines is None or len(lines) <= max_lines)
@@ -216,7 +325,7 @@ def text_layer(
             x = block_width - line_width
         else:
             x = 0
-        draw.text((x, index * fitted.pitch), line, font=fitted.face, fill=(*fill, 255))
+        fitted.face.draw_line(image, draw, x, index * fitted.pitch, line, fill)
     return image
 
 

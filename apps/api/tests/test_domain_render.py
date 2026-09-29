@@ -76,6 +76,46 @@ def test_the_render_plan_and_the_storyboard_read_model_place_every_scene_identic
     assert [n.start_ms for n in plan.narration] == list(positions.segment_starts_ms)
 
 
+# The chunk fingerprints of the three text-only templates. They are pinned so a later change
+# cannot silently invalidate every cached text chunk (or, worse, keep reusing one whose pixels
+# changed). They changed once, deliberately, in Phase 11 when glyph safety bumped
+# RENDERER_VERSION to "pillow-ffmpeg/3": chunks cached before that held missing-glyph boxes and
+# are re-rendered once. Update these ONLY together with a documented, intentional version bump.
+_TEXT_ONLY_GOLDEN = {
+    ("horizontal", "high", "title_card"): "c717250657158cd6459d01b7235d00e9a41949076ce7dcbad17ac38053acb908",  # noqa: E501
+    ("horizontal", "high", "bullet_points"): "edade5d5dd96560f47032bc10162dcfc833fa409f872a42f2b28b25670dd8967",  # noqa: E501
+    ("horizontal", "high", "formula_or_code"): "36abf636f151bbfd0518125ea74ca8bec9b052e5be8d14fe0e71c2b3c961387a",  # noqa: E501
+    ("vertical", "low", "title_card"): "ae5cf0b7b148b7f25c7f39b18ef599488366b45c97064dcb8edf6d2889c9483e",  # noqa: E501
+    ("vertical", "low", "bullet_points"): "7c5b8503ba1fd35a5809855429a752264e9458e6821a65243eac20f5e751f7dd",  # noqa: E501
+    ("vertical", "low", "formula_or_code"): "e55aec0b9e0dffa56a7c97b4e06aea057676bcac1f9e25a9a5564e128415f3d2",  # noqa: E501
+}  # fmt: skip
+_TEXT_ONLY_SCENES = {
+    "title_card": {"title": "How networks work", "subtitle": "Packets and routes"},
+    "bullet_points": {
+        "title": "Key ideas",
+        "bullets": ["Data is split into packets", "Routers forward packets"],
+    },
+    "formula_or_code": {"content": "speed = distance / time", "kind": "formula", "label": "Speed"},
+}
+
+
+@pytest.mark.parametrize(("orientation", "quality", "template"), sorted(_TEXT_ONLY_GOLDEN))
+def test_text_only_chunk_fingerprints_are_pinned(orientation, quality, template) -> None:
+    fingerprint = r.chunk_fingerprint(
+        template=template,
+        content=_TEXT_ONLY_SCENES[template],
+        duration_ms=6000,
+        orientation=orientation,
+        quality=quality,
+        encoder="libx264",
+    )
+    assert fingerprint == _TEXT_ONLY_GOLDEN[(orientation, quality, template)]
+
+
+def test_glyph_safety_bumped_the_renderer_version_so_known_bad_chunks_are_not_reused() -> None:
+    assert r.RENDERER_VERSION == "pillow-ffmpeg/3"
+
+
 # --- frame mapping -----------------------------------------------------------------------
 
 

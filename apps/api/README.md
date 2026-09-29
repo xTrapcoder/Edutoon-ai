@@ -651,6 +651,24 @@ Narration is assembled as one mono 16-bit WAV in which each segment is fitted to
 between its own absolute start and the next segment's start (`sample_at`, the same half-up rule),
 so audio is placed sample-exactly too and its error never accumulates.
 
+### Glyph safety (Phase 11)
+
+The bundled Noto Sans has no glyph for `→ ← ≤ ≥ ≈ ≠ √ ✓` and many other symbols; before Phase 11
+they were drawn as the font's missing-glyph box in every template. `domain/text_glyphs.py`
+now plans each line into runs (its coverage tables are the two bundled fonts' own cmap ranges,
+guarded by `tests/test_text_glyphs.py`): text the template's font has is drawn exactly as before
+(one `draw.text` call, pixel-identical); a symbol only the *other* bundled font has (Noto Sans
+Mono has the arrows, comparison and root signs, geometric shapes) is drawn from it at the same
+baseline; `✓ ✔` and `✗ ✘ ✕ ✖` are drawn as small shapes; anything nothing can draw (emoji, control,
+zero-width, bidi and private-use characters) is dropped, never drawn as a box. No icon font or
+other asset was added.
+
+This changed pixels of existing text templates, so `RENDERER_VERSION` went from
+`pillow-ffmpeg/2` to `pillow-ffmpeg/3`. **That intentionally invalidates every previously
+cached chunk once** (text templates included): the next render re-renders them instead of
+reusing chunks that may hold missing-glyph boxes. `tests/test_domain_render.py` pins the
+fingerprints of the text-only templates so a later change cannot silently do it again.
+
 ### Encoding (decided from measurements, `scripts/verify_phase10.py`)
 
 | | `high` | `low` |

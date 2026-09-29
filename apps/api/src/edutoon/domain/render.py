@@ -84,10 +84,16 @@ Indian and European delivery (web/mobile playback is frame-rate agnostic), where
 broadcast convention this product does not target. Phase 9 stores no frame rate; only the
 render configuration does."""
 
-RENDERER_VERSION: Final = "pillow-ffmpeg/2"
+RENDERER_VERSION: Final = "pillow-ffmpeg/3"
 """Identifies the drawing code *and* the assembly recipe. Bump it whenever a change would
 alter the pixels or the bitstream of an existing scene - every chunk fingerprint includes it,
-so artifacts from an older renderer are never treated as current."""
+so artifacts from an older renderer are never treated as current.
+
+History: ``/3`` (Phase 11, glyph safety) - text that used a symbol Noto Sans lacks
+(``-> <= >= ~= ✓`` ...) was cached with a missing-glyph box in it. Drawing now falls back to the
+other bundled font, or to a drawn check/cross mark, so those pixels changed. This bump
+**intentionally invalidates every previously cached chunk once** (text templates included): they
+are re-rendered on the next render rather than keeping known-bad pixels."""
 
 MAX_STORED_ERROR_CHARS: Final = 500
 
