@@ -124,6 +124,22 @@ pnpm typecheck && pnpm lint
 - Layout was checked in a browser at desktop and phone widths against the mock API below, not on real
   devices.
 
+## Video rendering in the Script Studio (Phase 10)
+
+Script Studio's **Video** card (`components/script/render-panel.tsx`) sits under the storyboard once narration is
+measured. The person picks a shape (horizontal 1920×1080 or vertical 1080×1920) and a quality (Preview: half size and
+quick; Final: full size), sees an estimate (scenes to render vs reusable, length, size), and starts the render. While it
+runs the card shows the API's real progress - section and scene, "42 of 180 scenes ready", a percentage, and a time
+estimate only once one can be made - and after a failure it says how many render sections need another attempt and offers
+Retry (which renders only those). The video's state is decided in one place (`lib/render.ts`, `derivePhase`): **complete**
+only when the API says the video is exactly what the storyboard and narration say now; a partly rendered or out-of-date
+video is never called finished ("This video is out of date", with the previous version still playable). Each storyboard
+scene card carries its own render badge (ready / needs render / stale / failed), so an edit to one scene marks one scene.
+
+The player reads the MP4 through a `blob:` URL fetched with the caller's token (like narration audio), so it plays, pauses,
+seeks and downloads; the API itself streams with `Range` support. That means the browser holds the whole file - fine for the
+current 10-minute maximum, and worth a proxy route before much longer videos.
+
 ## UI QA mode (development only)
 
 To look at the signed-in screens without a Clerk instance, run the mock API and the app in QA mode:
@@ -135,7 +151,9 @@ pnpm --filter @edutoon/web dev:qa      # :3000 - real pages, a stubbed Clerk, th
 
 `MOCK_SCENARIO=empty` (a new account) and `MOCK_SCENARIO=errors` (every call fails) exercise the empty
 and error states; `MOCK_WITH_CLAIMS=1` pretends a project has a verified claim, so script generation
-can be tried. Timings are tunable (`MOCK_QUEUE_S`, `MOCK_RUN_S`, `MOCK_LATENCY_MS`).
+can be tried. Timings are tunable (`MOCK_QUEUE_S`, `MOCK_RUN_S`, `MOCK_LATENCY_MS`). The render endpoints are modelled too:
+`MOCK_RENDER_VIDEO=/path/to.mp4` is served as the finished video, `MOCK_RENDER_FAIL=1` makes the first render of each shape
+fail on its last scene (to see the failure and Retry), and `POST /__mock/edit-scene` changes a scene so it shows as stale.
 
 **This is not authentication.** `dev:qa` swaps `@clerk/nextjs` for `test-support/qa` through a
 webpack alias that `next.config.ts` refuses to enable during `next build` or `next start`, and shows

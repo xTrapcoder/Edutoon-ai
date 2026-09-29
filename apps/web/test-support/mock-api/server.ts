@@ -13,6 +13,7 @@
  */
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { randomUUID } from 'node:crypto';
+import { createReadStream, existsSync, statSync } from 'node:fs';
 
 const PORT = Number(process.env.MOCK_API_PORT ?? 8787);
 const ORIGIN = process.env.MOCK_ALLOWED_ORIGIN ?? 'http://localhost:3000';
@@ -583,6 +584,7 @@ function finishClaimExtraction(job_: Row) {
 }
 
 function advance(job_: Row) {
+  if (job_.kind === 'render_video') return advanceRender(job_);
   // A job seeded with `hold` stays exactly as it is, so the in-progress screens can be inspected.
   if ((job_.payload as { hold?: boolean }).hold) return;
   const age = (Date.now() - Date.parse(job_.created_at as string)) / 1000;
@@ -697,6 +699,268 @@ function tick() {
   jobs.filter((j) => j.status === 'queued' || j.status === 'running').forEach(advance);
 }
 
+// --- rendering (Phase 10) -----------------------------------------------------------------
+//
+// A small model of the real API's render behaviour, enough to look at every state of the video
+// panel: scenes are "ready" once a render has made a chunk for their current content, "stale" if
+// they changed since the last video, "failed" after a failed job. `MOCK_RENDER_FAIL=1` makes the
+// first render of each shape fail on its last scene; `MOCK_RENDER_VIDEO=/path/to.mp4` is served
+// as the finished video (any real MP4, with Range support).
+
+const RENDER_FAIL = process.env.MOCK_RENDER_FAIL === '1';
+const RENDER_VIDEO = process.env.MOCK_RENDER_VIDEO ?? '';
+const renderedHashes = new Map<string, Set<string>>();
+const lastOutputs = new Map<
+  string,
+  { hashes: Map<string, string>; at: string; durationMs: number }
+>();
+const failedOnce = new Set<string>();
+
+const renderConfig = (scriptId: string, orientation: string, quality: string) =>
+  `${scriptId}|${orientation}|${quality}`;
+
+interface RenderScene {
+  segment: Row;
+  scene: Row;
+  hash: string;
+  count: number;
+}
+
+function renderScenesOf(scriptId: string): RenderScene[] {
+  const segs = segments
+    .filter((sg) => sg.script_id === scriptId)
+    .sort((x, y) => (x.segment_index as number) - (y.segment_index as number));
+  const out: RenderScene[] = [];
+  for (const segment of segs) {
+    const own = scenes
+      .filter((sn) => sn.script_segment_id === segment.id)
+      .sort((x, y) => (x.scene_index as number) - (y.scene_index as number));
+    for (const scene of own) {
+      out.push({
+        segment,
+        scene,
+        hash: `${scene.id}:${JSON.stringify(scene.content)}:${String(scene.duration_ms)}`,
+        count: own.length,
+      });
+    }
+  }
+  return out;
+}
+
+function renderSize(orientation: string, quality: string): [number, number] {
+  const full: [number, number] = orientation === 'vertical' ? [1080, 1920] : [1920, 1080];
+  const k = quality === 'low' ? 0.5 : 1;
+  return [full[0] * k, full[1] * k];
+}
+
+function renderBlocker(sc: Row, list: RenderScene[]): string | null {
+  if (sc.status !== 'approved')
+    return `Only an approved script can be rendered; this one is '${String(sc.status)}'.`;
+  if (sc.measured_duration_ms == null)
+    return "This script's narration is not fully recorded yet - narrate every section before rendering.";
+  const segCount = segments.filter((sg) => sg.script_id === sc.id).length;
+  if (list.length === 0 || new Set(list.map((l) => l.segment.id)).size < segCount)
+    return 'The storyboard is incomplete: some sections still need scenes. Generate the storyboard first.';
+  return null;
+}
+
+function latestRenderJob(pid: string): Row | undefined {
+  return jobs
+    .filter((j) => j.project_id === pid && j.kind === 'render_video')
+    .sort((x, y) => Date.parse(y.created_at as string) - Date.parse(x.created_at as string))[0];
+}
+
+function renderStatusBody(pid: string, sc: Row, orientation: string, quality: string) {
+  const list = renderScenesOf(sc.id);
+  const blocker = renderBlocker(sc, list);
+  const config = renderConfig(sc.id, orientation, quality);
+  const have = renderedHashes.get(config) ?? new Set<string>();
+  const last = lastOutputs.get(config);
+  const latest = latestRenderJob(pid);
+  const failedHashes = new Set<string>(
+    latest?.status === 'failed' && Array.isArray((latest.result as Row | null)?.failed_chunk_hashes)
+      ? ((latest.result as Row).failed_chunk_hashes as string[])
+      : [],
+  );
+  const sceneBodies = blocker
+    ? []
+    : list.map((l, position) => {
+        const lastHash = last?.hashes.get(`${l.segment.id}:${String(l.scene.scene_index)}`);
+        const ready = have.has(l.hash);
+        const state =
+          failedHashes.has(l.hash) && !ready
+            ? 'failed'
+            : ready
+              ? 'ready'
+              : lastHash !== undefined && lastHash !== l.hash
+                ? 'stale'
+                : 'needs_render';
+        return {
+          position,
+          segment_id: l.segment.id,
+          segment_index: l.segment.segment_index,
+          scene_index: l.scene.scene_index,
+          scene_count: l.count,
+          template: l.scene.template,
+          start_ms: l.scene.start_ms,
+          duration_ms: l.scene.duration_ms,
+          state,
+        };
+      });
+  const count = (state: string) => sceneBodies.filter((x) => x.state === state).length;
+  const isCurrent =
+    !blocker && !!last && sceneBodies.length > 0 && sceneBodies.every((x) => x.state === 'ready');
+  const totalMs = list.reduce((sum, l) => sum + (l.scene.duration_ms as number), 0);
+  const [w, h] = renderSize(orientation, quality);
+  const unique = new Set(list.map((l) => l.hash));
+  const toRender = [...unique].filter((x) => !have.has(x)).length;
+  return {
+    script: sc,
+    orientation,
+    quality,
+    job: latest ?? null,
+    progress: (latest?.payload as Row | undefined)?.progress ?? null,
+    blockers: blocker ? [blocker] : [],
+    scenes: sceneBodies,
+    ready_count: count('ready'),
+    needs_render_count: count('needs_render'),
+    stale_count: count('stale'),
+    failed_count: count('failed'),
+    output: last
+      ? {
+          orientation,
+          quality,
+          width: w,
+          height: h,
+          fps: 30,
+          duration_ms: last.durationMs,
+          byte_size: 1_400_000,
+          encoder: 'libx264',
+          renderer_version: 'pillow-ffmpeg/1',
+          created_at: last.at,
+          updated_at: last.at,
+          is_current: isCurrent,
+        }
+      : null,
+    output_is_current: isCurrent,
+    estimate: blocker
+      ? null
+      : {
+          chunk_count: list.length,
+          unique_chunk_count: unique.size,
+          chunks_reusable: unique.size - toRender,
+          chunks_to_render: toRender,
+          total_ms: totalMs,
+          width: w,
+          height: h,
+          fps: 30,
+          estimated_output_bytes: Math.round(
+            (totalMs / 1000) * (quality === 'low' ? 40_000 : 150_000),
+          ),
+          required_free_bytes: 50_000_000,
+        },
+    total_ms: blocker ? null : totalMs,
+    is_complete: isCurrent,
+  };
+}
+
+function advanceRender(job_: Row) {
+  const payload = job_.payload as {
+    script_id: string;
+    orientation: string;
+    quality: string;
+    hold?: boolean;
+  };
+  if (payload.hold) return;
+  const age = (Date.now() - Date.parse(job_.created_at as string)) / 1000;
+  const config = renderConfig(payload.script_id, payload.orientation, payload.quality);
+  const list = renderScenesOf(payload.script_id);
+  const have = renderedHashes.get(config) ?? new Set<string>();
+  const todo = list.filter(
+    (l, i) => !have.has(l.hash) && list.findIndex((x) => x.hash === l.hash) === i,
+  );
+  const uniqueTotal = new Set(list.map((l) => l.hash)).size;
+  if (job_.status === 'queued' && age > QUEUE_S) {
+    job_.status = 'running';
+    job_.started_at = now();
+  }
+  if (job_.status === 'running') {
+    const runAge = age - QUEUE_S;
+    const done = Math.min(todo.length, Math.floor((runAge / RUN_S) * todo.length));
+    const current = todo[Math.min(done, todo.length - 1)];
+    job_.payload = {
+      ...payload,
+      progress: {
+        stage: 'rendering',
+        chunks_total: uniqueTotal,
+        chunks_reused: uniqueTotal - todo.length,
+        chunks_to_render: todo.length,
+        chunks_done: done,
+        chunks_complete: uniqueTotal - todo.length + done,
+        segment_index: current ? (current.segment.segment_index as number) : null,
+        segment_count: segments.filter((sg) => sg.script_id === payload.script_id).length,
+        scene_index: current ? (current.scene.scene_index as number) : null,
+        scene_count: current ? current.count : null,
+        percent: Math.round((100 * done) / (todo.length + 1)),
+        eta_seconds: done >= 2 ? Math.max(0, Math.round(RUN_S - runAge)) : null,
+        updated_at: now(),
+      },
+    };
+  }
+  if (job_.status === 'running' && age > QUEUE_S + RUN_S) {
+    const failNow = RENDER_FAIL && !failedOnce.has(config) && todo.length > 0;
+    const made = failNow ? todo.slice(0, -1) : todo;
+    const set = renderedHashes.get(config) ?? new Set<string>();
+    for (const l of made) set.add(l.hash);
+    renderedHashes.set(config, set);
+    job_.finished_at = now();
+    if (failNow) {
+      failedOnce.add(config);
+      const bad = todo[todo.length - 1]!;
+      job_.status = 'failed';
+      job_.error =
+        '1 render section needs another attempt. Everything already rendered is kept - try again to finish.';
+      job_.result = { outcome: 'chunks_failed', failed_chunk_hashes: [bad.hash] };
+      return;
+    }
+    const hashes = new Map<string, string>();
+    for (const l of list) hashes.set(`${l.segment.id}:${String(l.scene.scene_index)}`, l.hash);
+    lastOutputs.set(config, {
+      hashes,
+      at: now(),
+      durationMs: list.reduce((sum, l) => sum + (l.scene.duration_ms as number), 0),
+    });
+    job_.status = 'succeeded';
+    job_.result = { outcome: 'complete', chunk_total: uniqueTotal };
+  }
+}
+
+function serveVideo(req: IncomingMessage, res: ServerResponse): boolean {
+  if (!RENDER_VIDEO || !existsSync(RENDER_VIDEO)) return false;
+  const size = statSync(RENDER_VIDEO).size;
+  const range = /^bytes=(\d*)-(\d*)$/.exec(String(req.headers.range ?? ''));
+  const headers: Record<string, string> = {
+    'Access-Control-Allow-Origin': ORIGIN,
+    'Access-Control-Allow-Credentials': 'true',
+    'Content-Type': 'video/mp4',
+    'Accept-Ranges': 'bytes',
+  };
+  if (range) {
+    const start = range[1] ? Number(range[1]) : size - Number(range[2]);
+    const end = range[1] && range[2] ? Number(range[2]) : size - 1;
+    res.writeHead(206, {
+      ...headers,
+      'Content-Range': `bytes ${start}-${end}/${size}`,
+      'Content-Length': String(end - start + 1),
+    });
+    createReadStream(RENDER_VIDEO, { start, end }).pipe(res);
+  } else {
+    res.writeHead(200, { ...headers, 'Content-Length': String(size) });
+    createReadStream(RENDER_VIDEO).pipe(res);
+  }
+  return true;
+}
+
 // --- http --------------------------------------------------------------------------------
 
 function send(res: ServerResponse, status: number, body?: unknown) {
@@ -730,6 +994,18 @@ async function route(req: IncomingMessage, res: ServerResponse) {
 
   if (method === 'OPTIONS') return send(res, 204);
   if (path === '/health') return send(res, 200, { status: 'ok', mock: true });
+  if (path === '/__mock/edit-scene' && method === 'POST') {
+    // Test tooling: change one scene's content, as if it had been edited, so the video panel can
+    // be looked at with a stale scene.
+    const body = JSON.parse((await readBody(req)).toString() || '{}') as {
+      index?: number;
+      title?: string;
+    };
+    const target = scenes[body.index ?? 0];
+    if (!target) return fail(res, 404, 'not_found', 'No such scene.');
+    target.content = { ...(target.content as Row), title: body.title ?? 'Edited title' };
+    return send(res, 200, { edited: target.id });
+  }
   if (!path.startsWith('/v1/')) return fail(res, 404, 'not_found', 'Not found.');
   if (!req.headers.authorization?.startsWith('Bearer '))
     return fail(res, 401, 'unauthorized', 'Missing Authorization header.');
@@ -765,6 +1041,103 @@ async function route(req: IncomingMessage, res: ServerResponse) {
 
   const m = (pattern: RegExp) => path.match(pattern);
   let hit: RegExpMatchArray | null;
+
+  // --- rendering (Phase 10) ---
+  if ((hit = m(/^\/v1\/projects\/([^/]+)\/render\/progress$/)) && method === 'GET') {
+    const pid = hit[1]!;
+    if (!projects.some((x) => x.id === pid))
+      return fail(res, 404, 'not_found', `Project ${pid} not found.`);
+    const latest = latestRenderJob(pid);
+    return send(res, 200, {
+      job: latest ?? null,
+      progress: (latest?.payload as Row | undefined)?.progress ?? null,
+    });
+  }
+  if ((hit = m(/^\/v1\/projects\/([^/]+)\/scripts\/([^/]+)\/render(\/video)?$/))) {
+    const [, pid, sid, video] = hit as unknown as [string, string, string, string | undefined];
+    if (!projects.some((x) => x.id === pid))
+      return fail(res, 404, 'not_found', `Project ${pid} not found.`);
+    const sc = scripts.find((s) => s.id === sid && s.project_id === pid);
+    if (!sc) return fail(res, 404, 'not_found', `Script ${sid} not found.`);
+    if (method === 'POST' && !video) {
+      const body = JSON.parse((await readBody(req)).toString() || '{}') as Row;
+      const unknown = Object.keys(body).filter((k) => k !== 'orientation' && k !== 'quality');
+      if (
+        unknown.length ||
+        !['horizontal', 'vertical'].includes(String(body.orientation)) ||
+        !['low', 'high'].includes(String(body.quality))
+      )
+        return send(res, 422, {
+          error: { code: 'VALIDATION_ERROR', message: 'Request validation failed.' },
+        });
+      const active = jobs.some(
+        (j) =>
+          j.project_id === pid &&
+          j.kind === 'render_video' &&
+          (j.status === 'queued' || j.status === 'running'),
+      );
+      if (active)
+        return fail(
+          res,
+          409,
+          'conflict',
+          'A video render is already queued or running for this project; wait for it to finish.',
+        );
+      const blocker = renderBlocker(sc, renderScenesOf(sc.id));
+      if (blocker) {
+        const conflict = blocker.startsWith('Only');
+        return send(res, conflict ? 409 : 400, {
+          error: { code: conflict ? 'conflict' : 'validation_error', message: blocker },
+        });
+      }
+      const status = renderStatusBody(pid, sc, String(body.orientation), String(body.quality));
+      const j = job(pid, 'render_video', 'queued', {
+        payload: {
+          script_id: sc.id,
+          project_id: pid,
+          orientation: body.orientation,
+          quality: body.quality,
+          estimate: status.estimate,
+        },
+      });
+      projects.find((x) => x.id === pid)!.updated_at = now();
+      return done(202, { job: j, estimate: status.estimate });
+    }
+    if (method === 'GET' && video) {
+      const config = renderConfig(
+        sc.id,
+        String(url.searchParams.get('orientation')),
+        String(url.searchParams.get('quality')),
+      );
+      if (!lastOutputs.has(config) || !serveVideo(req, res))
+        return fail(res, 404, 'not_found', 'No rendered video is available for this script yet.');
+      return;
+    }
+    if (method === 'GET') {
+      const orientation = url.searchParams.get('orientation');
+      const quality = url.searchParams.get('quality');
+      if (
+        !['horizontal', 'vertical'].includes(String(orientation)) ||
+        !['low', 'high'].includes(String(quality))
+      )
+        return send(res, 422, {
+          error: { code: 'VALIDATION_ERROR', message: 'Request validation failed.' },
+        });
+      return send(res, 200, renderStatusBody(pid, sc, orientation!, quality!));
+    }
+  }
+  if ((hit = m(/^\/v1\/projects\/([^/]+)\/render\/retry$/)) && method === 'POST') {
+    const pid = hit[1]!;
+    if (!projects.some((x) => x.id === pid))
+      return fail(res, 404, 'not_found', `Project ${pid} not found.`);
+    const latest = latestRenderJob(pid);
+    if (!latest || latest.status !== 'failed')
+      return fail(res, 409, 'conflict', 'There is no failed render to retry.');
+    const p = latest.payload as Row;
+    const j = job(pid, 'render_video', 'queued', { payload: { ...p, progress: undefined } });
+    projects.find((x) => x.id === pid)!.updated_at = now();
+    return done(202, { job: j, estimate: p.estimate ?? null });
+  }
 
   // Five path segments (project/scripts/id/segments/id/audio) - outside the generic resource
   // regex below, which only captures two - so it is matched here first.

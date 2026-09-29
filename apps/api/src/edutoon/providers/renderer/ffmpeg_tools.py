@@ -71,7 +71,7 @@ def video_encoder_args(encoder: str, profile: EncodingProfile) -> list[str]:
             "-level:v",
             profile.x264_level,
             "-x264-params",
-            "scenecut=0",
+            profile.x264_params,
             *common,
         ]
     if encoder == "h264_nvenc":

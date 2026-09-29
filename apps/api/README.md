@@ -571,6 +571,204 @@ Settings (all optional, see `core/config.py`): `MIN_SCENE_DURATION_MS`,
 character limits are a fixed contract (`domain.storyboard_template`), not
 configuration.
 
+## Video rendering
+
+Phase 10 turns an approved script - with fully measured narration and a complete
+storyboard - into a real, seekable MP4: **H.264 High + AAC-LC, 30 fps**, 1920×1080
+(horizontal) or 1080×1920 (vertical) at `high` quality, and half that size at `low`
+(a review render). Rendering makes no provider call and needs no key: it reads what
+Phases 8 and 9 stored and produces pictures and bytes. No image is generated - an
+illustration slot renders a deliberate placeholder (a labelled "Illustration" panel
+carrying the scene's own description and subject labels), so `labelled_diagram`,
+`split_text_illustration` and `full_bleed_illustration` are as watchable as the three
+text-only templates.
+
+### Which renderer, and why
+
+| | Verdict |
+| --- | --- |
+| **Pillow scene compositor → FFmpeg (chosen)** | Own code, no per-render licence, deterministic (a pure function of its inputs), fast for six fixed text-and-shape templates, one language, chunking and partial re-rendering are trivial because we own the pipeline. |
+| Remotion | Not used. Its licence is free only for individuals, non-profits and for-profit organisations of up to three people; larger companies need a paid Company License, with automated rendering (a SaaS render pipeline) priced per render. Whether a chunk counts as "a render" is not something we could confirm from its published terms, so it is a real cost risk for a product that renders one chunk per scene. Kept as the documented fallback if the company accepts a licence. |
+| Headless Chromium + FFmpeg | Free (Apache-2.0) but slow per frame and fragile to make deterministic (fonts, timing); would re-implement what the compositor does. Second fallback. |
+| Motion Canvas | MIT, but built for authoring in an editor, not for server-side chunked rendering. |
+
+The engine sits behind `providers.renderer.Renderer` (`render_chunk`, `assemble`,
+`probe`): nothing outside `providers/renderer` names Pillow, FFmpeg or a command line, so a
+different engine replaces one package. Pillow and NumPy are confined to it by the
+architecture test (rule 3), like every other SDK.
+
+**Fonts** are vendored (`providers/renderer/assets/fonts`: Noto Sans and Noto Sans Mono, SIL Open
+Font Licence, licence text alongside) so a frame is identical on every machine.
+
+### The hierarchy, and what invalidates what
+
+```
+project → topic → segment → scene → chunk → final video
+```
+
+A topic is the set of segments written for it, so it needs no artifact of its own; **one scene
+is one render chunk**. A chunk is *video only* and is stored under a fingerprint
+(`chunk_hash`, `domain.render.chunk_fingerprint`) of exactly what decides its bytes:
+
+`renderer version · template · content · duration · orientation · output size · quality's
+encoding profile · encoder · fps`
+
+and nothing else - not its position, its absolute start, or the narration. The finished video
+has its own fingerprint (`output_hash`) over the ordered chunk fingerprints and the narration.
+
+| Change | Chunks re-rendered | Narration | Audio track / final video |
+| --- | --- | --- | --- |
+| Edit one scene's content | that scene | untouched | rebuilt (cheap) |
+| Re-narrate one segment (text or voice) | that segment's scenes (their durations change) | that segment only | rebuilt |
+| Edit every scene of a topic | those scenes | untouched | rebuilt |
+| Orientation changes | all (a different shape) | untouched | rebuilt, separate output |
+| Quality changes | all (a different size/encoding) | untouched | rebuilt, separate output |
+| Renderer / encoder / fps changes | all | untouched | rebuilt |
+| Nothing | none | untouched | none - the stored video is returned |
+
+A later segment merely *moving* (because an earlier one got longer) changes no fingerprint, so
+its chunks are reused. The dependency test is always a hash comparison, never a timestamp.
+
+### Timing
+
+Milliseconds stay canonical (Phase 9); frames are derived and never stored as truth.
+`frame = round(t_ms × fps / 1000)` (`domain.render.frame_at`, integer half-up). A chunk's
+frames are the difference of two *absolute* frames, `frame_at(end_ms) − frame_at(start_ms)`,
+so they telescope to exactly `frame_at(total_ms)` - no drift, however many scenes. Because that
+difference depends on the sub-frame phase of the start, a chunk is always *rendered* with
+`ceil(duration × fps / 1000)` frames and assembly keeps one fewer where the absolute rule needs
+it, by cutting half a frame before the last one in the concat list (`outpoint`) - stream copy,
+no re-encode, because chunks are encoded without B-frames. A chunk therefore does not depend on
+its phase, which is what lets an upstream duration change leave later chunks reusable.
+
+The timeline comes from the *current* measured audio durations (an exact prefix sum), not the
+scenes' stored `start_ms`: re-narrating an early segment leaves later segments' stored offsets
+out of date (Phase 9 does not rewrite fresh segments), and rendering must not care. A segment
+too short for a scene of its own (Phase 9's degenerate case) is covered by the previous scene,
+so the picture never has a gap while that narration plays.
+
+Narration is assembled as one mono 16-bit WAV in which each segment is fitted to the samples
+between its own absolute start and the next segment's start (`sample_at`, the same half-up rule),
+so audio is placed sample-exactly too and its error never accumulates.
+
+### Encoding (decided from measurements, `scripts/verify_phase10.py`)
+
+| | `high` | `low` |
+| --- | --- | --- |
+| Size | 1920×1080 / 1080×1920 | 960×540 / 540×960 |
+| H.264 | High profile, level 4.0, `yuv420p`, BT.709 limited range, CRF 20, preset `medium` | High, level 3.1, CRF 30, `veryfast` |
+| GOP / B-frames | 60 frames, none (a chunk's last frame must be removable without re-encoding) | same |
+| x264 tuning | `scenecut=0:threads=4:rc-lookahead=10` | same |
+| Audio | AAC-LC, mono, 22 050 Hz (the narration's own format - never widened to stereo / 48 kHz), 96 kb/s target (≈ 109 kb/s achieved) | 64 kb/s target |
+| Container | MP4, `+faststart` (index first: plays and seeks before it has downloaded) | same |
+
+The encoder is a setting (`RENDER_VIDEO_ENCODER`: `libx264` default, `h264_nvenc`); it is part of
+every fingerprint, so switching re-renders rather than mixing two encoders in one video. NVENC
+works on this machine's RTX 3050 Ti but is not faster (the compositor, not the encoder, is the
+bottleneck - 190 fps vs 220 fps for libx264 on a 1080p chunk) and produced 66% larger files
+(138 KB vs 83 KB for the same chunk), so `libx264` stays the default.
+
+**30 fps** rather than 24 or 25: slides, fades and slides-in are visibly smoother, the cost over 25
+is ~20% more frames of mostly-static content (a few percent of bytes), and web/phone playback is
+frame-rate agnostic, so there is no Indian-versus-European convention to honour. Phase 9 stores no
+frame rate; only the render configuration does.
+
+x264's default thread count (one frame-thread per logical core, 20 here) held ~2 GB of frames in
+flight per render and was no faster; limiting it to four cut peak memory by about two thirds
+(measured: 2 concurrent 1080p chunks, 2.1 GB → 0.7 GB) and was slightly quicker.
+
+### Storage
+
+Chunks live in `BUCKET_SEGMENTS` at `projects/{project}/renders/chunks/{orientation}-{quality}/{chunk_hash}.mp4`;
+finished videos in `BUCKET_OUTPUTS` at `projects/{project}/renders/{script}/{orientation}-{quality}.mp4`. Keys are
+built from the project id and validated values only, and every key read back from a row is checked
+to lie inside the project's own prefix before it is used (`domain.source_storage.belongs_to_project`).
+No video bytes are in Postgres: `render_chunks` (a content-addressed cache, unique per
+`(project, chunk_hash)`), `render_outputs` (at most one current video per `(script, orientation,
+quality)`) and `render_output_scenes` (one small row per scene, recording which chunk the video
+used - how a single edited scene shows as *stale* without marking the whole video stale) only name
+objects. A chunk row is inserted after its upload, so the row is the commit: a crash in between
+leaves an orphan object at a deterministic key that the retry overwrites, never a row pointing
+at nothing. After a successful render, chunks of that configuration that no video uses and the
+new plan does not need are removed. Deleting a project removes every chunk and video object
+(`services.projects.delete_project` gathers them from the rows before the cascade, then
+`remove_stored_files` deletes them exactly as it does uploads and narration audio).
+
+### The job
+
+`POST /v1/projects/{id}/scripts/{script_id}/render` (`orientation`, `quality` - both required, unknown
+fields are a 422) answers `202` with a `render_video` job and an **estimate** (scenes to render vs reusable,
+video length, expected size). It refuses, before any work and with a message that says what to do:
+a script that is not approved (409); narration missing, stale or in another format; a storyboard
+that is incomplete or stale; scenes whose timings do not tile their segment; a video longer than
+`MAX_RENDER_DURATION_MS` (10 minutes today - the design does not depend on the number); another render
+already queued or running for the project (409); or too little free disk space in `RENDER_WORK_DIR`
+(507; checked again by the worker). It needs an `Idempotency-Key` (1–255 characters).
+
+The worker (1) plans the render and checks every stored chunk is real - its row exists, its key is in
+the project's prefix, its object exists with the recorded size (a missing or damaged one is forgotten and
+re-rendered); (2) renders the missing chunks (`RENDER_CONCURRENCY`, default 2 at a time), each uploaded and
+recorded in its own short transaction the moment it finishes; (3) only when every chunk exists, downloads
+them, assembles the narration and the video, **verifies the result with `ffprobe`** (codecs, size, 30 fps,
+exact frame count, both streams' durations within 120 ms of the narration, `+faststart`) and publishes it.
+A chunk that fails does not stop the others or discard finished work: the job ends `failed` with
+"*N* render section(s) need another attempt" and `result.failed_chunk_hashes`, and **Retry**
+(`POST /v1/projects/{id}/render/retry`) renders only those. A failed assembly keeps every chunk and a retry
+only re-assembles. A job left `running` by a dead worker is failed after `RENDER_STALE_AFTER_SECONDS` and the
+next render resumes from the chunks that were committed. If nothing has changed since the stored video was
+made and it is still in storage, the job returns it without doing any work.
+
+Progress is written through independent short sessions, never the job's own transaction, and is real:
+`percent` counts chunks rendered plus one unit for assembly, `eta_seconds` appears only once two chunks have
+finished, and `segment_index`/`scene_index` name the chunk being drawn. `GET .../render/progress` is one cheap
+query for polling; `GET .../scripts/{id}/render?orientation=&quality=` is the full per-scene status (`ready`,
+`needs_render`, `stale`, `failed`), computed fresh from fingerprints - completeness is never copied from a job's
+result - so a partly rendered video can never read as finished.
+
+`GET .../render/video?orientation=&quality=[&download=true]` streams the MP4 with HTTP `Range` support
+(`206`/`416`, `Accept-Ranges`) in 1 MiB reads from object storage; the video is never held in memory. A project or
+script the caller does not own is a 404 on every route.
+
+### Measured on this machine (i7-12700H, 14 cores / 20 threads, 16 GB, RTX 3050 Ti unused by libx264)
+
+A real lesson - 48 segments narrated by Piper (576 s of audio), a 120-scene storyboard using all six templates
+(scene text from a deterministic stand-in for the composer, through the real storyboard job) -
+`uv run python scripts/verify_phase10.py --minutes 10`. **MEASURED:**
+
+| Render | Time | Output | Bitrate | Peak RAM (worker process + FFmpeg) | Machine CPU (mean) |
+| --- | --- | --- | --- | --- | --- |
+| horizontal `high` 1920×1080 | 102.7 s (0.18× real time) | 30.5 MB | 423 kb/s | 1.22 GB (+0.73 GB over the worker's idle 0.49 GB) | 54% |
+| vertical `high` 1080×1920 | 101.9 s | 30.3 MB | 421 kb/s | 1.30 GB | 54% |
+| horizontal `low` 960×540 | 31.0 s (0.05×) | 10.7 MB | 149 kb/s | 0.94 GB | 38% |
+| vertical `low` 540×960 | 30.7 s | 10.9 MB | 151 kb/s | 1.02 GB | 42% |
+
+Assembly (stream copy + AAC + `+faststart`) took 3.8 s at `high`; GPU utilisation 0% (libx264). Peak memory is
+flat in video length (2.5 min: 1.10 GB; 10 min: 1.22 GB) because chunks are rendered, uploaded and discarded
+one at a time. Every output: 17 292 frames = `frame_at(576 415 ms)` exactly, packet timestamps all exactly 1/30 s apart
+(no gap, no overlap), video 15 ms shorter than the narration (one frame of quantisation) and audio 0.0 ms different,
+keyframes at every chunk start, decodes with no errors, horizontal and vertical audio byte-identical.
+
+Changing one segment's narration and going through the real product path (synthesise → storyboard → render):
+1 of 48 audio rows changed, 1 storyboard call, **2 of 120 scenes re-rendered in 6.8 s**, 118 chunks reused; an unchanged
+re-render did no work (0.22 s). A worker killed after 6 committed chunks resumed by drawing the other 9; one failed chunk
+was retried alone (1 drawn, 14 reused); range reads matched the stored bytes.
+
+**PROJECTED** (linear in length from the rates above - 10.7 s of rendering, 3.17 MB and 12.2 chunks per video minute at
+`high`; not run at these lengths): 10 min ≈ 107 s, 32 MB, 122 chunks; 30 min ≈ 5.4 min, 95 MB, 366 chunks; 60 min ≈ 10.7 min,
+190 MB, 732 chunks. Scratch space during a render is about twice the video plus the WAV; peak RAM is not expected to grow.
+Size depends on content: illustration placeholders and text compress far better than photographs will.
+
+### Not decided / not verified
+
+- **H.264 and AAC patent licensing, and distributing an FFmpeg build that contains libx264 (GPL),** are business/legal decisions.
+  Choosing `h264_nvenc` does not solve them. Local development uses the GPL "full" FFmpeg build (winget `Gyan.FFmpeg`).
+- The scene text used above came from a stand-in for `LLM.compose_storyboard_scenes`; real composer output is unverified (README, "Testing").
+- The web player fetches the video into a `blob:` URL (the same way narration audio is played) so it can send the auth
+  header; the API streams and honours `Range`, but the browser holds the whole file. A proxy route would give true streaming
+  for much longer videos.
+- Formula/code scenes draw the text as given, in a monospace font; there is no LaTeX typesetting.
+- Rendered on Windows only; the Linux container path (FFmpeg on PATH, the vendored fonts) is unverified.
+
 ## Testing, and what is not yet verified against a real provider
 
 ```bash
@@ -623,6 +821,9 @@ the genuine local MinIO. `pytest.mark.provider_mocked` does not apply to it.
    documented false-positive cases, token use against `_storyboard_max_tokens`,
    and how often the soft lexical-overlap signal fires on genuinely faithful
    scenes in practice.
+10. **Video rendering** (Phase 10) is verified end to end with real Piper narration, real
+    FFmpeg and the real renderer (`scripts/verify_phase10.py`, "Video rendering"), but its scene
+    text came from a stand-in for `LLM.compose_storyboard_scenes`.
 
 ## Known limitations
 
@@ -667,8 +868,8 @@ the genuine local MinIO. `pytest.mark.provider_mocked` does not apply to it.
   derived from the file's checksum) rather than adding a second one.
 - **No image is generated for a storyboard's illustration slots.** An
   illustration is a description and up to three subject labels only, shown as
-  "Illustration pending" everywhere - generating the actual image is a future
-  phase's work, not part of Phase 9.
+  "Illustration pending" in the workspace and as a deliberate placeholder panel in
+  a rendered video - generating the actual image is a future phase's work.
 - **The provenance rule is a safety guard, not fact verification.** It only
   checks that a number, date, unit or proper noun in scene text also appears
   in the segment's own narration - it says nothing about whether a sentence

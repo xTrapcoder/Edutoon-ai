@@ -265,6 +265,13 @@ export function RenderPanel({ project, script, selection, onSelectionChange }: R
       ? describeError(retry.error, { action: 'retry the render' })
       : null;
 
+  const failureTitle = summary[0]?.text ?? 'The video is not finished';
+  const failureMessage = renderFailureMessage(jobForSelection ?? job);
+  // The job's own message usually begins with the same sentence as the title: say it once.
+  const failureBody = failureMessage.startsWith(failureTitle)
+    ? failureMessage.slice(failureTitle.length).replace(/^[.\s]+/, '')
+    : failureMessage;
+
   function start() {
     if (canRetry) retry.mutate();
     else enqueue.mutate(selection);
@@ -332,8 +339,8 @@ export function RenderPanel({ project, script, selection, onSelectionChange }: R
         ) : null}
 
         {phase === 'failed' ? (
-          <Alert tone="danger" title={summary[0]?.text ?? 'The video is not finished'}>
-            {renderFailureMessage(jobForSelection ?? job)}
+          <Alert tone="danger" title={failureTitle}>
+            {failureBody}
           </Alert>
         ) : null}
 
@@ -363,18 +370,6 @@ export function RenderPanel({ project, script, selection, onSelectionChange }: R
           </div>
         ) : null}
 
-        {phase !== 'active' &&
-        phase !== 'complete' &&
-        phase !== 'failed' &&
-        summary.length > 0 &&
-        phase !== 'outdated' ? (
-          <ul className="space-y-1 text-[13px] text-ink-600">
-            {summary.map((line) => (
-              <li key={line.text}>{line.text}</li>
-            ))}
-          </ul>
-        ) : null}
-
         {counts.length > 0 && phase !== 'blocked' ? (
           <div className="flex flex-wrap gap-1.5" aria-label="Scene render states">
             {counts.map((entry) => (
@@ -385,7 +380,7 @@ export function RenderPanel({ project, script, selection, onSelectionChange }: R
           </div>
         ) : null}
 
-        {status && phase !== 'blocked' && phase !== 'active' ? (
+        {status && phase !== 'blocked' && phase !== 'active' && phase !== 'complete' ? (
           <p className="text-[13px] text-ink-500">{estimateLine(status)}</p>
         ) : null}
 

@@ -123,6 +123,36 @@ def test_narration_is_placed_at_absolute_sample_positions(tmp_path):
         )
 
 
+def test_narration_stays_at_its_absolute_position_however_many_segments_came_before(tmp_path):
+    """Ten-millisecond slots are 220.5 samples: rounding each one alone loses half a sample every
+    other slot, so after a hundred slots audio would be ~25 samples early. Every segment must
+    start exactly at ``sample_at(start_ms)``, whatever came before it."""
+    count, slot_ms = 100, 10
+    placements = []
+    for index in range(count):
+        path = tmp_path / f"{index}.wav"
+        with wave.open(str(path), "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(SAMPLE_RATE)
+            wav.writeframes((index + 1).to_bytes(2, "little", signed=True) * 300)  # a marker value
+        placements.append(NarrationPlacement(path, index * slot_ms, (index + 1) * slot_ms))
+    out = tmp_path / "n.wav"
+
+    written = ffmpeg_tools.assemble_narration_wav(placements, out, sample_rate=SAMPLE_RATE)
+
+    assert written == r.sample_at(count * slot_ms, SAMPLE_RATE)
+    with wave.open(str(out)) as result:
+        samples = result.readframes(result.getnframes())
+    values = [
+        int.from_bytes(samples[i * 2 : i * 2 + 2], "little", signed=True) for i in range(written)
+    ]
+    for index in range(count):
+        start = r.sample_at(index * slot_ms, SAMPLE_RATE)
+        assert values[start] == index + 1
+        assert start == 0 or values[start - 1] == index  # the previous segment ends right there
+
+
 def test_narration_of_the_wrong_format_is_refused_clearly(tmp_path):
     bad = tmp_path / "stereo.wav"
     with wave.open(str(bad), "wb") as wav:

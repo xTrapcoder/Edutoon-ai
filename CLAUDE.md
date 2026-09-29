@@ -22,7 +22,7 @@ unsupported claims ever reach the script or the screen.
 | Cache / queue  | Redis                                                |
 | Object storage | S3-compatible (MinIO locally)                        |
 | Auth           | Clerk                                                |
-| Animation      | Remotion                                             |
+| Animation      | Pillow scene compositor + FFmpeg (Remotion not used) |
 
 ## Architecture rules — do not break these
 
@@ -92,7 +92,12 @@ unsupported claims ever reach the script or the screen.
   replaces one segment's whole scene set via DELETE + INSERT in a single
   SAVEPOINT, never a per-row `UPDATE` — and widens `ck_jobs_kind` to add
   `generate_storyboard` (see `apps/api/README.md`, "Scene / Storyboard
-  layer").
+  layer"). Migration 0016 (Phase 10) adds `render_chunks` (a content-addressed
+  cache of rendered scene videos, one row per `(project_id, chunk_hash)`, inserted
+  only once the object is uploaded), `render_outputs` (the finished MP4 for one
+  `(script, orientation, quality)`) and `render_output_scenes` (which chunk each
+  scene used in that output) - no video bytes in the database (`apps/api/README.md`,
+  "Video rendering").
 - `projects.status` is derived, never set by a client: `edutoon.domain.project_status` is the
   rule and `projects.refresh_status` applies it whenever a job is queued or ends or a PDF fails
   to parse (`apps/api/README.md`, "Project status"). Deleting a project removes its uploaded PDFs
@@ -165,8 +170,48 @@ the provenance reviewer flag as a warning). Real Clerk sign-in is
 **unverified** - the Clerk keys are placeholders - as are the real
 LLM/embeddings providers.
 
-Not built yet: a front end for animation or rendering.
-**Phase 10 has not started and needs the owner's explicit approval.**
+**Phase 10 - professional video rendering: built, and verified end to end on this
+machine (see `apps/api/README.md`, "Video rendering").** An approved script with fully
+measured narration and a complete storyboard renders to a real MP4: H.264 High +
+AAC-LC mono 22.05 kHz, 30 fps, 1920x1080 or 1080x1920 (`high`) or half-size (`low`, a
+review render), with `+faststart`. The engine is a **Pillow scene compositor feeding
+FFmpeg** behind a `Renderer` interface (`providers/renderer`); Remotion was rejected on
+licensing (a paid company licence above three people) and is not used. All six
+storyboard templates render from text alone, with a deliberate "Illustration"
+placeholder where a picture is not yet generated (no image generation exists).
+
+The design rests on one idea: **one scene is one render chunk, stored under a
+fingerprint of exactly the inputs that decide its bytes** (`domain.render`: template,
+content, duration, orientation, quality, encoder, fps, renderer version, encoding
+profile). Nothing else - not its position, its absolute start or the narration - so
+editing one scene, re-narrating one segment, or changing one topic re-renders only the
+scenes it touches, and everything else is found already rendered. Timing is
+absolute: `frame = round(t_ms * fps / 1000)` (`domain.render.frame_at`, integer
+half-up), frame counts telescope to exactly `frame_at(total_ms)`, and a chunk is always
+rendered with `ceil` frames and trimmed by at most one at assembly without re-encoding
+(no B-frames). Narration is assembled sample-exactly at each segment's absolute start.
+The finished video is verified with `ffprobe` before it is published.
+
+`render_video` jobs (`services.render`) follow the storyboard job's conventions:
+enqueue behind a prerequisite gate (approved script, ready and current narration, complete
+storyboard, valid timings, `MAX_RENDER_DURATION_MS` = 10 minutes, free disk space), one
+active render per project (409), an `Idempotency-Key`, independent progress commits, stale
+recovery, sanitised errors. Each chunk is uploaded and recorded in its own transaction the
+moment it finishes, so a crash or a failed chunk loses nothing already made and a retry
+renders only what is left. `GET .../render/video` streams with HTTP `Range` support.
+
+The front end adds a Video card to Script Studio (shape and quality, estimate, real
+progress, failure and retry, a player and download) and a per-scene render-state badge
+(ready / needs render / stale / failed) on the storyboard's scene cards. The current
+maximum is 10 minutes; nothing in the chunked design depends on that number.
+
+**Not decided / not verified (Phase 10):** H.264 and AAC patent licensing, and shipping an
+FFmpeg build with libx264 (GPL), are business/legal decisions that choosing an encoder does
+not settle; the front end plays the video from a `blob:` URL (the whole file is fetched before
+it plays - fine at 10 minutes, worth a proxy route for much longer videos); real Clerk
+sign-in is still unverified.
+
+**Phase 11 has not started and needs the owner's explicit approval.**
 
 ## Commands
 
@@ -196,9 +241,9 @@ apps/
   api/        FastAPI service (uv, src/edutoon)
     src/edutoon/          api/ (routers, schemas) · services/ · domain/ (pure) ·
                           repositories/ · providers/ · worker/ · db/ · core/
-    alembic/              migration environment + versions/0001..0015
+    alembic/              migration environment + versions/0001..0016
   parser/     PDF/topic parser — not yet initialised
-  render/     Remotion render worker — not yet initialised
+  render/     placeholder - the renderer lives in apps/api/src/edutoon/providers/renderer
 packages/
   config/     shared TS config (@edutoon/config)
   contracts/  API contract: openapi.json + generated TS types (@edutoon/contracts)

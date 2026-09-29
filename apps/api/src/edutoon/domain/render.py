@@ -83,7 +83,7 @@ Indian and European delivery (web/mobile playback is frame-rate agnostic), where
 broadcast convention this product does not target. Phase 9 stores no frame rate; only the
 render configuration does."""
 
-RENDERER_VERSION: Final = "pillow-ffmpeg/1"
+RENDERER_VERSION: Final = "pillow-ffmpeg/2"
 """Identifies the drawing code *and* the assembly recipe. Bump it whenever a change would
 alter the pixels or the bitstream of an existing scene - every chunk fingerprint includes it,
 so artifacts from an older renderer are never treated as current."""
@@ -122,6 +122,7 @@ class EncodingProfile:
     pix_fmt: str
     gop_frames: int
     bframes: int
+    x264_params: str
     audio_bitrate_kbps: int
     audio_sample_rate: int
     audio_channels: int
@@ -137,8 +138,17 @@ class EncodingProfile:
             "pix_fmt": self.pix_fmt,
             "gop": self.gop_frames,
             "bframes": self.bframes,
+            "x264_params": self.x264_params,
         }
 
+
+# x264 tuning, MEASURED (apps/api/README.md, "Video rendering"): ``scenecut=0`` because every chunk
+# is one scene and its keyframes are placed by the chunk boundaries, not by the encoder;
+# ``threads=4`` because x264's default of one frame-thread per logical core (20 on the
+# development machine) held ~2 GB of frames in flight per render and was no faster - with four
+# threads a render peaks at about a third of the memory and finishes sooner; ``rc-lookahead=10``
+# because a still-heavy scene gains nothing from looking 40 frames ahead.
+X264_PARAMS: Final = "scenecut=0:threads=4:rc-lookahead=10"
 
 # ``bframes=0`` is deliberate: it makes the last frame of a chunk removable at assembly
 # without re-encoding (nothing decodes after it), which is what lets a chunk be rendered once
@@ -155,6 +165,7 @@ PROFILES: Final[Mapping[str, EncodingProfile]] = {
         pix_fmt="yuv420p",
         gop_frames=60,
         bframes=0,
+        x264_params=X264_PARAMS,
         audio_bitrate_kbps=64,
         audio_sample_rate=22_050,
         audio_channels=1,
@@ -169,6 +180,7 @@ PROFILES: Final[Mapping[str, EncodingProfile]] = {
         pix_fmt="yuv420p",
         gop_frames=60,
         bframes=0,
+        x264_params=X264_PARAMS,
         audio_bitrate_kbps=96,
         audio_sample_rate=22_050,
         audio_channels=1,
@@ -189,8 +201,10 @@ DURATION_TOLERANCE_MS: Final = 120
 
 # --- benchmark-derived sizing (MEASURED on the development machine; see the README) --------
 # Bytes of finished video per second of output, per quality; used only to size the disk check
-# and the estimate shown before a render. Deliberately generous (rounded up).
-ESTIMATED_VIDEO_BYTES_PER_SECOND: Final[Mapping[str, int]] = {"low": 40_000, "high": 150_000}
+# and the estimate shown before a render. MEASURED on a real 10-minute lesson (text, shapes and
+# illustration placeholders): 53 KB/s at ``high`` and 18 KB/s at ``low``. Rounded up by half
+# again, since busier content (real photographs, once illustrations exist) will need more.
+ESTIMATED_VIDEO_BYTES_PER_SECOND: Final[Mapping[str, int]] = {"low": 27_000, "high": 80_000}
 
 
 def profile_for(quality: str) -> EncodingProfile:

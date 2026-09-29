@@ -537,6 +537,16 @@ async def _replace_scene(db_session, built: Built, segment_index: int, scene_ind
     )
 
 
+async def _narration_bytes(storage: Storage, audio_by_segment) -> dict:
+    """The stored narration audio itself, per segment - what a render must never rewrite."""
+    return {
+        segment_id: (
+            await storage.get_object(bucket=audio.storage_bucket, key=audio.storage_key)
+        ).body
+        for segment_id, audio in audio_by_segment.items()
+    }
+
+
 async def test_editing_one_scene_re_renders_only_that_scene_and_never_the_narration(
     db_session, storage, renderer, worker_sessionmaker, built
 ):
@@ -544,6 +554,7 @@ async def test_editing_one_scene_re_renders_only_that_scene_and_never_the_narrat
     audio_before = {
         s.id: await audio_repo.get_by_segment_id(db_session, s.id) for s in built.segments
     }
+    audio_bytes_before = await _narration_bytes(storage, audio_before)
     renderer.chunks.clear()
 
     await _replace_scene(
@@ -566,6 +577,13 @@ async def test_editing_one_scene_re_renders_only_that_scene_and_never_the_narrat
     for segment in built.segments:  # narration is untouched: same rows, never rewritten
         after = await audio_repo.get_by_segment_id(db_session, segment.id)
         assert after == audio_before[segment.id]
+    assert await _narration_bytes(storage, audio_before) == audio_bytes_before  # nor its audio
+    assert (
+        await jobs_repo.get_latest_by_project_kind(
+            db_session, project_id=built.project.id, kind="synthesise_voice"
+        )
+        is None
+    )  # and a render never asks for narration to be made again
 
 
 async def test_renarrating_one_segment_re_renders_only_its_scenes_even_though_later_ones_move(

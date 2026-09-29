@@ -33,6 +33,7 @@ dev = [
     "ruff",
     "mypy",
     "fpdf2",
+    "psutil>=7.2.2",
 ]
 
 [build-system]
