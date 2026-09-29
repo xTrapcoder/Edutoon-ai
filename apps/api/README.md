@@ -513,9 +513,11 @@ fps / 1000)` belongs to a future rendering phase, rule 6).
 template - a recap is an ordinary `bullet_points` scene titled "Recap".
 Three (`title_card`, `bullet_points`, `formula_or_code`) carry no
 illustration slot and are fully renderable from text alone. An illustration
-slot is only ever `{"description": ..., "subject_labels": [...]}` - no image
-is generated in this phase, and the frontend always shows "Illustration
-pending" for one, never a real picture. `content` is orientation-independent;
+slot is `{"description": ..., "subject_labels": [...]}` and, since Phase 11, an
+optional structured `visual` that the renderer draws itself (see "Educational
+visuals"). No image is ever generated: the workspace summarises a visual in
+words, or says "Shown as text - no visual", never "Illustration pending".
+`content` is orientation-independent;
 `layout_for(template, orientation)` is a deterministic, code-only lookup -
 never persisted, and a vertical layout genuinely differs, structurally, from
 its horizontal one for every template (mutation-tested: swapping a
@@ -577,11 +579,11 @@ Phase 10 turns an approved script - with fully measured narration and a complete
 storyboard - into a real, seekable MP4: **H.264 High + AAC-LC, 30 fps**, 1920×1080
 (horizontal) or 1080×1920 (vertical) at `high` quality, and half that size at `low`
 (a review render). Rendering makes no provider call and needs no key: it reads what
-Phases 8 and 9 stored and produces pictures and bytes. No image is generated - an
-illustration slot renders a deliberate placeholder (a labelled "Illustration" panel
-carrying the scene's own description and subject labels), so `labelled_diagram`,
-`split_text_illustration` and `full_bleed_illustration` are as watchable as the three
-text-only templates.
+Phases 8 and 9 stored and produces pictures and bytes. No image is generated. Since
+Phase 11 a scene's diagram is drawn procedurally from its structured `visual` (see
+"Educational visuals"); a scene without a valid one is drawn as deliberate text - numbered
+parts, a statement card, or the text alone - so `labelled_diagram`, `split_text_illustration`
+and `full_bleed_illustration` are as watchable as the three text-only templates.
 
 ### Which renderer, and why
 
@@ -611,7 +613,8 @@ is one render chunk**. A chunk is *video only* and is stored under a fingerprint
 (`chunk_hash`, `domain.render.chunk_fingerprint`) of exactly what decides its bytes:
 
 `renderer version · template · content · duration · orientation · output size · quality's
-encoding profile · encoder · fps`
+encoding profile · encoder · fps · how it joins its neighbours (fade in / out, 0 for a cut) ·
+visual drawing version (illustrated templates only)`
 
 and nothing else - not its position, its absolute start, or the narration. The finished video
 has its own fingerprint (`output_hash`) over the ordered chunk fingerprints and the narration.
@@ -643,7 +646,8 @@ its phase, which is what lets an upstream duration change leave later chunks reu
 
 The timeline comes from the *current* measured audio durations (an exact prefix sum), not the
 scenes' stored `start_ms`: re-narrating an early segment leaves later segments' stored offsets
-out of date (Phase 9 does not rewrite fresh segments), and rendering must not care. A segment
+out of date (Phase 9 does not rewrite fresh segments), and rendering must not care (the storyboard read
+model now computes the same prefix sum on read - "Timings on read"). A segment
 too short for a scene of its own (Phase 9's degenerate case) is covered by the previous scene,
 so the picture never has a gap while that narration plays.
 
@@ -668,6 +672,117 @@ This changed pixels of existing text templates, so `RENDERER_VERSION` went from
 cached chunk once** (text templates included): the next render re-renders them instead of
 reusing chunks that may hold missing-glyph boxes. `tests/test_domain_render.py` pins the
 fingerprints of the text-only templates so a later change cannot silently do it again.
+
+### Educational visuals (Phase 11)
+
+An illustrated scene (`labelled_diagram`, `split_text_illustration`, `full_bleed_illustration`) may carry
+`content.illustration.visual`: a small, closed, structured description of a diagram that the compositor
+**draws itself** with Pillow - no image is generated, nothing is stored beyond the scene's own JSON, and there is
+no new table, bucket or rendering framework. Five kinds (`domain/visual.py`), each a fixed shape:
+
+| Kind | Shape and limits |
+| --- | --- |
+| `process_flow` | 2 to 6 ordered `nodes` (`label`, optional `detail`), optional `focus` (an index) |
+| `cycle` | 3 to 6 `nodes` drawn as a loop that returns to the first |
+| `hierarchy` | 2 to 9 `nodes`, each with `parent` (an index; the first has none), at most 3 levels and 5 per level |
+| `comparison` | `relation` `versus` or `before_after` (exactly 2 columns), 2 to 3 `columns` of a `heading` and 2 to 4 `points` |
+| `labelled_components` | `form` `hub` or `layers`, a `subject` and 2 to 6 `parts` |
+
+Text limits: label 28, detail 60, title 60, heading 28, point 40, subject 28 characters; 400 characters of text in
+all and 2 048 serialised bytes per visual. `labelled_diagram` and `full_bleed_illustration` give a visual the whole
+frame; `split_text_illustration` gives it half, so it holds fewer (at most 4 steps, cycle nodes or parts, 5 hierarchy
+nodes, 2 columns of 3 points) - a bigger one is dropped at storyboard time, where it is counted, not discovered at
+render time. The schema is **closed** - an unknown key is rejected, never ignored; control, format, bidi and
+private-use characters are rejected. `visual_dropped` is a mark only the server sets (dropping a visual discards any
+such flag the model supplied and writes its own; a visual together with the flag is rejected). There is deliberately no
+`value_chart`, map, photograph, anatomy or apparatus kind: a chart would put numbers on screen, and every number on
+screen must come from the narration.
+
+**What the model is told.** `LLM.compose_storyboard_scenes` embeds a JSON schema for the visual in its tool
+(`domain/visual_schema.py`), generated from the same constants the runtime validator reads, so a limit cannot be
+changed in one place. `tests/test_visual_schema.py` proves *schema-valid ⇔ validator-accepts* over a corpus of
+structural cases (with its own small JSON-schema checker that raises on any keyword it does not understand). Rules a
+schema cannot express - a hierarchy's `parent` must point at an earlier node, a `before_after` has exactly two
+columns, a scene's total text budget - are stated to the model in the schema's description and enforced only by the
+validator; the test documents that gap rather than hiding it. Output that fails is dropped (below), never coerced.
+
+**Provenance is unchanged in principle and stricter in reach** (`domain.storyboard_provenance`). Every string leaf
+of a visual - however deeply nested - is checked like any other scene text; every numeric JSON leaf is checked
+against the narration too (so a number cannot be smuggled in as a value rather than a string); only the structural
+integers `parent` and `focus`, and only inside a `visual`, are exempt. The *raw* content is checked before an invalid
+visual is dropped, so a fabricated number inside a visual that is about to be dropped is still a hard failure of that
+segment's scene set.
+
+**An invalid visual never fails a segment, and is never silent.** A visual that does not parse, or does not fit its
+template's region, is removed from the scene; the scene keeps its other content, is marked
+`illustration.visual_dropped`, and is drawn by the template's deterministic fallback. `GET .../storyboard` returns
+`dropped_visual_count` (counted fresh from the stored scenes, so it cannot drift from what will be drawn) and the job's
+result records the same figure; the workspace says "N visuals fell back to text because their visual specifications
+were invalid." and shows no raw JSON. The log line `storyboard.visual_dropped` names the field and the rule, never
+the text. `labelled_diagram`'s `labels` are optional when a valid visual exists (existing scenes with labels stay
+valid); the template is described in the workspace as "labelled parts".
+
+**Layout is pure and exact** (`domain/visual_layout.py`, no I/O, no Pillow): integer geometry on a `Units` scale, a
+`TextMeasurer` injected by the renderer (`providers/renderer/visual_text.py`, with 6% headroom), two phases (measure
+every text block, then place), and a `LayoutOverflow` when nothing fits, which the compositor answers with the
+fallback rather than a clipped picture. Font size steps down a fixed ladder (`FONT_PERCENTS`) to its role's minimum
+before giving up. Rings use a fixed-point table (`RING`), never `sin`/`cos`, so a cycle is identical on every machine.
+**Horizontal and vertical are different designs, not one layout scaled:**
+
+| Kind | Horizontal (16:9) | Vertical (9:16) |
+| --- | --- | --- |
+| `process_flow` | a row of boxes joined left to right (wraps to fewer columns when narrow) | a column joined top to bottom |
+| `cycle` | a ring with arrowed arcs | a column with a return arrow up the side |
+| `hierarchy` | a tree, parents above children | an indented outline with elbow connectors |
+| `comparison` | columns side by side (a VS disc between two) | columns stacked as bands |
+| `labelled_components` | `hub`: the subject in the middle, parts around it; `layers`: stacked bands | the subject above its parts |
+
+`check_layout` runs on every candidate layout (at render time as well as in the tests) and asserts what a reader
+relies on: nothing overlaps, everything is inside the safe area, no connector crosses a box's interior, text fits its
+box, type never falls below a floor; a candidate that fails is discarded and the next size tried. Mutation-checked:
+swapping either orientation of any kind is caught.
+
+**Painting** (`providers/renderer/visual_primitives.py`, `visual_scene.py`): rounded boxes, number markers, dividers and
+connectors with arrowheads, all built from integer fixed-point geometry and **tight-cropped** to their own bounding box
+(a full-canvas connector layer cost 182 ms per frame in Stage A; a tight one 7.6 ms). Reveals are progressive and
+deterministic - the title, then each item in reading order, a straight connector drawing as a wipe along its path and a bent one fading in - with no
+bounce, pulse, zoom, rotation or blur, and **no attempt to sync to speech** (Phase 8 stores no word or sentence timings,
+so a reveal is paced across the scene, never claimed to follow the voice).
+
+**Fallbacks are deliberate, not placeholders.** With no valid visual: `labelled_diagram` draws its `labels` as a
+numbered list of parts (their positions are not used, and no figure is implied), under its subject label if it has one -
+and, with no labels at all, the statement card below; `full_bleed_illustration` draws a strong statement card from its
+caption (else its description), the subject labels beneath; `split_text_illustration` gives the whole width to its
+text. None implies artwork, and none is an empty panel. The old "ILLUSTRATION" panel is gone.
+
+**What invalidates what.** A scene's chunk fingerprint carries `visual`: an identifier built from
+`VISUAL_FRAMEWORK_VERSION`, the kind's own version in `VISUAL_TYPE_VERSIONS` (else the template's
+`FALLBACK_VERSIONS`), and the fallback version - so editing one visual re-renders that scene alone, a change to how
+one kind is drawn re-renders only scenes of that kind, and the three text-only templates carry none of it. A
+golden-pixel test (`tests/test_renderer_visuals.py`) fails if drawing changes without a version bump. Orientation,
+quality, duration, content and renderer version are in the fingerprint as before. **The Pillow and FreeType library
+versions are deliberately not in it** (a documented gap, unchanged from Phase 10): a library upgrade that changes
+glyph rasterisation would not, by itself, invalidate cached chunks; bump `RENDERER_VERSION` when upgrading them.
+
+### Transitions and pacing (Phase 11)
+
+Phase 10 faded every scene in over 450 ms and out over 300 ms, so a long video spent a noticeable share of its frames
+on a blank or dim screen. Now **scenes of the same topic are joined by a straight cut, and a scene fades only where its
+topic begins or ends** (and at the start and end of the video). A topic is `script_segments.topic_id`; a script with no
+topics is one group. The fades are shorter (`RENDER_FADE_IN_MS` 240, `RENDER_FADE_OUT_MS` 200; each 0 to 1 500, and 0 is a
+straight cut everywhere). A scene that cuts in has its progressive reveal shifted so its first item is already on screen at
+its first frame - a cut must show content, not a bare title. The two fade lengths enter the fingerprint of the scenes
+that use them (a cut edge counts as 0), so retuning a fade re-renders only the scenes at topic edges, and the timeline is
+untouched: fades happen *inside* a scene's own frames, never lengthening or overlapping it, so no drift is possible.
+
+### Timings on read (Phase 11)
+
+A scene row's stored `start_ms` goes stale when an earlier segment is re-narrated (Phase 9 does not rewrite fresh segments).
+`GET .../storyboard` no longer returns it: `start_ms` is an integer **computed on read** from the current ready audio
+durations of the preceding segments plus the scene's offset within its segment - the same prefix sum the renderer uses
+(`domain.storyboard_timing.timeline_positions`), never persisted. The response also carries `timings_authoritative`: true
+when every input is final; false while narration is stale, being made or failed, in which case the workspace shows the
+one banner "Timings update when narration finishes." and keeps its per-scene stale badges.
 
 ### Encoding (decided from measurements, `scripts/verify_phase10.py`)
 
@@ -776,11 +891,68 @@ was retried alone (1 drawn, 14 reused); range reads matched the stored bytes.
 190 MB, 732 chunks. Scratch space during a render is about twice the video plus the WAV; peak RAM is not expected to grow.
 Size depends on content: illustration placeholders and text compress far better than photographs will.
 
+### Phase 11 measurements (`scripts/verify_phase11.py`, `scripts/mutation_check_phase11.py`)
+
+Same machine and method as above: real Piper narration, the real storyboard job, the real compositor and FFmpeg. The
+only stand-in is the storyboard *composer* (no LLM key exists): a deterministic one that emits every visual kind
+(process flow, cycle, hierarchy, comparison, labelled parts as a hub and as layers), the three text-only templates,
+three text fallbacks, scenes with `→ ≤ ✓ ₂`, and two deliberately invalid visuals - so validation, the drop,
+provenance, timing, planning, rendering and assembly are all the real code. `uv run python scripts/verify_phase11.py`
+(2.5 minutes, every check) and `--minutes 10 --perf-only` (the 10 minute cap). **MEASURED:**
+
+| Project | Render | Time | Output | Frames (found / expected) | Peak RAM (worker + FFmpeg) |
+| --- | --- | --- | --- | --- | --- |
+| 2.4 min, 30 scenes, 4 topics | horizontal `high` | 20.5 s | 5.2 MB | 4 324 / 4 324 | 1.05 GB |
+| | vertical `high` | 21.0 s | 5.2 MB | 4 324 / 4 324 | 1.11 GB |
+| | horizontal `low` / vertical `low` | 9.0 s / 9.0 s | 2.1 MB / 2.2 MB | 4 324 / 4 324 | 0.74 / 0.78 GB |
+| 9.6 min, 120 scenes (117 distinct chunks), 14 dropped visuals | horizontal `high` | 98.9 s (10.3 s per video minute) | 21.1 MB | 17 344 / 17 344 | 1.15 GB (+0.66 GB over the worker's idle) |
+| | vertical `high` | 98.9 s | 21.0 MB | 17 344 / 17 344 | 1.26 GB |
+
+Every output decodes with no errors, has packet timestamps all exactly one frame apart, a video 6 to 8 ms from the
+narration (the half-up frame rounding) and audio 0.0 ms from it; horizontal and vertical audio are byte-identical; there
+are no gaps or overlaps between scenes and the last one ends at the narration's end. The 10 minute run's assembly took
+4.1 s, and deleting the project removed all 236 chunk and video objects.
+
+Against the Phase 10 baseline on this machine (10 minute horizontal `high`: 102.7 s, 1.22 GB): **-3.8 s and -72 MB**. That
+is *not* a controlled comparison - Phase 10's scenes were text panels with a placeholder, these are drawn diagrams, and
+fewer frames are faded - so the honest reading is "no measurable regression", not "faster". Drawing cost per 6 second
+scene at 1080p, one thread, no FFmpeg (`visual_costs_MEASURED` in the report): setup 26 to 207 ms; 19 to 43% of frames
+are distinct (a static frame is reused); **5.5 to 7.5 ms per distinct frame for every visual kind, against 6.4 to 10.3 ms
+for the text templates** - a diagram is not dearer to draw than a text panel.
+
+| Check (2.4 min project) | Result |
+| --- | --- |
+| Repeat render after deleting every chunk and video | byte-identical (same SHA-256), 30 chunks redrawn |
+| Nothing changed | 0 chunks drawn, the stored video returned |
+| Edit one visual's title | 1 of 30 chunks re-rendered, 29 reused |
+| Re-narrate one segment (real Piper) | 1 audio row changed, 1 composer call, 2 of 30 chunks re-rendered, 28 reused; the read model showed the *current* start of the next segment (88 096 ms, stored value 85 194) with `timings_authoritative: false`, then `true` after regeneration |
+| Dropped visuals | 2 of 2 counted, storyboard still `complete`, both drawn as deliberate text |
+| Same-topic cuts (26, measured on the encoded video) | the outgoing scene's last frame is at 0.99 to 1.03 of its steady content; the incoming scene's first frame is already at 0.17 to 1.02 (a progressive reveal, never a bare background) |
+| Topic boundaries (4) | last frame of the outgoing scene at 0.14 to 0.25 of steady content (dimming out); first frame of the incoming one at 0.0 (bare background, fading in) |
+| Glyphs `→ ≤ ✓ ₂` in a visual and in a formula | drawn, not boxes (frames saved as `frame-glyphs_*.png`) |
+
+`scripts/mutation_check_phase11.py` applies 41 deliberate faults (the drawing version or visual id left out of the
+fingerprint, either orientation swapped for any of the five kinds, a node/label/text limit relaxed, unknown keys or
+invalid characters accepted, the LLM schema hard-coding a limit, nested or numeric text bypassing provenance, a
+prefix-sum drift, the read model showing the stale `start_ms`, `timings_authoritative` or `dropped_visual_count` wrong,
+a fade applied inside a topic or removed at a boundary, and more): **41 killed, 0 survived**; the Phase 10 script's 26
+are killed again.
+
 ### Not decided / not verified
 
 - **H.264 and AAC patent licensing, and distributing an FFmpeg build that contains libx264 (GPL),** are business/legal decisions.
   Choosing `h264_nvenc` does not solve them. Local development uses the GPL "full" FFmpeg build (winget `Gyan.FFmpeg`).
 - The scene text used above came from a stand-in for `LLM.compose_storyboard_scenes`; real composer output is unverified (README, "Testing").
+- **Real LLM visual generation is unverified** - the tool schema, the prompt and every dropped/kept decision are
+  exercised only against a stand-in. How often a real model emits a valid, useful visual, and how often it falls back
+  to text, is unknown until company keys exist.
+- **The procedural vocabulary is small on purpose**: five shapes, at most 9 nodes, no charts, maps, photographs,
+  anatomy or apparatus. A concept outside them is drawn as text, and a busy or long-worded visual can overflow its
+  region and fall back. There is no speech sync: reveals are paced across the scene.
+- **The Pillow and FreeType library versions are not part of the fingerprint** (intentionally left open, as in Phase 10):
+  after upgrading either, bump `RENDERER_VERSION` or cached chunks may keep the old glyph rasterisation.
+- The transition measurements compare frames of one encoded video with its own bare first frame; they show fades and
+  cuts happen where designed, not that the pacing *feels* right to a learner - that needs people, not a script.
 - The web player fetches the video into a `blob:` URL (the same way narration audio is played) so it can send the auth
   header; the API streams and honours `Range`, but the browser holds the whole file. A proxy route would give true streaming
   for much longer videos.
@@ -888,10 +1060,14 @@ the genuine local MinIO. `pytest.mark.provider_mocked` does not apply to it.
   repeats the paid embedding and LLM call; for an upload, an object written just
   before a failed commit stays in storage, and a retry overwrites it (its key is
   derived from the file's checksum) rather than adding a second one.
-- **No image is generated for a storyboard's illustration slots.** An
-  illustration is a description and up to three subject labels only, shown as
-  "Illustration pending" in the workspace and as a deliberate placeholder panel in
-  a rendered video - generating the actual image is a future phase's work.
+- **No image is generated for a storyboard's illustration slots.** A scene's diagram is
+  drawn procedurally from a small fixed vocabulary (process flow, cycle, hierarchy,
+  comparison, labelled parts - see "Educational visuals"); there is no map, photograph,
+  anatomy, apparatus or chart, and no AI image generation. A concept outside those five
+  shapes is drawn as text.
+- **Real LLM visual generation is unverified.** The model's tool schema and every prompt
+  are tested only against a stand-in; how often a real model produces a valid, useful
+  visual (and how often it is dropped to text) is unknown until company keys exist.
 - **The provenance rule is a safety guard, not fact verification.** It only
   checks that a number, date, unit or proper noun in scene text also appears
   in the segment's own narration - it says nothing about whether a sentence

@@ -177,13 +177,15 @@ AAC-LC mono 22.05 kHz, 30 fps, 1920x1080 or 1080x1920 (`high`) or half-size (`lo
 review render), with `+faststart`. The engine is a **Pillow scene compositor feeding
 FFmpeg** behind a `Renderer` interface (`providers/renderer`); Remotion was rejected on
 licensing (a paid company licence above three people) and is not used. All six
-storyboard templates render from text alone, with a deliberate "Illustration"
-placeholder where a picture is not yet generated (no image generation exists).
+storyboard templates render from text alone; since Phase 11 an illustrated scene's diagram
+is drawn procedurally from a structured `visual` (below), and a scene without one is drawn
+as deliberate text - never a placeholder panel (no image generation exists).
 
 The design rests on one idea: **one scene is one render chunk, stored under a
 fingerprint of exactly the inputs that decide its bytes** (`domain.render`: template,
 content, duration, orientation, quality, encoder, fps, renderer version, encoding
-profile). Nothing else - not its position, its absolute start or the narration - so
+profile; since Phase 11 also the scene's fade edges and, for illustrated templates, a visual
+drawing version). Nothing else - not its position, its absolute start or the narration - so
 editing one scene, re-narrating one segment, or changing one topic re-renders only the
 scenes it touches, and everything else is found already rendered. Timing is
 absolute: `frame = round(t_ms * fps / 1000)` (`domain.render.frame_at`, integer
@@ -211,7 +213,32 @@ not settle; the front end plays the video from a `blob:` URL (the whole file is 
 it plays - fine at 10 minutes, worth a proxy route for much longer videos); real Clerk
 sign-in is still unverified.
 
-**Phase 11 has not started and needs the owner's explicit approval.**
+**Phase 11 - educational visuals (Phase 11B): built and verified locally; not pushed (see
+`apps/api/README.md`, "Educational visuals", "Transitions and pacing", "Timings on read",
+"Glyph safety").** A scene's diagram is drawn by the compositor from a closed `visual` spec in
+its `illustration` - five kinds only (`process_flow`, `cycle`, `hierarchy`, `comparison`,
+`labelled_components`), validated by `domain/visual.py`, described to the LLM by a JSON schema
+generated from the same constants (`domain/visual_schema.py`), laid out purely with integer
+geometry and an injected text measurer (`domain/visual_layout.py` - a genuinely different design
+per orientation) and painted by `providers/renderer/visual_*.py`. No image generation, no
+chart / map / photo kinds, no new table, bucket, dependency or migration (head is still 0016).
+A structurally invalid visual is **dropped, not fatal**: the scene stays, is drawn by its
+template's deterministic fallback, and is counted in `dropped_visual_count` (shown in the
+workspace); a provenance violation - including nested text and numeric leaves - is still a hard
+failure. The fingerprint gains a visual drawing version and the fade lengths;
+`RENDERER_VERSION` is `pillow-ffmpeg/3` (a glyph-safety fix for `→ ≤ ✓` and friends - a one-time,
+intentional invalidation of cached chunks). Scenes of one topic are joined by a straight cut and
+fade only at topic boundaries and the video's ends (`RENDER_FADE_IN_MS` / `RENDER_FADE_OUT_MS`,
+240 / 200 by default). `GET .../storyboard` now computes `start_ms` on read from the current
+narration and reports `timings_authoritative`, so a re-narration can no longer leave later
+scenes showing stale times.
+
+**Not verified (Phase 11):** real LLM visual generation (the tool schema and prompts are tested
+against a stand-in only); the procedural vocabulary is deliberately small (a concept outside the
+five shapes is drawn as text); the Pillow / FreeType library versions are deliberately **not** in
+the fingerprint (a documented gap - bump `RENDERER_VERSION` when upgrading them).
+
+**Phase 12 has not started and needs the owner's explicit approval.**
 
 ## Commands
 
