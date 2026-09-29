@@ -7,7 +7,6 @@ import {
   CircleDashed,
   Clapperboard,
   Flag,
-  ImageOff,
   XCircle,
   type LucideIcon,
 } from 'lucide-react';
@@ -40,6 +39,7 @@ import {
 } from '@/lib/jobs';
 
 import { sceneStateView, type RenderSelection } from '@/lib/render';
+import { IllustrationSummary } from './visual-summary';
 
 interface StoryboardPanelProps {
   project: Project;
@@ -72,9 +72,9 @@ function RenderStateBadge({ state }: { state: RenderSceneState }) {
 const TEMPLATE_LABEL: Record<string, string> = {
   title_card: 'Title card',
   bullet_points: 'Bullet points',
-  labelled_diagram: 'Labelled diagram',
-  split_text_illustration: 'Text + illustration',
-  full_bleed_illustration: 'Full-bleed illustration',
+  labelled_diagram: 'Labelled parts',
+  split_text_illustration: 'Text + visual',
+  full_bleed_illustration: 'Full-frame visual',
   formula_or_code: 'Formula / code',
 };
 
@@ -95,20 +95,6 @@ function asStringArray(value: unknown): string[] {
   return Array.isArray(value)
     ? value.filter((item): item is string => typeof item === 'string')
     : [];
-}
-
-/** No image is ever generated for a scene - this is the one, unmistakable way an illustration
- * slot is ever shown, so it can never be mistaken for a real picture. */
-function IllustrationPending({ description }: { description?: string }) {
-  return (
-    <div className="flex items-start gap-2 rounded-md border border-dashed border-line-strong bg-surface-sunken px-2.5 py-2 text-[13px] text-ink-600">
-      <ImageOff className="mt-0.5 size-4 shrink-0 text-ink-400" aria-hidden />
-      <span>
-        <span className="font-medium text-ink-700">Illustration pending</span>
-        {description ? ` — ${description}` : ''}
-      </span>
-    </div>
-  );
 }
 
 function SceneContentPreview({ scene }: { scene: Scene }) {
@@ -148,7 +134,10 @@ function SceneContentPreview({ scene }: { scene: Scene }) {
       const labels = Array.isArray(content.labels) ? content.labels : [];
       return (
         <div className="space-y-2">
-          <IllustrationPending description={asString(illustration?.description)} />
+          <IllustrationSummary
+            content={content}
+            description={asString(illustration?.description)}
+          />
           {labels.length > 0 ? (
             <ul className="flex flex-wrap gap-1.5">
               {labels.map((raw, index) => {
@@ -171,7 +160,10 @@ function SceneContentPreview({ scene }: { scene: Scene }) {
       return (
         <div className="space-y-2">
           {asString(content.text) ? <p className="text-ink-800">{asString(content.text)}</p> : null}
-          <IllustrationPending description={asString(illustration?.description)} />
+          <IllustrationSummary
+            content={content}
+            description={asString(illustration?.description)}
+          />
         </div>
       );
     }
@@ -180,7 +172,10 @@ function SceneContentPreview({ scene }: { scene: Scene }) {
       const illustration = asRecord(content.illustration);
       return (
         <div className="space-y-2">
-          <IllustrationPending description={asString(illustration?.description)} />
+          <IllustrationSummary
+            content={content}
+            description={asString(illustration?.description)}
+          />
           {asString(content.caption) ? (
             <p className="text-ink-600">{asString(content.caption)}</p>
           ) : null}
@@ -356,6 +351,7 @@ export function StoryboardPanel({ project, script, renderSelection }: Storyboard
   const readyCount = status?.ready_segment_count ?? 0;
   const notReadyCount = status?.not_ready_segment_ids.length ?? 0;
   const complete = status?.is_complete ?? false;
+  const droppedVisuals = status?.dropped_visual_count ?? 0;
   const active = job !== null && isActiveJob(job);
   const progress = readStoryboardProgress(job ?? undefined);
   const percent = total > 0 ? Math.round((readyCount / total) * 100) : undefined;
@@ -402,6 +398,16 @@ export function StoryboardPanel({ project, script, renderSelection }: Storyboard
             Turn this script into a timed, templated scene timeline for animation.
           </p>
         )}
+
+        {/* Never silent: a visual the model got structurally wrong is dropped and its scene is
+            drawn as text, and the reviewer is told how many (never the raw specification). */}
+        {!active && droppedVisuals > 0 ? (
+          <Alert tone="info">
+            {droppedVisuals === 1
+              ? '1 visual fell back to text because its visual specification was invalid.'
+              : `${droppedVisuals} visuals fell back to text because their visual specifications were invalid.`}
+          </Alert>
+        ) : null}
 
         {!active && status ? (
           <p className="text-[13px] text-ink-500">

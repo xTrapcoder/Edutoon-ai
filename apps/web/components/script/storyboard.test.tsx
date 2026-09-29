@@ -139,7 +139,7 @@ describe('Storyboard (Phase 9)', () => {
     expect(screen.getByText('Bullet points')).toBeInTheDocument();
   });
 
-  it('shows an illustration slot as pending, never as a real image', async () => {
+  it('says plainly that a scene with no visual is drawn as text, never as a picture', async () => {
     serveProject({
       ...ready,
       scripts: [approvedDetail],
@@ -153,7 +153,10 @@ describe('Storyboard (Phase 9)', () => {
             scenes: [
               scene({
                 template: 'full_bleed_illustration',
-                content: { illustration: { description: 'A sunlit server room' } },
+                content: {
+                  illustration: { description: 'A sunlit server room' },
+                  caption: 'Servers keep data close',
+                },
               }),
             ],
           }),
@@ -166,9 +169,163 @@ describe('Storyboard (Phase 9)', () => {
 
     renderProjectPage(<ScriptPage />, 'script');
 
-    expect(await screen.findByText('Illustration pending')).toBeInTheDocument();
+    expect(await screen.findByText('Shown as text — no visual')).toBeInTheDocument();
     expect(screen.getByText(/A sunlit server room/i)).toBeInTheDocument();
+    expect(screen.getByText('Servers keep data close')).toBeInTheDocument();
+    expect(screen.queryByText(/illustration pending/i)).toBeNull();
     expect(document.querySelector('img')).toBeNull();
+  });
+
+  it("summarises a scene's visual in words, by kind", async () => {
+    serveProject({
+      ...ready,
+      scripts: [approvedDetail],
+      scriptDetail: approvedDetail,
+      storyboardStatus: storyboardStatus({
+        script: approvedDetail,
+        segments: [
+          segmentStoryboard({
+            id: approvedSegment.id,
+            is_ready: true,
+            scenes: [
+              scene({
+                template: 'labelled_diagram',
+                content: {
+                  illustration: {
+                    description: 'How a leaf works',
+                    visual: {
+                      type: 'process_flow',
+                      title: 'How a leaf makes sugar',
+                      nodes: [
+                        { label: 'Light is absorbed', detail: 'by chlorophyll' },
+                        { label: 'Sugar is built' },
+                      ],
+                    },
+                  },
+                },
+              }),
+              scene({
+                id: '00000000-0000-4000-8000-000000000082',
+                scene_index: 1,
+                template: 'full_bleed_illustration',
+                content: {
+                  illustration: {
+                    description: 'The food chain',
+                    visual: {
+                      type: 'cycle',
+                      nodes: [{ label: 'Sunlight' }, { label: 'Plants grow' }, { label: 'Soil' }],
+                    },
+                  },
+                },
+              }),
+            ],
+          }),
+        ],
+        ready_segment_count: 1,
+        not_ready_segment_ids: [],
+        is_complete: true,
+      }),
+    });
+
+    renderProjectPage(<ScriptPage />, 'script');
+
+    expect(await screen.findByText('Process flow')).toBeInTheDocument();
+    expect(screen.getByText(/How a leaf makes sugar/)).toBeInTheDocument();
+    expect(screen.getByText(/Light is absorbed/)).toBeInTheDocument();
+    expect(screen.getByText('Cycle')).toBeInTheDocument();
+    expect(screen.getByText(/then back to the first step/)).toBeInTheDocument();
+    expect(screen.queryByText(/shown as text/i)).toBeNull();
+  });
+
+  it('tells the reviewer how many visuals fell back to text, without raw specifications', async () => {
+    serveProject({
+      ...ready,
+      scripts: [approvedDetail],
+      scriptDetail: approvedDetail,
+      storyboardStatus: storyboardStatus({
+        script: approvedDetail,
+        dropped_visual_count: 2,
+        segments: [
+          segmentStoryboard({
+            id: approvedSegment.id,
+            is_ready: true,
+            scenes: [
+              scene({
+                template: 'full_bleed_illustration',
+                content: {
+                  illustration: { description: 'A loop', visual_dropped: true },
+                  caption: 'A loop needs more steps',
+                },
+              }),
+            ],
+          }),
+        ],
+        ready_segment_count: 1,
+        not_ready_segment_ids: [],
+        is_complete: true,
+      }),
+    });
+
+    renderProjectPage(<ScriptPage />, 'script');
+
+    expect(
+      await screen.findByText(
+        '2 visuals fell back to text because their visual specifications were invalid.',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Shown as text — its visual was invalid')).toBeInTheDocument();
+    expect(screen.queryByText(/\{|"type"|Traceback/)).toBeNull();
+    // Still a complete storyboard: a dropped visual never fails a section.
+    expect(screen.getByText('Storyboard: Complete')).toBeInTheDocument();
+  });
+
+  it('uses the singular for exactly one dropped visual, and says nothing for none', async () => {
+    serveProject({
+      ...ready,
+      scripts: [approvedDetail],
+      scriptDetail: approvedDetail,
+      storyboardStatus: storyboardStatus({
+        script: approvedDetail,
+        dropped_visual_count: 1,
+        segments: [
+          segmentStoryboard({ id: approvedSegment.id, is_ready: true, scenes: [scene()] }),
+        ],
+        ready_segment_count: 1,
+        not_ready_segment_ids: [],
+        is_complete: true,
+      }),
+    });
+
+    renderProjectPage(<ScriptPage />, 'script');
+
+    expect(
+      await screen.findByText(
+        '1 visual fell back to text because its visual specification was invalid.',
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it('shows no dropped-visual notice when nothing was dropped', async () => {
+    serveProject({
+      ...ready,
+      scripts: [approvedDetail],
+      scriptDetail: approvedDetail,
+      storyboardStatus: storyboardStatus({
+        script: approvedDetail,
+        dropped_visual_count: 0,
+        segments: [
+          segmentStoryboard({ id: approvedSegment.id, is_ready: true, scenes: [scene()] }),
+        ],
+        ready_segment_count: 1,
+        not_ready_segment_ids: [],
+        is_complete: true,
+      }),
+    });
+
+    renderProjectPage(<ScriptPage />, 'script');
+
+    expect(await screen.findByText('Storyboard: Complete')).toBeInTheDocument();
+    expect(screen.queryByText(/fell back to text/)).toBeNull();
   });
 
   it('shows one banner, and no per-row placeholders, while timings can still move', async () => {

@@ -65,6 +65,120 @@ const scripts: Row[] = [];
 const segments: Row[] = [];
 const segmentAudio: Row[] = [];
 const scenes: Row[] = [];
+
+// Unless `MOCK_VISUALS=0`, the storyboard job also makes an illustrated scene per section, cycling through
+// every kind of visual the video can draw (and the two ways a scene can be drawn as text), so the
+// storyboard panel can be looked at - including at phone width - with each of them.
+const VISUAL_SCENES: { template: string; content: Record<string, unknown> }[] = [
+  {
+    template: 'labelled_diagram',
+    content: {
+      illustration: {
+        description: 'How a leaf makes sugar',
+        visual: {
+          type: 'process_flow',
+          title: 'How a leaf makes sugar',
+          nodes: [
+            { label: 'Light is absorbed', detail: 'by chlorophyll' },
+            { label: 'Water is split' },
+            { label: 'Sugar is built', detail: 'from carbon dioxide' },
+            { label: 'Oxygen is released' },
+          ],
+        },
+      },
+    },
+  },
+  {
+    template: 'full_bleed_illustration',
+    content: {
+      illustration: {
+        description: 'The food chain',
+        visual: {
+          type: 'cycle',
+          title: 'The food chain',
+          nodes: [
+            { label: 'Sunlight' },
+            { label: 'Plants grow' },
+            { label: 'Animals eat plants' },
+            { label: 'Food returns to soil' },
+          ],
+        },
+      },
+      caption: 'Energy moves round in a loop',
+    },
+  },
+  {
+    template: 'labelled_diagram',
+    content: {
+      illustration: {
+        description: 'Parts of a plant',
+        visual: {
+          type: 'hierarchy',
+          title: 'Parts of a plant',
+          nodes: [
+            { label: 'Plants' },
+            { label: 'Leaves', parent: 0 },
+            { label: 'Roots', parent: 0 },
+            { label: 'Stomata', parent: 1 },
+            { label: 'Chlorophyll', parent: 1 },
+          ],
+        },
+      },
+    },
+  },
+  {
+    template: 'full_bleed_illustration',
+    content: {
+      illustration: {
+        description: 'Light and growth',
+        visual: {
+          type: 'comparison',
+          relation: 'versus',
+          title: 'A plant with and without light',
+          columns: [
+            { heading: 'With light', points: ['Makes sugar', 'Grows well', 'Stays green'] },
+            {
+              heading: 'Without light',
+              points: ['Makes no sugar', 'Weakens slowly', 'Turns pale'],
+            },
+          ],
+        },
+      },
+    },
+  },
+  {
+    template: 'split_text_illustration',
+    content: {
+      text: 'A plant is built in layers.',
+      illustration: {
+        description: 'A plant',
+        visual: {
+          type: 'labelled_components',
+          form: 'layers',
+          subject: 'A plant',
+          parts: [{ label: 'Leaves' }, { label: 'Stem' }, { label: 'Roots' }],
+        },
+      },
+    },
+  },
+  {
+    template: 'labelled_diagram',
+    content: {
+      illustration: { description: 'The parts of a leaf', subject_labels: ['Leaf parts'] },
+      labels: [
+        { text: 'Blade', position: 'top' },
+        { text: 'Veins', position: 'left' },
+      ],
+    },
+  },
+  {
+    template: 'full_bleed_illustration',
+    content: {
+      illustration: { description: 'A loop', visual_dropped: true },
+      caption: 'A loop needs more steps',
+    },
+  },
+];
 const claims: Row[] = [];
 /** Idempotency: `${method} ${path} ${key}` -> the first response. */
 const replays = new Map<string, { status: number; body: unknown }>();
@@ -666,17 +780,37 @@ function advance(job_: Row) {
         const durationMs = (audio?.measured_duration_ms as number | undefined) ?? 0;
         if (audio?.status === 'ready' && durationMs > 0) {
           const topicTitle = topics.find((t) => t.id === seg.topic_id)?.title as string | undefined;
+          const title = topicTitle ?? `Section ${(seg.segment_index as number) + 1}`;
+          // With MOCK_VISUALS a section gets a second, illustrated scene; the two tile its narration.
+          const illustrated =
+            process.env.MOCK_VISUALS !== '0'
+              ? VISUAL_SCENES[(seg.segment_index as number) % VISUAL_SCENES.length]
+              : undefined;
+          const firstMs = illustrated ? Math.floor(durationMs / 2) : durationMs;
           scenes.push({
             id: uuid(),
             script_segment_id: seg.id,
             scene_index: 0,
             start_ms: cursor,
-            duration_ms: durationMs,
+            duration_ms: firstMs,
             template: 'title_card',
-            content: { title: topicTitle ?? `Section ${(seg.segment_index as number) + 1}` },
+            content: { title },
             reviewer_flag: false,
             updated_at: now(),
           });
+          if (illustrated) {
+            scenes.push({
+              id: uuid(),
+              script_segment_id: seg.id,
+              scene_index: 1,
+              start_ms: cursor + firstMs,
+              duration_ms: durationMs - firstMs,
+              template: illustrated.template,
+              content: illustrated.content,
+              reviewer_flag: false,
+              updated_at: now(),
+            });
+          }
           ready += 1;
         }
         cursor += durationMs;
@@ -1557,7 +1691,12 @@ async function route(req: IncomingMessage, res: ServerResponse) {
             is_complete: notReady.length === 0,
             timings_authoritative:
               !forceTimingsNotFinal && !narrationInFlight && notReady.length === 0,
-            dropped_visual_count: 0,
+            dropped_visual_count: scenes.filter(
+              (sn) =>
+                segs.some((seg) => seg.id === sn.script_segment_id) &&
+                (sn.content as { illustration?: { visual_dropped?: unknown } }).illustration
+                  ?.visual_dropped === true,
+            ).length,
             estimated_provider_calls:
               (latest?.payload as { estimated_provider_calls?: number } | undefined)
                 ?.estimated_provider_calls ?? readySegs.length,

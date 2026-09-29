@@ -154,6 +154,9 @@ and error states; `MOCK_WITH_CLAIMS=1` pretends a project has a verified claim, 
 can be tried. Timings are tunable (`MOCK_QUEUE_S`, `MOCK_RUN_S`, `MOCK_LATENCY_MS`). The render endpoints are modelled too:
 `MOCK_RENDER_VIDEO=/path/to.mp4` is served as the finished video, `MOCK_RENDER_FAIL=1` makes the first render of each shape
 fail on its last scene (to see the failure and Retry), and `POST /__mock/edit-scene` changes a scene so it shows as stale.
+The storyboard job also makes an illustrated scene per section, cycling through every kind of visual the video can
+draw and the two ways a scene is drawn as text (one whose visual was dropped counts in the storyboard's notice);
+`MOCK_VISUALS=0` turns that off. Check narrow layouts with `resize_window` / a 375 px viewport: no card may scroll sideways.
 
 **This is not authentication.** `dev:qa` swaps `@clerk/nextjs` for `test-support/qa` through a
 webpack alias that `next.config.ts` refuses to enable during `next build` or `next start`, and shows
