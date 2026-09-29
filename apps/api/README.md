@@ -136,11 +136,12 @@ uv run python -m edutoon.worker
 ```
 
 It builds two LLM clients from the same API key, one per model: `LLM_MODEL` for
-claim judging and topic extraction, and `SCRIPT_LLM_MODEL` for writing scripts. A
-`generate_script` job runs on the second, and the script it produces records the
-model that actually wrote it (a script is queued for the API's script client's model,
-and the job replaces that with the one it ran with if they differ). See
-"Script generation" below for what that job actually does (Phase 7).
+claim judging, topic extraction and - Phase 9 - storyboard scene composition, and
+`SCRIPT_LLM_MODEL` for writing scripts. A `generate_script` job runs on the
+second, and the script it produces records the model that actually wrote it
+(a script is queued for the API's script client's model, and the job replaces
+that with the one it ran with if they differ). See "Script generation" below
+for what that job actually does (Phase 7).
 
 It polls for `queued` jobs, claims one at a time with
 `SELECT ... FOR UPDATE SKIP LOCKED` (safe with any number of worker
@@ -467,6 +468,109 @@ Settings (all optional, see `core/config.py`): `PIPER_VOICES_DIR` (where
 boundaries under this and concatenates the chunks into one file),
 `MAX_TTS_CHARS_PER_SEGMENT`, `MAX_TTS_CHARS_PER_SCRIPT`, `MAX_CONCURRENT_TTS`.
 
+## Scene / Storyboard layer
+
+Phase 9 turns an approved script whose narration is *fully measured* -
+`scripts.measured_duration_ms IS NOT NULL`, the sole narration-completeness
+gate, never `estimated_duration_ms` or the project's `target_duration_ms` -
+into a deterministic, timed, templated scene timeline, ready for a future
+rendering phase. Exactly one LLM call per script segment (never one per
+scene, and never a new provider - `LLM.compose_storyboard_scenes` runs on the
+same `providers.llm` client Phases 5/6 already use); the model never decides
+timing, only which of six fixed templates fits each moment of the narration
+and what goes in their slots.
+
+**API surface** (`api/routers/storyboard.py`, prefix
+`/v1/projects/{project_id}/scripts/{script_id}`, an approved script only):
+
+- `POST /storyboard` - enqueues a `generate_storyboard` job (`202`,
+  `Idempotency-Key` required, same asynchronous shape as script generation
+  and synthesis) and returns the worst-case provider-call estimate alongside
+  it, so the frontend can show it *before* the caller decides to generate.
+- `GET /storyboard` - job status and progress, per-segment scene sets, a
+  freshly computed completeness verdict, and both the estimated and (once a
+  job has run) actual provider calls.
+
+**Timing (`domain.storyboard_timing`) is exact, never rounded or
+accumulated.** `effective_scene_count` bounds how many scenes a segment may
+have from its own `script_segment_audio.measured_duration_ms` alone
+(`min(MAX_SCENES_PER_SEGMENT, measured_duration_ms // MIN_SCENE_DURATION_MS)`) -
+a segment too short for even one scene at the floor gets zero, deterministically,
+with no provider call, never a scene squeezed under the minimum.
+`allocate_scene_durations` is an exact `divmod` split of a segment's measured
+duration across the scenes the model actually returned (which may be fewer
+than the bound - "prefer fewer, well-chosen scenes... over padding to the
+maximum"), remainder handed to the first scenes one millisecond at a time, so
+`SUM(scene.duration_ms) == measured_audio_duration_ms` holds by construction.
+`segment_absolute_starts` / `scene_timings` place every segment and scene
+back to back by exact integer prefix sum - there is never a gap or an
+overlap, and frame numbers are never computed here (`frame = round(t_ms *
+fps / 1000)` belongs to a future rendering phase, rule 6).
+
+**Six fixed templates (`domain.storyboard_template`), never a seventh:**
+`title_card`, `bullet_points`, `labelled_diagram`, `split_text_illustration`,
+`full_bleed_illustration`, `formula_or_code`. There is no separate "recap"
+template - a recap is an ordinary `bullet_points` scene titled "Recap".
+Three (`title_card`, `bullet_points`, `formula_or_code`) carry no
+illustration slot and are fully renderable from text alone. An illustration
+slot is only ever `{"description": ..., "subject_labels": [...]}` - no image
+is generated in this phase, and the frontend always shows "Illustration
+pending" for one, never a real picture. `content` is orientation-independent;
+`layout_for(template, orientation)` is a deterministic, code-only lookup -
+never persisted, and a vertical layout genuinely differs, structurally, from
+its horizontal one for every template (mutation-tested: swapping a
+template's two layouts is caught).
+
+**Provenance is a safety guard, not fact verification
+(`domain.storyboard_provenance`).** A number, date, percentage, unit-bearing
+quantity or capitalised proper noun in a scene's text that is not also
+present in the segment's own narration is a fabrication, and
+`require_provenance` rejects the *whole* scene set it was found in - not
+just the offending scene, since a partially-trusted set can never be told
+apart from a fully-trusted one once persisted. Normalisation is fixed and
+deliberately conservative (see the module docstring for exactly what it
+catches and does not - it does not catch a number reworded as a word, a
+converted unit, or a wrong fact built only from narration-grounded numbers
+and names). A separate, non-rejecting soft signal
+(`has_lexical_overlap`) flags a scene whose text shares no meaningful
+content word with the narration, for a reviewer to look at - visible on
+every scene in the `GET /storyboard` response, recomputed fresh on every
+read, never persisted.
+
+**Cost bound, enforced before any provider call, never merely
+documented.** `POST /storyboard` rejects immediately (`400` `validation_error`,
+no job created) if the script has more segments than
+`MAX_STORYBOARD_SEGMENTS`, or if the *exact* total scene count computed from
+every segment's own measured duration would exceed `MAX_SCENES_PER_SCRIPT` -
+both already known precisely at enqueue time, since Phase 8 narration must
+already be complete. With the defaults (`MAX_STORYBOARD_SEGMENTS=200`), a
+storyboard generation makes at most 200 provider calls.
+
+**Resumable and partial-failure-tolerant, like Phase 8's synthesis.** Each
+segment's scene set is persisted the moment it finishes, in its own short
+transaction (`repositories.script_segment_scenes.replace_for_segment` - a
+whole-set DELETE + INSERT inside one `SAVEPOINT`, never a per-row `UPDATE`,
+since a retry may change three scenes into five); one segment's failure
+never discards another's success. `run_generate_storyboard_job` ends
+`succeeded` unless every segment failed, and its `result` records
+`ready_segment_count` / `failed_segment_ids` / `outcome` (`"complete"` or
+`"succeeded_with_failures"`) / `provider_calls`. **Completeness is a
+separate, always-freshly-computed verdict**
+(`services.storyboard.get_storyboard_status`), never copied from a job's own
+historical result - a storyboard can be `succeeded_with_failures` at the job
+level while still reporting itself incomplete, and the frontend must gate a
+"finished" timeline on completeness, never merely on job status. A segment's
+scenes are stale exactly when their stored `source_audio_content_hash`
+no longer matches the segment's *current* `script_segment_audio.content_hash`
+(a re-synthesis) - re-running the job clears and regenerates only what is
+missing, failed, or stale; an already-fresh segment is never touched again.
+
+Settings (all optional, see `core/config.py`): `MIN_SCENE_DURATION_MS`,
+`MAX_SCENES_PER_SEGMENT`, `MAX_SCENES_PER_SCRIPT`, `MAX_STORYBOARD_SEGMENTS`,
+`STORYBOARD_STALE_AFTER_SECONDS`. The six templates and their per-slot
+character limits are a fixed contract (`domain.storyboard_template`), not
+configuration.
+
 ## Testing, and what is not yet verified against a real provider
 
 ```bash
@@ -513,6 +617,12 @@ the genuine local MinIO. `pytest.mark.provider_mocked` does not apply to it.
 8. **A genuine Indian-English Piper voice**, if and when one appears in the
    catalogue - or a different, commercially-licensed provider for it - to
    replace the labelled `en-GB` substitute (see "Text-to-speech").
+9. **Storyboard scene composition** (Phase 9): the real quality of
+   `LLM.compose_storyboard_scenes`'s template choices and slot content
+   against a live model, how often honest output trips the provenance rule's
+   documented false-positive cases, token use against `_storyboard_max_tokens`,
+   and how often the soft lexical-overlap signal fires on genuinely faithful
+   scenes in practice.
 
 ## Known limitations
 
@@ -555,6 +665,22 @@ the genuine local MinIO. `pytest.mark.provider_mocked` does not apply to it.
   repeats the paid embedding and LLM call; for an upload, an object written just
   before a failed commit stays in storage, and a retry overwrites it (its key is
   derived from the file's checksum) rather than adding a second one.
+- **No image is generated for a storyboard's illustration slots.** An
+  illustration is a description and up to three subject labels only, shown as
+  "Illustration pending" everywhere - generating the actual image is a future
+  phase's work, not part of Phase 9.
+- **The provenance rule is a safety guard, not fact verification.** It only
+  checks that a number, date, unit or proper noun in scene text also appears
+  in the segment's own narration - it says nothing about whether a sentence
+  built only from narration-grounded tokens states something true, and its
+  fixed normalisation has documented gaps (a reworded number, a converted
+  unit, an ALL-CAPS acronym) - see `domain.storyboard_provenance`'s module
+  docstring for the exact list.
+- **Storyboard generation cost scales with segment count.** One provider call
+  per script segment, bounded by `MAX_STORYBOARD_SEGMENTS` and enforced
+  before any call is made - no company API key cost concern until real keys
+  arrive, but still not free once they do. Credits come with the ledger, in
+  a later phase.
 
 ## Clerk Local Setup
 

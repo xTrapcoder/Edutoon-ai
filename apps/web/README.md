@@ -4,9 +4,10 @@ The EduToon AI front end: Next.js 15 (App Router), TypeScript, Tailwind CSS 4, T
 Clerk for sign-in. It is a client of the API in `apps/api` and of nothing else.
 
 It covers everything the API can do today: sign in, projects, PDF and keyword sources, generation
-settings, topic extraction and review (with evidence), script generation, review and approval.
-It does **not** cover scenes, narration, animation or rendering - those stages do not exist yet, and
-the UI describes them as "coming soon" rather than offering them.
+settings, topic extraction and review (with evidence), script generation, review and approval,
+narration (Phase 8) and the storyboard timeline (Phase 9) in Script Studio.
+It does **not** cover animation or rendering - those stages do not exist yet, and
+the UI describes rendering as "coming soon" rather than offering it.
 
 ## Run it
 

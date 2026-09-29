@@ -87,7 +87,12 @@ unsupported claims ever reach the script or the screen.
   what produced it) and `scripts.measured_duration_ms` (the sum of real
   synthesised-audio durations, kept separate from the pre-audio,
   words-per-minute `estimated_duration_ms` — neither is derived from the
-  other; see `apps/api/README.md`, "Text-to-speech").
+  other; see `apps/api/README.md`, "Text-to-speech"). Migration 0015
+  (Phase 9) adds `script_segment_scenes` — not append-only: a retry
+  replaces one segment's whole scene set via DELETE + INSERT in a single
+  SAVEPOINT, never a per-row `UPDATE` — and widens `ck_jobs_kind` to add
+  `generate_storyboard` (see `apps/api/README.md`, "Scene / Storyboard
+  layer").
 - `projects.status` is derived, never set by a client: `edutoon.domain.project_status` is the
   rule and `projects.refresh_status` applies it whenever a job is queued or ends or a PDF fails
   to parse (`apps/api/README.md`, "Project status"). Deleting a project removes its uploaded PDFs
@@ -96,45 +101,72 @@ unsupported claims ever reach the script or the screen.
 
 ## Current phase
 
-**Phase 8 — local narration synthesis: code-complete for everything that can be
-verified without provider credentials.** Delivered on top of Phase 7: an approved
-script can now be turned into real narrated audio with a local, offline TTS engine
-(Piper, `piper-tts`) - no company API key needed, and (unlike the LLM/embeddings
-providers) never mocked in the test suite; every test that touches it runs the
-genuine engine against the genuine local MinIO. One WAV per segment
-(`script_segment_audio`, migration 0014), resumable (a content-hash fingerprint
-skips already-valid audio on re-synthesis), and cleaned up by the same
-project-deletion storage path uploaded PDFs already used. Full detail in
-`apps/api/README.md`, "Text-to-speech".
+**Phase 9 — the Scene / Storyboard layer: code-complete for everything that can be
+verified without provider credentials.** Delivered on top of Phase 8: an approved
+script whose narration is *fully measured*
+(`scripts.measured_duration_ms IS NOT NULL` - the sole narration-completeness
+gate) can now be turned into a deterministic, timed, templated scene timeline,
+ready for a future rendering phase. One LLM call per script segment (never one
+per scene - `LLM.compose_storyboard_scenes`, on the same Anthropic client
+Phases 5/6 already use, no new provider); scene timing itself is never decided
+by the model - `domain.storyboard_timing.effective_scene_count` bounds how many
+scenes a segment may have from its own measured duration, and
+`allocate_scene_durations`/`scene_timings`/`segment_absolute_starts` derive
+every scene's exact millisecond position by integer `divmod` and prefix sums,
+never rounding or accumulation. Six fixed templates
+(`domain.storyboard_template`) with their own slot contracts and
+orientation-aware layout (content is orientation-independent; layout is a
+deterministic, never-persisted `(template, orientation)` lookup). A hard
+provenance rule (`domain.storyboard_provenance`) rejects a whole scene set if
+any number, date, percentage, unit or proper noun in its text is not also in
+the segment's own narration; a separate soft lexical-overlap signal flags a
+scene for reviewer attention without failing the job. Full detail in
+`apps/api/README.md`, "Scene / Storyboard layer".
 
-**`en-IN` narrates with a labelled `en-GB` substitute voice, not a genuine
-Indian-English one** - Piper's catalogue has none as of this writing;
-`PIPER_EN_IN_IS_TEMPORARY_SUBSTITUTE` and `is_temporary_voice_substitute` make
-that explicit everywhere the voice is chosen, stored, and shown. **`piper-tts` is
-GPL-3.0-or-later** - fine for local dev and testing, but not yet reviewed for
-production/customer-facing distribution; that review, and a genuine
-Indian-English voice, are both still pending real decisions, not engineering work.
+**Resumable and partial-failure-tolerant, like Phase 8's synthesis.** Each
+segment's scene set is persisted the moment it finishes, in its own
+transaction (whole-set DELETE + INSERT, never a per-row `UPDATE`); one
+segment's failure never discards another's success. A `generate_storyboard`
+job ends `succeeded` unless every segment failed, and records
+`ready_segment_count` / `failed_segment_ids` / `outcome`
+(`"complete"` or `"succeeded_with_failures"`) - but *completeness* is a
+separate, always-freshly-computed read-model verdict
+(`services.storyboard.get_storyboard_status`), never copied from a job's own
+historical result, so the UI can never show a finished-looking timeline that
+is actually missing sections. A segment too short for even one scene at the
+configured floor (`MIN_SCENE_DURATION_MS`) gets none, deterministically, with
+no provider call - never a scene squeezed under the minimum.
 
 **Pending real-provider verification when company API keys become available**
 (nothing below is verified; see `apps/api/README.md`, "Testing, and what is not yet
 verified against a real provider"): the keys and model availability
 (`LLM_MODEL`, `EMBEDDING_MODEL`, `SCRIPT_LLM_MODEL`), keywords-only extraction,
 long-PDF extraction, the quality of candidate claim extraction, the teacher-style
-tone and quality of `compose_script_outline` / `compose_script_section`,
-`apps/api/scripts/smoke_test_phase4.py` run unmodified, and the real quality,
-latency and token behaviour of every prompt. No test calls an LLM/embeddings
-provider; those that involve one carry `pytest.mark.provider_mocked` - Piper is
-the one provider in this project that is never mocked (see "Text-to-speech").
+tone and quality of `compose_script_outline` / `compose_script_section`, the
+real quality of `compose_storyboard_scenes`' template choices and provenance
+compliance, `apps/api/scripts/smoke_test_phase4.py` run unmodified, and the
+real quality, latency and token behaviour of every prompt. No test calls an
+LLM/embeddings provider; those that involve one carry
+`pytest.mark.provider_mocked` - Piper is the one provider in this project
+that is never mocked (see "Text-to-speech"). `en-IN` still narrates with a
+labelled `en-GB` substitute voice, not a genuine Indian-English one, and
+`piper-tts`'s GPL-3.0-or-later licence is still unreviewed for
+production/customer-facing distribution - both still pending real decisions,
+not engineering work.
 
 **The web front end is built** (`apps/web`, see its README): landing, Clerk sign-in,
 dashboard, project list, create-project wizard, project workspace, topic review with
-evidence, script review and approval, and now Script Studio's narration panel -
-trigger synthesis, watch per-section progress, play back each segment, and see
-the `en-IN` substitute-voice notice. Real Clerk sign-in is **unverified** - the
-Clerk keys are placeholders - as are the real LLM/embeddings providers.
+evidence, script review and approval, Script Studio's narration panel, and now
+its storyboard panel alongside it - the worst-case AI-call estimate before
+generating, live progress, a fresh complete/incomplete verdict with a retry
+action, and the per-segment scene timeline (template, exact time range,
+content preview, illustration slots always shown as "Illustration pending",
+the provenance reviewer flag as a warning). Real Clerk sign-in is
+**unverified** - the Clerk keys are placeholders - as are the real
+LLM/embeddings providers.
 
-Not built yet: a front end for candidate claim extraction, scenes, animation,
-rendering. **Phase 9 has not started and needs the owner's explicit approval.**
+Not built yet: a front end for animation or rendering.
+**Phase 10 has not started and needs the owner's explicit approval.**
 
 ## Commands
 
@@ -164,7 +196,7 @@ apps/
   api/        FastAPI service (uv, src/edutoon)
     src/edutoon/          api/ (routers, schemas) · services/ · domain/ (pure) ·
                           repositories/ · providers/ · worker/ · db/ · core/
-    alembic/              migration environment + versions/0001..0014
+    alembic/              migration environment + versions/0001..0015
   parser/     PDF/topic parser — not yet initialised
   render/     Remotion render worker — not yet initialised
 packages/
