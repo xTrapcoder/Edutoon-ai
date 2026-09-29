@@ -19,6 +19,7 @@ from dataclasses import dataclass
 
 from PIL import Image
 
+from edutoon.domain import render_animation as anim
 from edutoon.domain.visual_layout import LayoutBox, LayoutConnector, Units, VisualLayout
 from edutoon.providers.renderer.compositor import (
     ACCENT,
@@ -123,6 +124,28 @@ def _connector_layer(connector: LayoutConnector, units: Units, start_ms: float) 
         picture, offset = connector_image(
             connector.points, stroke=max(2, units.u(5)), colour=ACCENT_LINE
         )
+    points = connector.points
+    if len(points) == 2:
+        # A straight connector is *drawn*: revealed from its tail to its tip along its dominant
+        # axis, in a fixed 300 ms, with no fade (it is simply there, growing).
+        dx, dy = points[-1][0] - points[0][0], points[-1][1] - points[0][1]
+        if abs(dx) >= abs(dy):
+            direction = "right" if dx > 0 else "left"
+        else:
+            direction = "down" if dy > 0 else "up"
+        return Layer.from_rgba(
+            picture,
+            offset[0],
+            offset[1],
+            start_ms,
+            fade=False,
+            slide=False,
+            wipe=True,
+            wipe_dir=direction,
+            wipe_ms=anim.CONNECTOR_DRAW_MS,
+        )
+    # An elbow (rows wrapping, a tree's branch, a cycle's return lane) fades in as one piece: a
+    # rectangular wipe would reveal its parts in the wrong order.
     return Layer.from_rgba(picture, offset[0], offset[1], start_ms, slide=False)
 
 

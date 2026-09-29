@@ -30,6 +30,7 @@ from edutoon.core.errors import (
 from edutoon.domain import render as render_domain
 from edutoon.providers.storage import Storage, get_storage_client
 from edutoon.repositories import jobs as jobs_repo
+from edutoon.repositories import project_topics as topics_repo
 from edutoon.repositories import render as render_repo
 from edutoon.repositories import script_segment_audio as audio_repo
 from edutoon.repositories import script_segment_scenes as scenes_repo
@@ -1035,3 +1036,81 @@ async def test_render_storage_keys_stay_inside_the_project_and_reject_bad_input(
     with pytest.raises(render_domain.RenderPlanError):
         render_domain.chunk_storage_key(project_id, "../..", "low", "ab")
     assert label_of({"title": "x"}) == "x"
+
+
+# --- transitions (Phase 11): topics decide where a scene fades and where it cuts ---------------
+
+
+async def _assign_topics(db_session, built: Built, topic_of_segment: list[str]) -> None:
+    topics = {}
+    for position, name in enumerate(dict.fromkeys(topic_of_segment)):
+        topics[name] = await topics_repo.create(
+            db_session, project_id=built.project.id, title=name, position=position
+        )
+    for segment, name in zip(built.segments, topic_of_segment, strict=True):
+        await db_session.execute(
+            text("UPDATE script_segments SET topic_id = :topic WHERE id = :segment"),
+            {"topic": topics[name].id, "segment": segment.id},
+        )
+
+
+def _expected_hash(status_scene, built: Built, fades: tuple[int, int]) -> str:
+    label = built.labels[status_scene.segment_index][status_scene.scene_index]
+    return render_domain.chunk_fingerprint(
+        template=status_scene.template,
+        content=scene_content(status_scene.template, label),
+        duration_ms=status_scene.duration_ms,
+        orientation="horizontal",
+        quality="low",
+        encoder=get_settings().RENDER_VIDEO_ENCODER,
+        enter_fade_ms=fades[0],
+        exit_fade_ms=fades[1],
+    )
+
+
+async def test_the_scenes_of_a_topic_cut_and_the_boundaries_between_topics_fade(
+    db_session, make_built
+):
+    built = await make_built()  # three segments of two scenes each
+    await _assign_topics(db_session, built, ["A", "A", "B"])
+    scenes = (await _status(db_session, built)).scenes
+    settings = get_settings()
+    fade_in, fade_out = settings.RENDER_FADE_IN_MS, settings.RENDER_FADE_OUT_MS
+    #            A opens          straight cuts           A closes        B opens         B closes
+    expected = [(fade_in, 0), (0, 0), (0, 0), (0, fade_out), (fade_in, 0), (0, fade_out)]
+    assert [s.chunk_hash for s in scenes] == [
+        _expected_hash(scene, built, fades) for scene, fades in zip(scenes, expected, strict=True)
+    ]
+
+
+async def test_a_script_with_no_topics_is_one_group_only_its_two_ends_fade(db_session, make_built):
+    built = await make_built()
+    scenes = (await _status(db_session, built)).scenes
+    settings = get_settings()
+    expected = [(settings.RENDER_FADE_IN_MS, 0)] + [(0, 0)] * 4 + [(0, settings.RENDER_FADE_OUT_MS)]
+    assert [s.chunk_hash for s in scenes] == [
+        _expected_hash(scene, built, fades) for scene, fades in zip(scenes, expected, strict=True)
+    ]
+
+
+async def test_the_fade_settings_reach_the_plan_and_change_only_the_scenes_that_fade(
+    db_session, make_built, monkeypatch
+):
+    built = await make_built()
+    await _assign_topics(db_session, built, ["A", "A", "B"])
+    before = (await _status(db_session, built)).scenes
+    _with_settings(monkeypatch, RENDER_FADE_IN_MS=100, RENDER_FADE_OUT_MS=0)
+    after = (await _status(db_session, built)).scenes
+    changed = {
+        i
+        for i, (a, b) in enumerate(zip(before, after, strict=True))
+        if a.chunk_hash != b.chunk_hash
+    }
+    assert changed == {
+        0,
+        3,
+        4,
+        5,
+    }  # the scenes that fade in or out; the straight cuts are untouched
+    assert after[0].chunk_hash == _expected_hash(after[0], built, (100, 0))
+    assert after[1].chunk_hash == before[1].chunk_hash  # a straight cut has no fade to retune

@@ -191,10 +191,15 @@ def test_validated_result_types_carry_what_the_service_needs() -> None:
 
 _STDLIB_ALLOWED = {
     "__future__",
+    "bisect",
     "collections",
     "dataclasses",
+    "decimal",
+    "fractions",
+    "functools",
     "hashlib",
     "json",
+    "math",
     "re",
     "typing",
     "unicodedata",

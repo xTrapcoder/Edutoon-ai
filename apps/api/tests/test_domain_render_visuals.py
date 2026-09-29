@@ -147,9 +147,10 @@ def test_key_order_inside_a_visual_does_not_change_the_fingerprint():
 
 def test_identical_visual_scenes_share_one_fingerprint_and_are_rendered_once():
     spec = _illustrated("full_bleed_illustration", FLOW)
-    plan = _plan([[spec, spec]])
-    assert plan.chunks[0].chunk_hash == plan.chunks[1].chunk_hash
-    assert len(r.chunks_to_render(plan, set())) == 1
+    plan = _plan([[spec] * 5])
+    hashes = [c.chunk_hash for c in plan.chunks]
+    assert hashes[1] == hashes[2] == hashes[3]  # the middle of a topic: cuts on both edges
+    assert len(r.chunks_to_render(plan, set())) == 3
 
 
 @pytest.mark.parametrize(

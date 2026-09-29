@@ -14,6 +14,8 @@ from typing import Literal
 from pydantic import Field, ValidationError, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from edutoon.domain.render_animation import DEFAULT_FADE_IN_MS, DEFAULT_FADE_OUT_MS, MAX_FADE_MS
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -261,6 +263,15 @@ class Settings(BaseSettings):
     RENDER_WORK_DIR: str = ""
     RENDER_MIN_FREE_DISK_MB: int = Field(default=1024, ge=0)
     RENDER_CONCURRENCY: int = Field(default=2, ge=1, le=16)
+
+    # Scene transitions (Phase 11). Between two scenes of the same topic the cut is straight;
+    # at a topic boundary (and at the start and end of the video) a scene fades in over
+    # RENDER_FADE_IN_MS and out over RENDER_FADE_OUT_MS. Milliseconds, 0 to 1500; 0 is a
+    # straight cut. The defaults are shorter than the fixed 450 / 300 ms Phase 10 used, to
+    # spend fewer frames on a blank or dim screen. Each fade length is part of the
+    # fingerprint of the scenes that fade, so changing one re-renders only those scenes.
+    RENDER_FADE_IN_MS: int = Field(default=DEFAULT_FADE_IN_MS, ge=0, le=MAX_FADE_MS)
+    RENDER_FADE_OUT_MS: int = Field(default=DEFAULT_FADE_OUT_MS, ge=0, le=MAX_FADE_MS)
 
     # Mirrors the other STALE_AFTER_SECONDS settings: how long a render_video job may sit
     # "running" with no worker holding it before it is treated as abandoned by a crashed

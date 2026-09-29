@@ -122,7 +122,7 @@ def test_code_is_revealed_line_by_line_and_formulae_left_to_right():
     formula = _compositor(
         "formula_or_code", "horizontal", {"content": "E = mc^2", "kind": "formula"}
     )
-    early, late = _bright_pixels(formula.frame(1_000)), _bright_pixels(formula.frame(5_000))
+    early, late = _bright_pixels(formula.frame(500)), _bright_pixels(formula.frame(5_000))
     assert early < late
 
 

@@ -78,16 +78,18 @@ def test_the_render_plan_and_the_storyboard_read_model_place_every_scene_identic
 
 # The chunk fingerprints of the three text-only templates. They are pinned so a later change
 # cannot silently invalidate every cached text chunk (or, worse, keep reusing one whose pixels
-# changed). They changed once, deliberately, in Phase 11 when glyph safety bumped
-# RENDERER_VERSION to "pillow-ffmpeg/3": chunks cached before that held missing-glyph boxes and
-# are re-rendered once. Update these ONLY together with a documented, intentional version bump.
+# changed). They have changed twice in Phase 11, each time deliberately and documented in its
+# commit message: (1) glyph safety bumped RENDERER_VERSION to "pillow-ffmpeg/3" (chunks cached
+# before it held missing-glyph boxes); (2) how a scene joins its neighbours (a straight cut inside
+# a topic, a tunable fade at a topic boundary) became a fingerprint input, so every chunk cached
+# before it is re-rendered once. Update these ONLY together with a documented, intentional bump.
 _TEXT_ONLY_GOLDEN = {
-    ("horizontal", "high", "title_card"): "c717250657158cd6459d01b7235d00e9a41949076ce7dcbad17ac38053acb908",  # noqa: E501
-    ("horizontal", "high", "bullet_points"): "edade5d5dd96560f47032bc10162dcfc833fa409f872a42f2b28b25670dd8967",  # noqa: E501
-    ("horizontal", "high", "formula_or_code"): "36abf636f151bbfd0518125ea74ca8bec9b052e5be8d14fe0e71c2b3c961387a",  # noqa: E501
-    ("vertical", "low", "title_card"): "ae5cf0b7b148b7f25c7f39b18ef599488366b45c97064dcb8edf6d2889c9483e",  # noqa: E501
-    ("vertical", "low", "bullet_points"): "7c5b8503ba1fd35a5809855429a752264e9458e6821a65243eac20f5e751f7dd",  # noqa: E501
-    ("vertical", "low", "formula_or_code"): "e55aec0b9e0dffa56a7c97b4e06aea057676bcac1f9e25a9a5564e128415f3d2",  # noqa: E501
+    ("horizontal", "high", "title_card"): "0f2a388598605c087790c15ef1d04e28dab1bc025f22cd6579ed2c0f53934ddd",  # noqa: E501
+    ("horizontal", "high", "bullet_points"): "33b75aac4e1d7c8c49930e4ee867d30b0355a7d65134631a154907a7c88cf073",  # noqa: E501
+    ("horizontal", "high", "formula_or_code"): "40752ae29979b1024061474faf2ab27fa32722b09897b9db99f1809f92d46c08",  # noqa: E501
+    ("vertical", "low", "title_card"): "fe0408ea7d87faf111239bcc2c04b64b7a60d40276526a73d13c938329e15849",  # noqa: E501
+    ("vertical", "low", "bullet_points"): "3f3cfce4e8a2db47ff8e73d29c176f0b8ec24eb241f2a455a33b9627fda8e680",  # noqa: E501
+    ("vertical", "low", "formula_or_code"): "e2a20252ba39e300820c7db7262c36bb3b17b0d5ff60ce44eb5ac86a78af177d",  # noqa: E501
 }  # fmt: skip
 _TEXT_ONLY_SCENES = {
     "title_card": {"title": "How networks work", "subtitle": "Packets and routes"},
@@ -402,9 +404,14 @@ def test_a_new_renderer_version_never_reuses_old_artifacts(monkeypatch) -> None:
 
 
 def test_identical_scenes_share_one_fingerprint_and_are_rendered_once() -> None:
-    plan = _plan(_script([[3000, 3000, 3000]], {0: {"specs": [TITLE, TITLE, TITLE]}}))
-    assert len(set(_hashes(plan))) == 1
-    assert len(r.chunks_to_render(plan, set())) == 1
+    """Scenes drawn alike and joined to their neighbours alike (here the three in the middle of a
+    topic - straight cuts on both edges) share one artifact. The first and last of a topic differ
+    only in how they fade, so they are their own artifacts."""
+    plan = _plan(_script([[3000] * 5], {0: {"specs": [TITLE] * 5}}))
+    hashes = _hashes(plan)
+    assert hashes[1] == hashes[2] == hashes[3]
+    assert len(set(hashes)) == 3  # opens the video, the middle, closes the video
+    assert len(r.chunks_to_render(plan, set())) == 3
 
 
 def test_chunks_to_render_skips_valid_artifacts_only() -> None:

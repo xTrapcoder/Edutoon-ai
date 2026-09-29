@@ -331,6 +331,7 @@ async def _evaluate(
             segment_index=detail.segment.segment_index,
             audio_duration_ms=detail.audio.measured_duration_ms or 0 if detail.audio else 0,
             audio_content_hash=detail.audio.content_hash if detail.audio else "",
+            topic_key=str(detail.segment.topic_id) if detail.segment.topic_id else None,
             scenes=[
                 render_domain.SceneInput(
                     scene_index=scene.scene.scene_index,
@@ -351,6 +352,8 @@ async def _evaluate(
             orientation=orientation,
             quality=quality,
             encoder=settings.RENDER_VIDEO_ENCODER,
+            fade_in_ms=settings.RENDER_FADE_IN_MS,
+            fade_out_ms=settings.RENDER_FADE_OUT_MS,
         )
     except RenderPlanError as exc:
         return blocked("validation", str(exc), audio_by_segment)
@@ -882,6 +885,8 @@ async def _render_chunks(
                         canonical_frames=chunk.canonical_frame_count,
                         encoder=plan.encoder,
                         profile=profile,
+                        enter_fade_ms=chunk.enter_fade_ms,
+                        exit_fade_ms=chunk.exit_fade_ms,
                     ),
                     dest,
                 )

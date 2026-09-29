@@ -48,6 +48,8 @@ class PillowFfmpegRenderer:
                 width=spec.width,
                 height=spec.height,
                 duration_ms=spec.duration_ms,
+                enter_fade_ms=spec.enter_fade_ms,
+                exit_fade_ms=spec.exit_fade_ms,
             )
         except Exception as exc:  # noqa: BLE001 - any drawing failure is a render failure
             log.error("render.scene_setup_failed", template=spec.template, error=repr(exc))

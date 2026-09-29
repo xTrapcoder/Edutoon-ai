@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from edutoon.domain.render import EncodingProfile
+from edutoon.domain.render_animation import DEFAULT_FADE_IN_MS, DEFAULT_FADE_OUT_MS
 
 
 class RendererError(Exception):
@@ -42,6 +43,9 @@ class ChunkSpec:
     canonical_frames: int
     encoder: str
     profile: EncodingProfile
+    # How the scene fades in / out at its edges (0 = a straight cut) - see domain.render.
+    enter_fade_ms: int = DEFAULT_FADE_IN_MS
+    exit_fade_ms: int = DEFAULT_FADE_OUT_MS
 
 
 @dataclass(frozen=True, slots=True)

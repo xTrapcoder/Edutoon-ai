@@ -187,8 +187,11 @@ class TextFace:
 
 @dataclass(slots=True)
 class Layer:
-    """One pre-drawn element. ``wipe`` reveals it left to right (code, formulae);
-    ``fade=False`` makes it follow only the whole-scene envelope."""
+    """One pre-drawn element. ``wipe`` reveals it progressively: left to right over the scene's
+    reveal window by default (code, formulae), or - with ``wipe_ms`` - in ``wipe_dir`` (``right``,
+    ``left``, ``down`` or ``up``) over that many milliseconds from ``start_ms`` (a connector being
+    drawn from its tail to its tip). ``fade=False`` makes it follow only the whole-scene
+    envelope."""
 
     rgb: Image.Image
     alpha: Image.Image
@@ -198,9 +201,11 @@ class Layer:
     fade: bool = True
     slide: bool = True
     wipe: bool = False
+    wipe_dir: str = "right"
+    wipe_ms: float | None = None
 
     @staticmethod
-    def from_rgba(image: Image.Image, x: int, y: int, start_ms: float, **kwargs: bool) -> Layer:
+    def from_rgba(image: Image.Image, x: int, y: int, start_ms: float, **kwargs: Any) -> Layer:
         return Layer(image.convert("RGB"), image.getchannel("A"), x, y, start_ms, **kwargs)
 
 
@@ -488,6 +493,8 @@ class SceneCompositor:
         width: int,
         height: int,
         duration_ms: int,
+        enter_fade_ms: int = anim.DEFAULT_FADE_IN_MS,
+        exit_fade_ms: int = anim.DEFAULT_FADE_OUT_MS,
     ) -> None:
         self.template = template
         self.content = content
@@ -495,6 +502,9 @@ class SceneCompositor:
         self.width = width
         self.height = height
         self.duration_ms = duration_ms
+        # How the scene fades in / out at its edges; 0 is a straight cut (see domain.render).
+        self.enter_fade_ms = enter_fade_ms
+        self.exit_fade_ms = exit_fade_ms
         self.scale = (height if orientation == "horizontal" else width) / 1080
         self.vertical = orientation == "vertical"
         self.arrangement = layout_for(template, orientation).arrangement
@@ -504,6 +514,11 @@ class SceneCompositor:
         if builder is None:
             raise ValueError(f"No renderer for template {template!r}.")
         builder()
+        if enter_fade_ms == 0:
+            # A scene that cuts in has nothing to fade in from: its first content is already in
+            # place on its first frame, and everything after it keeps its pacing.
+            for layer in self.layers:
+                layer.start_ms -= anim.CUT_IN_SHIFT_MS
 
     # -- helpers --------------------------------------------------------------------
 
@@ -648,7 +663,7 @@ class SceneCompositor:
         lead = round(size * 0.9)
         total = sum(f.height + 2 * pad_y for f in fits) + gap * (len(fits) - 1)
         row_y = y + max((region_h - total) // 2, 0)
-        starts = anim.item_reveal_starts(self.duration_ms, len(fits))
+        starts = anim.item_reveal_starts(self.duration_ms, len(fits), exit_ms=self.exit_fade_ms)
         for fitted, start in zip(fits, starts, strict=True):
             card_h = fitted.height + 2 * pad_y
             card = panel(
@@ -700,7 +715,7 @@ class SceneCompositor:
     def _paint_visual(self, layout: VisualLayout) -> None:
         from edutoon.providers.renderer.visual_scene import paint_visual
 
-        starts = anim.item_reveal_starts(self.duration_ms, layout.steps)
+        starts = anim.item_reveal_starts(self.duration_ms, layout.steps, exit_ms=self.exit_fade_ms)
         units = Units(min(self.width, self.height))
         self.layers.extend(paint_visual(layout, units=units, starts=starts))
 
@@ -793,7 +808,7 @@ class SceneCompositor:
         gap_x, gap_y = u(60), u(30 if self.vertical else 36)
         column_w = min((content_w - (columns - 1) * gap_x) // columns, u(760))
         size = u(62 if self.vertical else 56)
-        starts = anim.item_reveal_starts(self.duration_ms, len(labels))
+        starts = anim.item_reveal_starts(self.duration_ms, len(labels), exit_ms=self.exit_fade_ms)
         images = [
             pill(text, size=size, max_width=column_w, badge=str(index + 1), weight=600)
             for index, text in enumerate(labels)
@@ -1037,27 +1052,49 @@ class SceneCompositor:
         offset = anim.slide_offset(t_ms, layer.start_ms, self.scale) if layer.slide else 0
         revealed = layer.rgb.width
         if layer.wipe:
-            fraction = anim.reveal_fraction(t_ms, self.duration_ms, lead_ms=round(layer.start_ms))
-            revealed = round(layer.rgb.width * fraction)
+            if layer.wipe_ms is None:
+                fraction = anim.reveal_fraction(
+                    t_ms, self.duration_ms, lead_ms=round(layer.start_ms)
+                )
+            else:
+                fraction = anim.draw_fraction(t_ms, layer.start_ms, layer.wipe_ms)
+            vertical = layer.wipe_dir in ("up", "down")
+            revealed = round((layer.rgb.height if vertical else layer.rgb.width) * fraction)
         return (round(opacity * 255), offset if opacity > 0 else 0, revealed)
 
+    def _envelope(self, t_ms: float) -> float:
+        return anim.scene_envelope(t_ms, self.duration_ms, self.enter_fade_ms, self.exit_fade_ms)
+
     def state_key(self, t_ms: float) -> tuple[tuple[int, int, int], ...]:
-        envelope = anim.scene_envelope(t_ms, self.duration_ms)
+        envelope = self._envelope(t_ms)
         return tuple(self._layer_state(layer, t_ms, envelope) for layer in self.layers)
 
     def frame(self, t_ms: float) -> Image.Image:
-        envelope = anim.scene_envelope(t_ms, self.duration_ms)
+        envelope = self._envelope(t_ms)
         canvas = self._background.copy()
         for layer in self.layers:
             opacity, offset, revealed = self._layer_state(layer, t_ms, envelope)
             if opacity <= 0 or revealed <= 0:
                 continue
             rgb, alpha = layer.rgb, layer.alpha
-            if revealed < rgb.width:
-                rgb = rgb.crop((0, 0, revealed, rgb.height))
-                alpha = alpha.crop((0, 0, revealed, alpha.height))
+            left, top = layer.x, layer.y + offset
+            if layer.wipe:
+                width, height = rgb.size
+                box: tuple[int, int, int, int] | None = None
+                if layer.wipe_dir == "right" and revealed < width:
+                    box = (0, 0, revealed, height)
+                elif layer.wipe_dir == "left" and revealed < width:
+                    box = (width - revealed, 0, width, height)
+                    left += width - revealed
+                elif layer.wipe_dir == "down" and revealed < height:
+                    box = (0, 0, width, revealed)
+                elif layer.wipe_dir == "up" and revealed < height:
+                    box = (0, height - revealed, width, height)
+                    top += height - revealed
+                if box is not None:
+                    rgb, alpha = rgb.crop(box), alpha.crop(box)
             if opacity < 255:
                 lut = [round(v * opacity / 255) for v in range(256)]
                 alpha = alpha.point(lut)
-            canvas.paste(rgb, (layer.x, layer.y + offset), alpha)
+            canvas.paste(rgb, (left, top), alpha)
         return canvas

@@ -37,6 +37,10 @@ chunk's fingerprint):
   (``domain.visual.visual_drawing_id``: the shared framework, the visual's form, the template's
   fallback) - so bumping one form's version re-renders only that form's scenes, and text-only
   templates, which carry none, are never touched by a change to visual drawing.
+* How a scene joins its neighbours is an input too (Phase 11): straight cuts inside a topic, a
+  fade at a topic boundary and at the ends of the video (``PlannedChunk.enter_fade_ms`` /
+  ``exit_fade_ms``, from the ``RENDER_FADE_*`` settings). A cut edge carries no fade length,
+  so retuning the fades re-renders only the scenes that fade.
 * A chunk is *video only*. It depends on the scene's template, content and duration - not
   on the narration audio itself, and not on where in the video it sits. Re-narrating one
   segment therefore changes the durations (and, via the storyboard, the content) of that
@@ -76,6 +80,7 @@ from typing import Any, Final, Literal, get_args
 from uuid import UUID
 
 from edutoon.domain.generation_settings import ORIENTATIONS
+from edutoon.domain.render_animation import DEFAULT_FADE_IN_MS, DEFAULT_FADE_OUT_MS, MAX_FADE_MS
 from edutoon.domain.source_storage import project_storage_prefix
 from edutoon.domain.storyboard_template import StoryboardContentError, validate_scene_content
 from edutoon.domain.storyboard_timing import segment_absolute_starts
@@ -295,6 +300,11 @@ class SegmentInput:
     audio_duration_ms: int
     audio_content_hash: str
     scenes: Sequence[SceneInput]
+    # The topic the segment belongs to (any stable string, e.g. the topic id), or ``None``. Two
+    # consecutive scenes with the same key are joined by a straight cut; where the key changes
+    # (and at the start and end of the video) the scene fades. ``None`` compares equal to ``None``,
+    # so a script with no topics is one continuous group.
+    topic_key: str | None = None
 
 
 # --- the plan -------------------------------------------------------------------------
@@ -325,6 +335,11 @@ class PlannedChunk:
     end_frame: int
     canonical_frame_count: int
     chunk_hash: str
+    # How long the scene fades in / out at its edges, in milliseconds; 0 is a straight cut. A
+    # scene fades in only if it is the first of the video or opens a new topic, and fades out only
+    # if it is the last or closes one. Both are part of the chunk's fingerprint.
+    enter_fade_ms: int = 0
+    exit_fade_ms: int = 0
 
     @property
     def frame_count(self) -> int:
@@ -382,6 +397,8 @@ def chunk_fingerprint(
     quality: str,
     encoder: str,
     fps: int = FPS,
+    enter_fade_ms: int = DEFAULT_FADE_IN_MS,
+    exit_fade_ms: int = DEFAULT_FADE_OUT_MS,
 ) -> str:
     """The fingerprint of one chunk: a hash of exactly the inputs that decide its bytes.
 
@@ -390,7 +407,8 @@ def chunk_fingerprint(
     fingerprint (and is reused), and two identical scenes share one artifact.
 
     Present for an illustrated scene, on top of its content (which holds any visual): the
-    drawing versions of the code that draws it (``domain.visual.visual_drawing_id``).
+    drawing versions of the code that draws it (``domain.visual.visual_drawing_id``). Present
+    for every scene: how it fades (or cuts) at each edge, which decides its first and last frames.
     """
     profile = profile_for(quality)
     inputs: dict[str, Any] = {
@@ -404,6 +422,9 @@ def chunk_fingerprint(
         "fps": fps,
         "encoder": encoder,
         "encoding": profile.fingerprint_fields(),
+        # How the scene joins its neighbours: the fade at each edge (0 = a straight cut). A cut
+        # edge carries no fade length, so tuning the fades re-renders only the scenes that fade.
+        "transition": {"in": enter_fade_ms, "out": exit_fade_ms},
     }
     # An illustrated scene (which may carry a procedural visual, itself part of ``content``) also
     # depends on the drawing code that draws it - the versions of exactly those parts, so a change
@@ -488,6 +509,8 @@ def build_render_plan(
     quality: str,
     encoder: str,
     fps: int = FPS,
+    fade_in_ms: int = DEFAULT_FADE_IN_MS,
+    fade_out_ms: int = DEFAULT_FADE_OUT_MS,
 ) -> RenderPlan:
     """The render plan for a whole script.
 
@@ -498,6 +521,9 @@ def build_render_plan(
     """
     if encoder not in ENCODERS:
         raise RenderPlanError(f"Unknown encoder {encoder!r}.")
+    for name, value in (("fade-in", fade_in_ms), ("fade-out", fade_out_ms)):
+        if not 0 <= value <= MAX_FADE_MS:
+            raise RenderPlanError(f"The {name} must be between 0 and {MAX_FADE_MS} milliseconds.")
     width, height = output_size(orientation, quality)
     if not segments:
         raise RenderPlanError("This script has no sections to render.")
@@ -527,7 +553,14 @@ def build_render_plan(
 
     chunks: list[PlannedChunk] = []
     cursor = 0
+    topics = [piece[0].topic_key for piece in pieces]
     for position, (segment, scene, duration_ms) in enumerate(pieces):
+        # Straight cuts inside a topic; a fade at the start and end of the video and wherever the
+        # topic changes.
+        opens_topic = position == 0 or topics[position] != topics[position - 1]
+        closes_topic = position == len(pieces) - 1 or topics[position] != topics[position + 1]
+        enter_fade_ms = fade_in_ms if opens_topic else 0
+        exit_fade_ms = fade_out_ms if closes_topic else 0
         start_ms, end_ms = cursor, cursor + duration_ms
         chunks.append(
             PlannedChunk(
@@ -551,7 +584,11 @@ def build_render_plan(
                     quality=quality,
                     encoder=encoder,
                     fps=fps,
+                    enter_fade_ms=enter_fade_ms,
+                    exit_fade_ms=exit_fade_ms,
                 ),
+                enter_fade_ms=enter_fade_ms,
+                exit_fade_ms=exit_fade_ms,
             )
         )
         cursor = end_ms
