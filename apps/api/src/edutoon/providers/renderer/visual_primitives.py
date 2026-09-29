@@ -22,6 +22,7 @@ from math import isqrt
 
 from PIL import Image, ImageDraw
 
+from edutoon.domain.visual_layout import div_round as _div_round
 from edutoon.providers.renderer.compositor import (
     ACCENT,
     SUPERSAMPLE,
@@ -37,15 +38,6 @@ Point = tuple[int, int]
 Colour = tuple[int, int, int]
 
 _FIXED = 1024  # fixed-point 1.0 for direction vectors
-
-
-def _div_round(numerator: int, denominator: int) -> int:
-    """``numerator / denominator`` rounded half away from zero, in integers."""
-    if denominator < 0:
-        numerator, denominator = -numerator, -denominator
-    if numerator >= 0:
-        return (2 * numerator + denominator) // (2 * denominator)
-    return -((2 * -numerator + denominator) // (2 * denominator))
 
 
 def direction(start: Point, end: Point) -> tuple[int, int]:
