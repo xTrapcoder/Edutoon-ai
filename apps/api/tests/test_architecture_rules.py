@@ -25,7 +25,9 @@ import pytest
 SRC = Path(__file__).resolve().parents[1] / "src" / "edutoon"
 
 # The third-party packages that talk to an external provider (rule 3).
-PROVIDER_SDKS = frozenset({"anthropic", "openai", "boto3", "botocore", "redis", "pypdf", "jwt"})
+PROVIDER_SDKS = frozenset(
+    {"anthropic", "openai", "boto3", "botocore", "redis", "pypdf", "jwt", "PIL", "numpy"}
+)
 
 
 def _modules(package: str) -> list[Path]:

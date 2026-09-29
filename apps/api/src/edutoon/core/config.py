@@ -9,6 +9,7 @@ than failing on the first one.
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import Field, ValidationError, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -238,6 +239,33 @@ class Settings(BaseSettings):
     # may sit "running" with no worker holding it before it is treated as abandoned by a
     # crashed worker and failed.
     STORYBOARD_STALE_AFTER_SECONDS: int = Field(default=3600, ge=60)
+
+    # Video rendering (Phase 10). Every one is optional: an .env written before Phase 10
+    # boots unchanged. FFMPEG_BINARY / FFPROBE_BINARY name the executables (looked up on
+    # PATH unless given as a full path). RENDER_VIDEO_ENCODER picks the H.264 encoder:
+    # ``libx264`` (software; the default) or ``h264_nvenc`` (NVIDIA hardware) - the encoder
+    # is part of every render chunk's fingerprint, so switching it re-renders rather than
+    # ever mixing two encoders in one video. Choosing an encoder does not settle H.264 or
+    # AAC patent licensing, which is a separate business/legal decision
+    # (apps/api/README.md, "Video rendering").
+    #
+    # MAX_RENDER_DURATION_MS is the longest video one render may produce (10 minutes today;
+    # the chunked design itself does not depend on it). RENDER_WORK_DIR is where a render's
+    # scratch files live ("" = the operating system's temporary directory); before a render
+    # is queued the free space there must cover the estimate plus RENDER_MIN_FREE_DISK_MB.
+    # RENDER_CONCURRENCY is how many chunks one job renders at once.
+    FFMPEG_BINARY: str = "ffmpeg"
+    FFPROBE_BINARY: str = "ffprobe"
+    RENDER_VIDEO_ENCODER: Literal["libx264", "h264_nvenc"] = "libx264"
+    MAX_RENDER_DURATION_MS: int = Field(default=600_000, ge=1_000)
+    RENDER_WORK_DIR: str = ""
+    RENDER_MIN_FREE_DISK_MB: int = Field(default=1024, ge=0)
+    RENDER_CONCURRENCY: int = Field(default=2, ge=1, le=16)
+
+    # Mirrors the other STALE_AFTER_SECONDS settings: how long a render_video job may sit
+    # "running" with no worker holding it before it is treated as abandoned by a crashed
+    # worker and failed. Chunks it had already finished are kept and reused by the retry.
+    RENDER_STALE_AFTER_SECONDS: int = Field(default=3600, ge=60)
 
     @model_validator(mode="after")
     def _section_duration_bounds_are_consistent(self) -> Settings:
