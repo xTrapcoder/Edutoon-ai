@@ -2,10 +2,13 @@ import type {
   ClaimVerification,
   Job,
   Project,
+  Scene,
   Script,
   ScriptDetail,
   SegmentAudio,
+  SegmentStoryboard,
   Source,
+  StoryboardStatus,
   SynthesisStatus,
   Topic,
 } from '@edutoon/contracts';
@@ -159,6 +162,47 @@ export function synthesisStatus(over: Partial<SynthesisStatus> = {}): SynthesisS
         audio: null,
       },
     ],
+    ...over,
+  };
+}
+
+export function scene(over: Partial<Scene> = {}): Scene {
+  return {
+    id: ID(80),
+    scene_index: 0,
+    start_ms: 0,
+    duration_ms: 9_000,
+    template: 'title_card',
+    content: { title: 'A network connects computers' },
+    reviewer_flag: false,
+    updated_at: AT,
+    ...over,
+  };
+}
+
+export function segmentStoryboard(over: Partial<SegmentStoryboard> = {}): SegmentStoryboard {
+  return {
+    id: ID(50),
+    segment_index: 0,
+    expected_scene_count: 1,
+    audio_measured_duration_ms: 60_000,
+    is_stale: false,
+    is_ready: false,
+    scenes: [],
+    ...over,
+  };
+}
+
+export function storyboardStatus(over: Partial<StoryboardStatus> = {}): StoryboardStatus {
+  return {
+    script: script({ status: 'approved', measured_duration_ms: 60_000 }),
+    job: null,
+    segments: [segmentStoryboard()],
+    ready_segment_count: 0,
+    not_ready_segment_ids: [ID(50)],
+    is_complete: false,
+    estimated_provider_calls: 1,
+    actual_provider_calls: null,
     ...over,
   };
 }

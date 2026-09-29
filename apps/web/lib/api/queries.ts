@@ -39,6 +39,8 @@ export const queryKeys = {
   script: (id: string, scriptId: string) => ['projects', id, 'scripts', scriptId] as const,
   synthesis: (id: string, scriptId: string) =>
     ['projects', id, 'scripts', scriptId, 'synthesis'] as const,
+  storyboard: (id: string, scriptId: string) =>
+    ['projects', id, 'scripts', scriptId, 'storyboard'] as const,
   claims: (id: string) => ['projects', id, 'claims'] as const,
 };
 
@@ -108,6 +110,19 @@ export function useSynthesisStatus(projectId: string, scriptId: string | undefin
   return useQuery({
     queryKey: queryKeys.synthesis(projectId, scriptId ?? ''),
     queryFn: () => api.getSynthesisStatus(projectId, scriptId as string),
+    enabled: scriptId !== undefined,
+    refetchInterval: (query) => {
+      const job = query.state.data?.job;
+      return job && isActiveJob(job) ? POLL_INTERVAL_MS : false;
+    },
+  });
+}
+
+/** A script's storyboard status, polled while its most recent job is still queued or running. */
+export function useStoryboardStatus(projectId: string, scriptId: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.storyboard(projectId, scriptId ?? ''),
+    queryFn: () => api.getStoryboardStatus(projectId, scriptId as string),
     enabled: scriptId !== undefined,
     refetchInterval: (query) => {
       const job = query.state.data?.job;
@@ -434,6 +449,15 @@ export function useEnqueueSynthesis(projectId: string, scriptId: string) {
   return useIdempotentMutation((_: void, key) => api.enqueueSynthesis(projectId, scriptId, key), {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.synthesis(projectId, scriptId) });
+    },
+  });
+}
+
+export function useEnqueueStoryboard(projectId: string, scriptId: string) {
+  const queryClient = useQueryClient();
+  return useIdempotentMutation((_: void, key) => api.enqueueStoryboard(projectId, scriptId, key), {
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.storyboard(projectId, scriptId) });
     },
   });
 }

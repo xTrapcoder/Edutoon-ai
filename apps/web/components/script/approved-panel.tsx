@@ -1,13 +1,8 @@
-import { CheckCircle2, Clapperboard, FolderOpen, Plus, Video } from 'lucide-react';
+import { CheckCircle2, FolderOpen, Plus, Video } from 'lucide-react';
 import { ButtonLink } from '@/components/ui/button';
 import { Card, CardBody } from '@/components/ui/card';
 
 const UPCOMING = [
-  {
-    icon: Clapperboard,
-    title: 'Visual scenes',
-    body: 'Each section of the script is turned into scenes to show on screen.',
-  },
   {
     icon: Video,
     title: 'Rendering',
@@ -17,9 +12,9 @@ const UPCOMING = [
 
 /**
  * Shown once a script is approved: what was done, and - without pretending anything else works
- * yet - what the next production stages will be. Narration (Phase 8) is real, not upcoming, so it
- * is deliberately not listed here - it is offered directly below, in Script Studio's own
- * narration panel.
+ * yet - what the next production stage will be. Narration (Phase 8) and the storyboard (Phase 9)
+ * are both real, not upcoming, so neither is listed here - each is offered directly below, in
+ * Script Studio's own narration and storyboard panels.
  */
 export function ApprovedPanel({ projectId }: { projectId: string }) {
   return (
@@ -42,11 +37,11 @@ export function ApprovedPanel({ projectId }: { projectId: string }) {
           <div>
             <h3 className="text-lg font-semibold text-ink-950">What&apos;s next?</h3>
             <p className="mt-1 max-w-2xl text-sm text-ink-500">
-              These production stages are still to come. They are not available yet, and nothing is
+              This production stage is still to come. It is not available yet, and nothing is
               waiting for you to do.
             </p>
           </div>
-          <ul className="grid grid-cols-1 gap-3 md:grid-cols-3">
+          <ul className="grid grid-cols-1 gap-3 md:max-w-sm">
             {UPCOMING.map((stage) => (
               <li
                 key={stage.title}

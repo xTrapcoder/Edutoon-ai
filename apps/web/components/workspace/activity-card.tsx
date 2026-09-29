@@ -15,6 +15,7 @@ const KIND_LABEL: Record<JobKind, string> = {
   extract_claims: 'Extracting and verifying claims',
   generate_script: 'Writing the script',
   synthesise_voice: 'Narration',
+  generate_storyboard: 'Building the storyboard',
   render_video: 'Rendering',
 };
 

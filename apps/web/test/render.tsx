@@ -9,7 +9,9 @@ import {
   project,
   script,
   scriptDetail,
+  segmentStoryboard,
   source,
+  storyboardStatus,
   synthesisStatus,
   topic,
   PROJECT_ID,
@@ -40,6 +42,7 @@ export interface ProjectApi {
   scripts?: ReturnType<typeof script>[];
   scriptDetail?: ReturnType<typeof scriptDetail>;
   synthesisStatus?: ReturnType<typeof synthesisStatus>;
+  storyboardStatus?: ReturnType<typeof storyboardStatus>;
   claims?: ReturnType<typeof claim>[];
 }
 
@@ -71,6 +74,23 @@ export function serveProject(data: ProjectApi = {}) {
             estimated_duration_ms: segment.estimated_duration_ms,
             audio: null,
           })),
+        }),
+      );
+    }),
+    http.get(`${base}/scripts/:scriptId/storyboard`, () => {
+      if (data.storyboardStatus) return HttpResponse.json(data.storyboardStatus);
+      if (!data.scriptDetail) return new HttpResponse(null, { status: 404 });
+      return HttpResponse.json(
+        storyboardStatus({
+          script: data.scriptDetail,
+          segments: data.scriptDetail.segments.map((segment) =>
+            segmentStoryboard({
+              id: segment.id,
+              segment_index: segment.segment_index,
+              audio_measured_duration_ms: data.scriptDetail?.measured_duration_ms ?? null,
+            }),
+          ),
+          not_ready_segment_ids: data.scriptDetail.segments.map((segment) => segment.id),
         }),
       );
     }),

@@ -72,7 +72,7 @@ const GUIDANCE: Record<StageId, Guidance> = {
   },
   approved: {
     title: 'Script approved',
-    body: 'Narrate it with a local, offline voice from Script Studio. Visual scenes and rendering are the production stages still to come.',
+    body: 'Narrate it and build its storyboard from Script Studio. Rendering is the production stage still to come.',
   },
 };
 

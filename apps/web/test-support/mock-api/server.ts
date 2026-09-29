@@ -63,6 +63,7 @@ const jobs: Row[] = [];
 const scripts: Row[] = [];
 const segments: Row[] = [];
 const segmentAudio: Row[] = [];
+const scenes: Row[] = [];
 const claims: Row[] = [];
 /** Idempotency: `${method} ${path} ${key}` -> the first response. */
 const replays = new Map<string, { status: number; body: unknown }>();
@@ -648,6 +649,47 @@ function advance(job_: Row) {
         measured_duration_ms: sc?.measured_duration_ms ?? null,
       };
     }
+    if (job_.kind === 'generate_storyboard') {
+      const sc = scripts.find((s) => s.id === (job_.payload as { script_id: string }).script_id);
+      const segs = segments
+        .filter((s) => s.script_id === sc?.id)
+        .sort((x, y) => (x.segment_index as number) - (y.segment_index as number));
+      for (let i = scenes.length - 1; i >= 0; i--) {
+        if (segs.some((s) => s.id === scenes[i]!.script_segment_id)) scenes.splice(i, 1);
+      }
+      let cursor = 0;
+      let ready = 0;
+      for (const seg of segs) {
+        const audio = segmentAudio.find((a) => a.script_segment_id === seg.id);
+        const durationMs = (audio?.measured_duration_ms as number | undefined) ?? 0;
+        if (audio?.status === 'ready' && durationMs > 0) {
+          const topicTitle = topics.find((t) => t.id === seg.topic_id)?.title as string | undefined;
+          scenes.push({
+            id: uuid(),
+            script_segment_id: seg.id,
+            scene_index: 0,
+            start_ms: cursor,
+            duration_ms: durationMs,
+            template: 'title_card',
+            content: { title: topicTitle ?? `Section ${(seg.segment_index as number) + 1}` },
+            reviewer_flag: false,
+            updated_at: now(),
+          });
+          ready += 1;
+        }
+        cursor += durationMs;
+      }
+      job_.status = 'succeeded';
+      job_.finished_at = now();
+      job_.result = {
+        script_id: sc?.id ?? null,
+        segment_count: segs.length,
+        ready_segment_count: ready,
+        failed_segment_ids: [],
+        outcome: ready === segs.length ? 'complete' : 'succeeded_with_failures',
+        provider_calls: ready,
+      };
+    }
   }
 }
 
@@ -1028,6 +1070,93 @@ async function route(req: IncomingMessage, res: ServerResponse) {
               estimated_duration_ms: seg.estimated_duration_ms,
               audio: segmentAudio.find((au) => au.script_segment_id === seg.id) ?? null,
             })),
+          });
+        }
+      }
+
+      if (a && b === 'storyboard') {
+        const sc = mine.find((s) => s.id === a);
+        if (!sc) return fail(res, 404, 'not_found', `Script ${a} not found.`);
+        const segs = segments
+          .filter((s) => s.script_id === sc.id)
+          .sort((x, y) => (x.segment_index as number) - (y.segment_index as number));
+        const readySegs = segs.filter(
+          (seg) => segmentAudio.find((au) => au.script_segment_id === seg.id)?.status === 'ready',
+        );
+        if (method === 'POST') {
+          if (sc.status !== 'approved')
+            return fail(
+              res,
+              409,
+              'conflict',
+              `Only an approved script can get a storyboard; this one is '${sc.status}'.`,
+            );
+          if (sc.measured_duration_ms == null)
+            return send(res, 400, {
+              error: {
+                code: 'validation_error',
+                message:
+                  "This script's narration is not fully synthesised yet - every segment needs " +
+                  'ready audio before a storyboard can be generated.',
+              },
+            });
+          if (
+            jobs.some(
+              (j) =>
+                j.project_id === pid &&
+                j.kind === 'generate_storyboard' &&
+                (j.status === 'queued' || j.status === 'running'),
+            )
+          )
+            return fail(
+              res,
+              409,
+              'conflict',
+              'Storyboard generation is already queued or running for this project; wait for it to finish.',
+            );
+          const estimated = readySegs.length;
+          const j = job(pid, 'generate_storyboard', 'queued', {
+            payload: { script_id: sc.id, project_id: pid, estimated_provider_calls: estimated },
+          });
+          touch();
+          return done(202, { job: j, estimated_provider_calls: estimated });
+        }
+        if (method === 'GET') {
+          const latest = jobs
+            .filter((j) => j.project_id === pid && j.kind === 'generate_storyboard')
+            .sort(
+              (x, y) => Date.parse(y.created_at as string) - Date.parse(x.created_at as string),
+            )[0];
+          const segmentBodies = segs.map((seg) => {
+            const audio = segmentAudio.find((au) => au.script_segment_id === seg.id);
+            const segScenes = scenes
+              .filter((sn) => sn.script_segment_id === seg.id)
+              .sort((x, y) => (x.scene_index as number) - (y.scene_index as number));
+            const isReady = segScenes.length > 0;
+            return {
+              id: seg.id,
+              segment_index: seg.segment_index,
+              expected_scene_count: audio?.status === 'ready' ? 1 : 0,
+              audio_measured_duration_ms: (audio?.measured_duration_ms as number | null) ?? null,
+              is_stale: false,
+              is_ready: isReady,
+              scenes: segScenes,
+            };
+          });
+          const readyCount = segmentBodies.filter((s) => s.is_ready).length;
+          const notReady = segmentBodies.filter((s) => !s.is_ready).map((s) => s.id);
+          return send(res, 200, {
+            script: sc,
+            job: latest ?? null,
+            segments: segmentBodies,
+            ready_segment_count: readyCount,
+            not_ready_segment_ids: notReady,
+            is_complete: notReady.length === 0,
+            estimated_provider_calls:
+              (latest?.payload as { estimated_provider_calls?: number } | undefined)
+                ?.estimated_provider_calls ?? readySegs.length,
+            actual_provider_calls:
+              (latest?.result as { provider_calls?: number } | null)?.provider_calls ?? null,
           });
         }
       }

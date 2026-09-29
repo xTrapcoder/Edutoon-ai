@@ -46,6 +46,7 @@ import {
   VERDICT,
 } from './script-model';
 import { SegmentAudioPlayer } from './segment-audio-player';
+import { StoryboardPanel } from './storyboard-panel';
 
 interface ScriptStudioProps {
   project: Project;
@@ -671,6 +672,7 @@ export function ScriptStudio({ project, script, topics }: ScriptStudioProps) {
       >
         <ApprovalCard project={project} script={script} />
         <SynthesisCard project={project} script={script} />
+        <StoryboardPanel project={project} script={script} />
         <ProjectSettingsCard project={project} script={script} />
         <DetailsCard script={script} />
       </aside>

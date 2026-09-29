@@ -242,6 +242,46 @@ export function readSynthesisResult(job: Job | undefined): SynthesisResultSummar
   };
 }
 
+export interface StoryboardProgress {
+  stage: string;
+  segmentIndex: number | null;
+  segmentCount: number | null;
+}
+
+/**
+ * What a `generate_storyboard` job's interim `payload.progress` reports while it is still
+ * running (Phase 9 - see `services.storyboard` on the API side). Same untyped, field-by-field
+ * reading as `readSynthesisProgress`.
+ */
+export function readStoryboardProgress(job: Job | undefined): StoryboardProgress | null {
+  if (!job || job.status !== 'running' || !isRecord(job.payload)) return null;
+  const progress = job.payload.progress;
+  if (!isRecord(progress) || typeof progress.stage !== 'string') return null;
+  return {
+    stage: progress.stage,
+    segmentIndex: asCount(progress.segment_index),
+    segmentCount: asCount(progress.segment_count),
+  };
+}
+
+const STORYBOARD_STAGE_LABELS: Record<string, string> = {
+  preparing: 'Preparing storyboard',
+  processing_segment: 'Storyboarding your script',
+  finalising: 'Finishing up',
+};
+
+/** A one-line label for a storyboard job's current stage, naming the section when known. */
+export function storyboardStageLabel(progress: StoryboardProgress): string {
+  if (
+    progress.stage === 'processing_segment' &&
+    progress.segmentIndex !== null &&
+    progress.segmentCount !== null
+  ) {
+    return `Storyboarding section ${progress.segmentIndex + 1} of ${progress.segmentCount}`;
+  }
+  return STORYBOARD_STAGE_LABELS[progress.stage] ?? 'Storyboarding your script';
+}
+
 export type WaitLevel = 'normal' | 'slow' | 'stalled';
 
 export interface WaitAssessment {

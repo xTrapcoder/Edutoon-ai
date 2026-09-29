@@ -8,6 +8,8 @@ import type {
   ScriptDetail,
   Source,
   SourceChunk,
+  StoryboardEnqueueResponse,
+  StoryboardStatus,
   SynthesisStatus,
   Topic,
   TopicUpdateRequest,
@@ -277,6 +279,33 @@ export function enqueueSynthesis(projectId: string, scriptId: string, key: strin
 export function getSynthesisStatus(projectId: string, scriptId: string): Promise<SynthesisStatus> {
   return unwrap(
     getApiClient().GET('/v1/projects/{project_id}/scripts/{script_id}/synthesis', {
+      params: { path: { project_id: projectId, script_id: scriptId } },
+      signal: timeoutSignal(),
+    }),
+  );
+}
+
+// --- storyboard (Phase 9) ----------------------------------------------------------------
+
+export function enqueueStoryboard(
+  projectId: string,
+  scriptId: string,
+  key: string,
+): Promise<StoryboardEnqueueResponse> {
+  return unwrap(
+    getApiClient().POST('/v1/projects/{project_id}/scripts/{script_id}/storyboard', {
+      params: { path: { project_id: projectId, script_id: scriptId }, header: idempotent(key) },
+      signal: timeoutSignal(),
+    }),
+  );
+}
+
+export function getStoryboardStatus(
+  projectId: string,
+  scriptId: string,
+): Promise<StoryboardStatus> {
+  return unwrap(
+    getApiClient().GET('/v1/projects/{project_id}/scripts/{script_id}/storyboard', {
       params: { path: { project_id: projectId, script_id: scriptId } },
       signal: timeoutSignal(),
     }),
