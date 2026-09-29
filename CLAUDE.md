@@ -103,7 +103,7 @@ unsupported claims ever reach the script or the screen.
 
 **Phase 9 — the Scene / Storyboard layer: code-complete for everything that can be
 verified without provider credentials.** Delivered on top of Phase 8: an approved
-script whose narration is *fully measured*
+script whose narration is _fully measured_
 (`scripts.measured_duration_ms IS NOT NULL` - the sole narration-completeness
 gate) can now be turned into a deterministic, timed, templated scene timeline,
 ready for a future rendering phase. One LLM call per script segment (never one
@@ -129,7 +129,7 @@ transaction (whole-set DELETE + INSERT, never a per-row `UPDATE`); one
 segment's failure never discards another's success. A `generate_storyboard`
 job ends `succeeded` unless every segment failed, and records
 `ready_segment_count` / `failed_segment_ids` / `outcome`
-(`"complete"` or `"succeeded_with_failures"`) - but *completeness* is a
+(`"complete"` or `"succeeded_with_failures"`) - but _completeness_ is a
 separate, always-freshly-computed read-model verdict
 (`services.storyboard.get_storyboard_status`), never copied from a job's own
 historical result, so the UI can never show a finished-looking timeline that
