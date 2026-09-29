@@ -872,6 +872,39 @@ async def test_a_failed_assembly_keeps_every_chunk_and_retry_only_reassembles(
     assert renderer.chunks == [] and renderer.assemblies == 2  # assembled again, drew nothing
 
 
+async def test_a_worker_killed_during_assembly_loses_no_chunk_and_the_next_render_only_assembles(
+    db_session, storage, renderer, worker_sessionmaker, built, monkeypatch
+):
+    _with_settings(monkeypatch, RENDER_STALE_AFTER_SECONDS=60)
+    enqueued = await _enqueue(db_session, built)
+    original = renderer.assemble
+
+    async def _dying(spec, dest):
+        raise WorkerKilled()
+
+    renderer.assemble = _dying  # type: ignore[method-assign]
+    with pytest.raises(WorkerKilled):
+        await render_service.run_render_video_job(
+            db_session, storage, renderer, job_id=enqueued.job.id, sessionmaker=worker_sessionmaker
+        )
+    assert len(renderer.chunks) == TOTAL_SCENES  # every chunk was already committed
+    assert (await _status(db_session, built)).output is None  # and nothing half-made is published
+
+    await jobs_repo.update(
+        db_session,
+        job_id=enqueued.job.id,
+        status="running",
+        started_at=datetime.now(UTC) - timedelta(hours=2),
+    )
+    renderer.assemble = original  # type: ignore[method-assign]
+    renderer.chunks.clear()
+    _, job = await _render(db_session, storage, renderer, worker_sessionmaker, built)
+
+    assert job.status == "succeeded", job.error
+    assert renderer.chunks == []  # nothing drawn again
+    assert (await _status(db_session, built)).is_complete is True
+
+
 async def test_a_missing_or_damaged_stored_chunk_is_never_trusted(
     db_session, storage, renderer, worker_sessionmaker, built
 ):

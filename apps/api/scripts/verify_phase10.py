@@ -184,6 +184,7 @@ class Recorder:
         self.die_after: int | None = None
         self.assemblies = 0
         self.dead = False
+        self.delay = 0.0
 
     async def render_chunk(self, spec: ChunkSpec, dest: Path) -> RenderedChunk:
         label = json.dumps(spec.content, sort_keys=True)[:60]
@@ -196,6 +197,8 @@ class Recorder:
         ):
             raise RendererError("simulated failure")
         self.drawn.append(label)
+        if self.delay:
+            await asyncio.sleep(self.delay)
         return await self.inner.render_chunk(spec, dest)
 
     async def assemble(self, spec: AssemblySpec, dest: Path) -> None:
@@ -538,7 +541,113 @@ def describe_video(path: Path, expected_ms: int) -> dict[str, Any]:
     return result
 
 
-async def main(minutes: float, keep: bool) -> None:
+async def db_restart_check(ctx: Ctx, container: str) -> dict[str, Any]:
+    """Kill and restart the Postgres container while a render is running, then render again: every chunk
+    committed before the restart must be reused, and the result must still be a verified video."""
+    project_id = await make_project(ctx, "Phase 10 database restart", 6)
+    narration = await narrate(ctx, project_id)
+    script_id = UUID(narration["script_id"])
+    await storyboard(ctx, project_id, script_id)
+    assert ctx.user_id is not None
+    ctx.recorder.delay = 3.0
+    ctx.recorder.drawn.clear()
+
+    async def run_job(job_id: UUID) -> str:
+        try:
+            async with ctx.sessionmaker() as session:
+                job = await render_service.run_render_video_job(
+                    session,
+                    ctx.storage,
+                    ctx.recorder,
+                    job_id=job_id,
+                    sessionmaker=ctx.sessionmaker,  # type: ignore[arg-type]
+                )
+                await session.commit()
+                return f"job ended {job.status}"
+        except Exception as exc:  # noqa: BLE001 - the point is to see what a dead database does
+            return f"job raised {type(exc).__name__}"
+
+    async with ctx.sessionmaker() as session:
+        enq = await render_service.enqueue_render(
+            session,
+            project_id=project_id,
+            owner_id=ctx.user_id,
+            script_id=script_id,
+            orientation="horizontal",
+            quality="low",
+            idempotency_key=str(uuid4()),
+        )
+        await session.commit()
+    task = asyncio.create_task(run_job(enq.job.id))
+
+    async def committed() -> int:
+        async with ctx.sessionmaker() as session:
+            return int(
+                (
+                    await session.execute(
+                        text("SELECT count(*) FROM render_chunks WHERE project_id = :p"),
+                        {"p": project_id},
+                    )
+                ).scalar_one()
+            )
+
+    while await committed() < 3:
+        await asyncio.sleep(0.2)
+    say("[db restart] killing and restarting the Postgres container mid-render ...")
+    # A crash rather than a polite stop, so the interruption is immediate and the database has to recover.
+    # (in threads, so the worker keeps running - and keeps hitting the dead database - meanwhile)
+    await asyncio.to_thread(
+        subprocess.run, ["docker", "kill", container], check=True, capture_output=True
+    )
+    await asyncio.sleep(6)
+    await asyncio.to_thread(
+        subprocess.run, ["docker", "start", container], check=True, capture_output=True
+    )
+    outcome = await task
+    for _ in range(60):
+        try:
+            before = await committed()
+            break
+        except Exception:  # noqa: BLE001 - the database is still coming back
+            await asyncio.sleep(1)
+    else:
+        raise RuntimeError("the database did not come back")
+    say(f"[db restart] {outcome}; {before} chunks were committed and are still there")
+    ctx.recorder.delay = 0.0
+    async with ctx.sessionmaker() as session:
+        await jobs_repo.update(
+            session,
+            job_id=enq.job.id,
+            status="running",
+            started_at=datetime(2020, 1, 1, tzinfo=UTC),
+        )
+        await session.commit()
+    job, stats = await render(ctx, project_id, script_id, "horizontal", "low")
+    path = await fetch_output(
+        ctx, project_id, script_id, "horizontal", "low", OUT / "after-db-restart.mp4"
+    )
+    result = {
+        "outcome_of_interrupted_job": outcome,
+        "chunks_committed_before_restart": before,
+        "chunks_drawn_after": stats["chunks_drawn"],
+        "chunks_reused_after": job.result["chunks_reused"],
+        "video": describe_video(path, int(job.result["duration_ms"])),
+    }
+    say(
+        f"[db restart] resumed: drew {stats['chunks_drawn']}, reused {job.result['chunks_reused']}; "
+        f"frames {result['video']['video_frames']}/{result['video']['expected_frames']} decodes cleanly={result['video']['decodes_cleanly']}"
+    )
+    assert job.result["chunks_reused"] >= before and result["video"]["decodes_cleanly"]
+    async with ctx.sessionmaker() as session:
+        files = await projects_service.delete_project(
+            session, project_id=project_id, owner_id=ctx.user_id
+        )
+        await session.commit()
+    await projects_service.remove_stored_files(ctx.storage, project_id=project_id, files=files)
+    return result
+
+
+async def main(minutes: float, keep: bool, db_restart_container: str | None = None) -> None:
     settings = get_settings()
     OUT.mkdir(parents=True, exist_ok=True)
     storage = get_storage_client(
@@ -556,6 +665,17 @@ async def main(minutes: float, keep: bool) -> None:
         ).stdout.splitlines()[0],
         "concurrency": settings.RENDER_CONCURRENCY,
     }
+    if db_restart_container:
+        result = await db_restart_check(ctx, db_restart_container)
+        report["db_restart"] = result
+        async with ctx.sessionmaker() as session:
+            await session.execute(text("DELETE FROM users WHERE id = :i"), {"i": ctx.user_id})
+            await session.commit()
+        (OUT / "report-db-restart.json").write_text(
+            json.dumps(report, indent=2, default=str), encoding="utf-8"
+        )
+        await dispose_engine()
+        return
     segments = max(4, round(minutes * 60 / 12.5))
     say(f"== project of {segments} segments (~{minutes} min) ==")
 
@@ -936,6 +1056,10 @@ async def main(minutes: float, keep: bool) -> None:
             say(
                 f"[delete] project {pid}: {len(locations)} render objects, all removed: {all(gone)}"
             )
+    if not keep and ctx.user_id is not None:
+        async with ctx.sessionmaker() as session:
+            await session.execute(text("DELETE FROM users WHERE id = :i"), {"i": ctx.user_id})
+            await session.commit()
     (OUT / "report.json").write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
     say(f"report written to {OUT / 'report.json'}")
     await dispose_engine()
@@ -947,7 +1071,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "--keep", action="store_true", help="leave the projects and objects in place"
     )
+    parser.add_argument(
+        "--db-restart",
+        metavar="CONTAINER",
+        help="only run the database-restart check, restarting this Docker container "
+        "(for example edutoon-postgres-1)",
+    )
     args = parser.parse_args()
     if shutil.which("ffmpeg") is None:
         raise SystemExit("ffmpeg is not on PATH")
-    asyncio.run(main(args.minutes, args.keep))
+    asyncio.run(main(args.minutes, args.keep, args.db_restart))

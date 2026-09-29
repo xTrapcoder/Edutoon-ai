@@ -11,6 +11,7 @@ the renderer the real Pillow + FFmpeg one.
 
 from __future__ import annotations
 
+import asyncio
 import io
 import math
 import shutil
@@ -241,13 +242,21 @@ async def build_project(
 
 
 async def remove_objects(db_session: Any, storage: Storage, built: Built) -> None:
-    """Delete every object a test created: the audio, plus whatever renders left behind."""
+    """Delete every object a test created: the audio, plus whatever renders left behind - found
+    by listing the project's own render prefix (a test may have removed the rows that name them)."""
+    settings = get_settings()
     for bucket, key in built.storage_keys:
         await storage.delete_object(bucket=bucket, key=key)
     for location in await render_repo.list_storage_locations_for_project(
         db_session, built.project.id
     ):
         await storage.delete_object(bucket=location.bucket, key=location.key)
+    prefix = f"projects/{built.project.id}/renders/"
+    client = storage._client  # noqa: SLF001 - test cleanup lists a prefix, which the app never does
+    for bucket in (settings.BUCKET_SEGMENTS, settings.BUCKET_OUTPUTS):
+        listing = await asyncio.to_thread(client.list_objects_v2, Bucket=bucket, Prefix=prefix)
+        for item in listing.get("Contents", []):
+            await storage.delete_object(bucket=bucket, key=item["Key"])
 
 
 class CountingRenderer:
