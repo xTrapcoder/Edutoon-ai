@@ -31,6 +31,7 @@ import {
 } from '@/lib/api/queries';
 import { cn } from '@/lib/cn';
 import { formatDateTime, formatDuration, formatElapsed } from '@/lib/format';
+import type { RenderSelection } from '@/lib/render';
 import { languageLabel, orientationLabel } from '@/lib/generation-settings';
 import {
   isActiveJob,
@@ -46,6 +47,7 @@ import {
   VERDICT,
 } from './script-model';
 import { SegmentAudioPlayer } from './segment-audio-player';
+import { RenderPanel } from './render-panel';
 import { StoryboardPanel } from './storyboard-panel';
 
 interface ScriptStudioProps {
@@ -632,6 +634,11 @@ function DetailsCard({ script }: { script: ScriptDetail }) {
 /** A three-column workspace: sections on the left, the script in the middle, settings and approval on the right. */
 export function ScriptStudio({ project, script, topics }: ScriptStudioProps) {
   const [selected, setSelected] = useState(0);
+  // Which video the render panel and the storyboard's per-scene badges are talking about.
+  const [renderSelection, setRenderSelection] = useState<RenderSelection>({
+    orientation: project.orientation,
+    quality: 'low',
+  });
   const index = Math.min(selected, Math.max(0, script.segments.length - 1));
   const { data: synthesisStatus } = useSynthesisStatus(
     project.id,
@@ -672,7 +679,13 @@ export function ScriptStudio({ project, script, topics }: ScriptStudioProps) {
       >
         <ApprovalCard project={project} script={script} />
         <SynthesisCard project={project} script={script} />
-        <StoryboardPanel project={project} script={script} />
+        <StoryboardPanel project={project} script={script} renderSelection={renderSelection} />
+        <RenderPanel
+          project={project}
+          script={script}
+          selection={renderSelection}
+          onSelectionChange={setRenderSelection}
+        />
         <ProjectSettingsCard project={project} script={script} />
         <DetailsCard script={script} />
       </aside>

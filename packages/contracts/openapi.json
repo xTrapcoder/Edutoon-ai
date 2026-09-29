@@ -2045,6 +2045,454 @@
         }
       }
     },
+    "/v1/projects/{project_id}/scripts/{script_id}/render": {
+      "post": {
+        "tags": [
+          "render"
+        ],
+        "summary": "Enqueue Render",
+        "operationId": "enqueue_render_v1_projects__project_id__scripts__script_id__render_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "script_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Script Id"
+            }
+          },
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255,
+              "title": "Idempotency-Key"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RenderEnqueueRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RenderEnqueueResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "render"
+        ],
+        "summary": "Get Render",
+        "operationId": "get_render_v1_projects__project_id__scripts__script_id__render_get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "script_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Script Id"
+            }
+          },
+          {
+            "name": "orientation",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "enum": [
+                "horizontal",
+                "vertical"
+              ],
+              "type": "string",
+              "title": "Orientation"
+            }
+          },
+          {
+            "name": "quality",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "enum": [
+                "low",
+                "high"
+              ],
+              "type": "string",
+              "title": "Quality"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RenderStatusResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/render/retry": {
+      "post": {
+        "tags": [
+          "render"
+        ],
+        "summary": "Retry Render",
+        "operationId": "retry_render_v1_projects__project_id__render_retry_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255,
+              "title": "Idempotency-Key"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/RenderRetryRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RenderEnqueueResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/render/progress": {
+      "get": {
+        "tags": [
+          "render"
+        ],
+        "summary": "Get Render Progress",
+        "operationId": "get_render_progress_v1_projects__project_id__render_progress_get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RenderProgressStatusResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/projects/{project_id}/scripts/{script_id}/render/video": {
+      "get": {
+        "tags": [
+          "render"
+        ],
+        "summary": "Stream Render Video",
+        "operationId": "stream_render_video_v1_projects__project_id__scripts__script_id__render_video_get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "script_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Script Id"
+            }
+          },
+          {
+            "name": "orientation",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "enum": [
+                "horizontal",
+                "vertical"
+              ],
+              "type": "string",
+              "title": "Orientation"
+            }
+          },
+          {
+            "name": "quality",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "enum": [
+                "low",
+                "high"
+              ],
+              "type": "string",
+              "title": "Quality"
+            }
+          },
+          {
+            "name": "download",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Download"
+            }
+          },
+          {
+            "name": "range",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Range"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/jobs": {
       "get": {
         "tags": [
@@ -2781,6 +3229,575 @@
         "type": "object",
         "title": "ProjectUpdateRequest",
         "description": "All fields optional (PATCH semantics). Only keys actually present in\nthe request body reach the service - see ``model_dump(exclude_unset=True)``\nin the router - so omitting a field leaves it untouched, while\nexplicitly sending ``null`` for a nullable field (``description``)\nclears it. ``title`` and the generation settings are ``NOT NULL`` in the\nschema, so an explicit ``null`` for any of them is rejected here rather than\nreaching the database."
+      },
+      "RenderEnqueueRequest": {
+        "properties": {
+          "orientation": {
+            "type": "string",
+            "enum": [
+              "horizontal",
+              "vertical"
+            ],
+            "title": "Orientation"
+          },
+          "quality": {
+            "type": "string",
+            "enum": [
+              "low",
+              "high"
+            ],
+            "title": "Quality"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "orientation",
+          "quality"
+        ],
+        "title": "RenderEnqueueRequest",
+        "description": "Which video to make. Both fields are required: the caller confirms the orientation and\nquality they are asking for, rather than inheriting a default they may not have seen."
+      },
+      "RenderEnqueueResponse": {
+        "properties": {
+          "job": {
+            "$ref": "#/components/schemas/JobResponse"
+          },
+          "estimate": {
+            "$ref": "#/components/schemas/RenderEstimateResponse"
+          }
+        },
+        "type": "object",
+        "required": [
+          "job",
+          "estimate"
+        ],
+        "title": "RenderEnqueueResponse"
+      },
+      "RenderEstimateResponse": {
+        "properties": {
+          "chunk_count": {
+            "type": "integer",
+            "title": "Chunk Count"
+          },
+          "unique_chunk_count": {
+            "type": "integer",
+            "title": "Unique Chunk Count"
+          },
+          "chunks_reusable": {
+            "type": "integer",
+            "title": "Chunks Reusable"
+          },
+          "chunks_to_render": {
+            "type": "integer",
+            "title": "Chunks To Render"
+          },
+          "total_ms": {
+            "type": "integer",
+            "title": "Total Ms"
+          },
+          "width": {
+            "type": "integer",
+            "title": "Width"
+          },
+          "height": {
+            "type": "integer",
+            "title": "Height"
+          },
+          "fps": {
+            "type": "integer",
+            "title": "Fps"
+          },
+          "estimated_output_bytes": {
+            "type": "integer",
+            "title": "Estimated Output Bytes"
+          },
+          "required_free_bytes": {
+            "type": "integer",
+            "title": "Required Free Bytes"
+          }
+        },
+        "type": "object",
+        "required": [
+          "chunk_count",
+          "unique_chunk_count",
+          "chunks_reusable",
+          "chunks_to_render",
+          "total_ms",
+          "width",
+          "height",
+          "fps",
+          "estimated_output_bytes",
+          "required_free_bytes"
+        ],
+        "title": "RenderEstimateResponse"
+      },
+      "RenderOutputResponse": {
+        "properties": {
+          "orientation": {
+            "type": "string",
+            "enum": [
+              "horizontal",
+              "vertical"
+            ],
+            "title": "Orientation"
+          },
+          "quality": {
+            "type": "string",
+            "enum": [
+              "low",
+              "high"
+            ],
+            "title": "Quality"
+          },
+          "width": {
+            "type": "integer",
+            "title": "Width"
+          },
+          "height": {
+            "type": "integer",
+            "title": "Height"
+          },
+          "fps": {
+            "type": "integer",
+            "title": "Fps"
+          },
+          "duration_ms": {
+            "type": "integer",
+            "title": "Duration Ms"
+          },
+          "byte_size": {
+            "type": "integer",
+            "title": "Byte Size"
+          },
+          "encoder": {
+            "type": "string",
+            "title": "Encoder"
+          },
+          "renderer_version": {
+            "type": "string",
+            "title": "Renderer Version"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          },
+          "is_current": {
+            "type": "boolean",
+            "title": "Is Current"
+          }
+        },
+        "type": "object",
+        "required": [
+          "orientation",
+          "quality",
+          "width",
+          "height",
+          "fps",
+          "duration_ms",
+          "byte_size",
+          "encoder",
+          "renderer_version",
+          "created_at",
+          "updated_at",
+          "is_current"
+        ],
+        "title": "RenderOutputResponse"
+      },
+      "RenderProgressResponse": {
+        "properties": {
+          "stage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stage"
+          },
+          "chunks_total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chunks Total"
+          },
+          "chunks_reused": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chunks Reused"
+          },
+          "chunks_to_render": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chunks To Render"
+          },
+          "chunks_done": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chunks Done"
+          },
+          "chunks_complete": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chunks Complete"
+          },
+          "segment_index": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Segment Index"
+          },
+          "segment_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Segment Count"
+          },
+          "scene_index": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scene Index"
+          },
+          "scene_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scene Count"
+          },
+          "percent": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Percent"
+          },
+          "eta_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Eta Seconds"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "title": "RenderProgressResponse",
+        "description": "Live progress of a render job. ``percent`` is real work done (chunks rendered, plus one\nunit for assembly); ``eta_seconds`` is only present once enough chunks have finished to\nestimate from."
+      },
+      "RenderProgressStatusResponse": {
+        "properties": {
+          "job": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/JobResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "progress": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RenderProgressResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "job",
+          "progress"
+        ],
+        "title": "RenderProgressStatusResponse",
+        "description": "The cheap poll: the latest render job and its progress, without re-evaluating the\nstoryboard."
+      },
+      "RenderRetryRequest": {
+        "properties": {},
+        "additionalProperties": false,
+        "type": "object",
+        "title": "RenderRetryRequest",
+        "description": "Carries no fields: a retry repeats the last failed render as it was asked for. Exists so\nan unknown field in the body is rejected with 422 (rule 10)."
+      },
+      "RenderSceneResponse": {
+        "properties": {
+          "position": {
+            "type": "integer",
+            "title": "Position"
+          },
+          "segment_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Segment Id"
+          },
+          "segment_index": {
+            "type": "integer",
+            "title": "Segment Index"
+          },
+          "scene_index": {
+            "type": "integer",
+            "title": "Scene Index"
+          },
+          "scene_count": {
+            "type": "integer",
+            "title": "Scene Count"
+          },
+          "template": {
+            "type": "string",
+            "enum": [
+              "title_card",
+              "bullet_points",
+              "labelled_diagram",
+              "split_text_illustration",
+              "full_bleed_illustration",
+              "formula_or_code"
+            ],
+            "title": "Template"
+          },
+          "start_ms": {
+            "type": "integer",
+            "title": "Start Ms"
+          },
+          "duration_ms": {
+            "type": "integer",
+            "title": "Duration Ms"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "ready",
+              "needs_render",
+              "stale",
+              "failed"
+            ],
+            "title": "State"
+          }
+        },
+        "type": "object",
+        "required": [
+          "position",
+          "segment_id",
+          "segment_index",
+          "scene_index",
+          "scene_count",
+          "template",
+          "start_ms",
+          "duration_ms",
+          "state"
+        ],
+        "title": "RenderSceneResponse"
+      },
+      "RenderStatusResponse": {
+        "properties": {
+          "script": {
+            "$ref": "#/components/schemas/ScriptResponse"
+          },
+          "orientation": {
+            "type": "string",
+            "enum": [
+              "horizontal",
+              "vertical"
+            ],
+            "title": "Orientation"
+          },
+          "quality": {
+            "type": "string",
+            "enum": [
+              "low",
+              "high"
+            ],
+            "title": "Quality"
+          },
+          "job": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/JobResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "progress": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RenderProgressResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "blockers": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Blockers"
+          },
+          "scenes": {
+            "items": {
+              "$ref": "#/components/schemas/RenderSceneResponse"
+            },
+            "type": "array",
+            "title": "Scenes"
+          },
+          "ready_count": {
+            "type": "integer",
+            "title": "Ready Count"
+          },
+          "needs_render_count": {
+            "type": "integer",
+            "title": "Needs Render Count"
+          },
+          "stale_count": {
+            "type": "integer",
+            "title": "Stale Count"
+          },
+          "failed_count": {
+            "type": "integer",
+            "title": "Failed Count"
+          },
+          "output": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RenderOutputResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "output_is_current": {
+            "type": "boolean",
+            "title": "Output Is Current"
+          },
+          "estimate": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RenderEstimateResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "total_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total Ms"
+          },
+          "is_complete": {
+            "type": "boolean",
+            "title": "Is Complete"
+          }
+        },
+        "type": "object",
+        "required": [
+          "script",
+          "orientation",
+          "quality",
+          "job",
+          "progress",
+          "blockers",
+          "scenes",
+          "ready_count",
+          "needs_render_count",
+          "stale_count",
+          "failed_count",
+          "output",
+          "output_is_current",
+          "estimate",
+          "total_ms",
+          "is_complete"
+        ],
+        "title": "RenderStatusResponse"
       },
       "SceneResponse": {
         "properties": {

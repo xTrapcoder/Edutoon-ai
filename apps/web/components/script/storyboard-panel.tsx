@@ -1,9 +1,24 @@
 'use client';
 
 import { useQueryClient } from '@tanstack/react-query';
-import { Clapperboard, Flag, ImageOff } from 'lucide-react';
+import {
+  AlertTriangle,
+  Check,
+  CircleDashed,
+  Clapperboard,
+  Flag,
+  ImageOff,
+  XCircle,
+  type LucideIcon,
+} from 'lucide-react';
 import { useEffect, useRef } from 'react';
-import type { Project, Scene, ScriptDetail, SegmentStoryboard } from '@edutoon/contracts';
+import type {
+  Project,
+  RenderSceneState,
+  Scene,
+  ScriptDetail,
+  SegmentStoryboard,
+} from '@edutoon/contracts';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardBody, CardHeader } from '@/components/ui/card';
@@ -12,6 +27,7 @@ import { describeError } from '@/lib/api/errors';
 import {
   queryKeys,
   useEnqueueStoryboard,
+  useRenderStatus,
   useStoryboardStatus,
   useSynthesisStatus,
 } from '@/lib/api/queries';
@@ -23,9 +39,34 @@ import {
   storyboardStageLabel,
 } from '@/lib/jobs';
 
+import { sceneStateView, type RenderSelection } from '@/lib/render';
+
 interface StoryboardPanelProps {
   project: Project;
   script: ScriptDetail;
+  /** Which video's render state each scene shows. Omit to show none. */
+  renderSelection?: RenderSelection;
+}
+
+/** Render state per scene, keyed `segmentId:sceneIndex`. */
+type RenderStates = ReadonlyMap<string, RenderSceneState>;
+
+const RENDER_STATE_ICON: Record<RenderSceneState, LucideIcon> = {
+  ready: Check,
+  needs_render: CircleDashed,
+  stale: AlertTriangle,
+  failed: XCircle,
+};
+
+function RenderStateBadge({ state }: { state: RenderSceneState }) {
+  const view = sceneStateView(state);
+  const Icon = RENDER_STATE_ICON[state];
+  return (
+    <Badge tone={view.tone} aria-label={`Render state: ${view.label}`}>
+      <Icon className="size-3" aria-hidden />
+      {view.label}
+    </Badge>
+  );
 }
 
 const TEMPLATE_LABEL: Record<string, string> = {
@@ -164,11 +205,14 @@ function SceneContentPreview({ scene }: { scene: Scene }) {
   }
 }
 
-function SceneCard({ scene }: { scene: Scene }) {
+function SceneCard({ scene, renderState }: { scene: Scene; renderState?: RenderSceneState }) {
   return (
     <li className="space-y-2 rounded-lg border border-line bg-surface p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <Badge tone="neutral">{TEMPLATE_LABEL[scene.template] ?? scene.template}</Badge>
+        <span className="flex flex-wrap items-center gap-1.5">
+          <Badge tone="neutral">{TEMPLATE_LABEL[scene.template] ?? scene.template}</Badge>
+          {renderState ? <RenderStateBadge state={renderState} /> : null}
+        </span>
         <span className="text-[12px] text-ink-500">
           {formatElapsed(scene.start_ms)}–{formatElapsed(scene.start_ms + scene.duration_ms)} (
           {formatElapsed(scene.duration_ms)})
@@ -187,7 +231,15 @@ function SceneCard({ scene }: { scene: Scene }) {
   );
 }
 
-function SegmentTimeline({ segment, index }: { segment: SegmentStoryboard; index: number }) {
+function SegmentTimeline({
+  segment,
+  index,
+  renderStates,
+}: {
+  segment: SegmentStoryboard;
+  index: number;
+  renderStates: RenderStates;
+}) {
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between gap-2">
@@ -213,7 +265,11 @@ function SegmentTimeline({ segment, index }: { segment: SegmentStoryboard; index
       ) : (
         <ul className="space-y-2">
           {segment.scenes.map((scene) => (
-            <SceneCard key={scene.id} scene={scene} />
+            <SceneCard
+              key={scene.id}
+              scene={scene}
+              renderState={renderStates.get(`${segment.id}:${scene.scene_index}`)}
+            />
           ))}
         </ul>
       )}
@@ -226,7 +282,7 @@ function SegmentTimeline({ segment, index }: { segment: SegmentStoryboard; index
  * a separate workflow step. Only offered once narration is fully measured
  * (`script.measured_duration_ms`), since scene timing comes entirely from that.
  */
-export function StoryboardPanel({ project, script }: StoryboardPanelProps) {
+export function StoryboardPanel({ project, script, renderSelection }: StoryboardPanelProps) {
   const approved = script.status === 'approved';
   // The live-polled synthesis status is the freshest source for measured_duration_ms - script
   // itself is only refetched on demand, not while a narration job is running in the background
@@ -240,6 +296,18 @@ export function StoryboardPanel({ project, script }: StoryboardPanelProps) {
   const narrationReady = measuredDurationMs !== null;
   const { data: status } = useStoryboardStatus(project.id, approved ? script.id : undefined);
   const enqueue = useEnqueueStoryboard(project.id, script.id);
+  // Each scene's render state, so a change to one scene visibly makes only that scene stale.
+  const { data: renderStatus } = useRenderStatus(
+    project.id,
+    approved && narrationReady ? script.id : undefined,
+    renderSelection?.orientation ?? project.orientation,
+    renderSelection?.quality ?? 'low',
+  );
+  const renderStates: RenderStates = new Map(
+    renderSelection && renderStatus
+      ? renderStatus.scenes.map((s) => [`${s.segment_id}:${s.scene_index}`, s.state] as const)
+      : [],
+  );
 
   // The storyboard status query only polls while its own job is active, so a synthesis job
   // finishing (the first narration, or a later re-narration that leaves existing scenes stale)
@@ -370,7 +438,12 @@ export function StoryboardPanel({ project, script }: StoryboardPanelProps) {
         {total > 0 ? (
           <div className="space-y-5 border-t border-line pt-4">
             {segments.map((segment, index) => (
-              <SegmentTimeline key={segment.id} segment={segment} index={index} />
+              <SegmentTimeline
+                key={segment.id}
+                segment={segment}
+                index={index}
+                renderStates={renderStates}
+              />
             ))}
           </div>
         ) : null}

@@ -39,6 +39,15 @@ export type StoryboardStatus = Schemas['StoryboardStatusResponse'];
 export type SegmentStoryboard = Schemas['SegmentStoryboardResponse'];
 export type Scene = Schemas['SceneResponse'];
 
+export type RenderEnqueueRequest = Schemas['RenderEnqueueRequest'];
+export type RenderEnqueueResponse = Schemas['RenderEnqueueResponse'];
+export type RenderEstimate = Schemas['RenderEstimateResponse'];
+export type RenderStatus = Schemas['RenderStatusResponse'];
+export type RenderScene = Schemas['RenderSceneResponse'];
+export type RenderOutput = Schemas['RenderOutputResponse'];
+export type RenderProgress = Schemas['RenderProgressResponse'];
+export type RenderProgressStatus = Schemas['RenderProgressStatusResponse'];
+
 export type ClaimVerification = Schemas['ClaimVerificationResponse'];
 
 /** The vocabularies below are the API's own `Literal` types, read back out of the schema. */
@@ -54,3 +63,5 @@ export type SourceStatus = Source['status'];
 export type VerdictStatus = CitedClaim['status'];
 export type AudioStatus = SegmentAudio['status'];
 export type SceneTemplate = Scene['template'];
+export type RenderQuality = RenderEnqueueRequest['quality'];
+export type RenderSceneState = RenderScene['state'];

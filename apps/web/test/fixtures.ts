@@ -2,6 +2,11 @@ import type {
   ClaimVerification,
   Job,
   Project,
+  RenderEstimate,
+  RenderOutput,
+  RenderProgressStatus,
+  RenderScene,
+  RenderStatus,
   Scene,
   Script,
   ScriptDetail,
@@ -205,6 +210,84 @@ export function storyboardStatus(over: Partial<StoryboardStatus> = {}): Storyboa
     actual_provider_calls: null,
     ...over,
   };
+}
+
+export function renderScene(over: Partial<RenderScene> = {}): RenderScene {
+  return {
+    position: 0,
+    segment_id: ID(50),
+    segment_index: 0,
+    scene_index: 0,
+    scene_count: 1,
+    template: 'title_card',
+    start_ms: 0,
+    duration_ms: 9_000,
+    state: 'needs_render',
+    ...over,
+  };
+}
+
+export function renderEstimate(over: Partial<RenderEstimate> = {}): RenderEstimate {
+  return {
+    chunk_count: 1,
+    unique_chunk_count: 1,
+    chunks_reusable: 0,
+    chunks_to_render: 1,
+    total_ms: 9_000,
+    width: 960,
+    height: 540,
+    fps: 30,
+    estimated_output_bytes: 360_000,
+    required_free_bytes: 5_000_000,
+    ...over,
+  };
+}
+
+export function renderOutput(over: Partial<RenderOutput> = {}): RenderOutput {
+  return {
+    orientation: 'horizontal',
+    quality: 'low',
+    width: 960,
+    height: 540,
+    fps: 30,
+    duration_ms: 9_000,
+    byte_size: 1_200_000,
+    encoder: 'libx264',
+    renderer_version: 'pillow-ffmpeg/1',
+    created_at: AT,
+    updated_at: AT,
+    is_current: true,
+    ...over,
+  };
+}
+
+/** A script with one rendered-nothing scene: the state before anyone has pressed "Render". */
+export function renderStatus(over: Partial<RenderStatus> = {}): RenderStatus {
+  return {
+    script: script({ status: 'approved', measured_duration_ms: 60_000 }),
+    orientation: 'horizontal',
+    quality: 'low',
+    job: null,
+    progress: null,
+    blockers: [],
+    scenes: [renderScene()],
+    ready_count: 0,
+    needs_render_count: 1,
+    stale_count: 0,
+    failed_count: 0,
+    output: null,
+    output_is_current: false,
+    estimate: renderEstimate(),
+    total_ms: 9_000,
+    is_complete: false,
+    ...over,
+  };
+}
+
+export function renderProgressStatus(
+  over: Partial<RenderProgressStatus> = {},
+): RenderProgressStatus {
+  return { job: null, progress: null, ...over };
 }
 
 export function claim(over: Partial<ClaimVerification> = {}): ClaimVerification {

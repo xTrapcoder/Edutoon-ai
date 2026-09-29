@@ -9,6 +9,8 @@ import {
   project,
   script,
   scriptDetail,
+  renderProgressStatus,
+  renderStatus,
   segmentStoryboard,
   source,
   storyboardStatus,
@@ -43,6 +45,8 @@ export interface ProjectApi {
   scriptDetail?: ReturnType<typeof scriptDetail>;
   synthesisStatus?: ReturnType<typeof synthesisStatus>;
   storyboardStatus?: ReturnType<typeof storyboardStatus>;
+  renderStatus?: ReturnType<typeof renderStatus>;
+  renderProgress?: ReturnType<typeof renderProgressStatus>;
   claims?: ReturnType<typeof claim>[];
 }
 
@@ -94,6 +98,24 @@ export function serveProject(data: ProjectApi = {}) {
         }),
       );
     }),
+    http.get(`${base}/scripts/:scriptId/render`, () => {
+      if (data.renderStatus) return HttpResponse.json(data.renderStatus);
+      if (!data.scriptDetail) return new HttpResponse(null, { status: 404 });
+      // By default nothing can be rendered yet, so tests about other panels see a quiet one.
+      return HttpResponse.json(
+        renderStatus({
+          script: data.scriptDetail,
+          blockers: ['The storyboard is incomplete: generate the storyboard first.'],
+          scenes: [],
+          needs_render_count: 0,
+          estimate: null,
+          total_ms: null,
+        }),
+      );
+    }),
+    http.get(`${base}/render/progress`, () =>
+      HttpResponse.json(data.renderProgress ?? renderProgressStatus()),
+    ),
     http.get(`${base}/claim-verifications`, () => HttpResponse.json(page(data.claims ?? []))),
   );
 }

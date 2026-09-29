@@ -349,6 +349,75 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/scripts/{script_id}/render": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Render */
+        get: operations["get_render_v1_projects__project_id__scripts__script_id__render_get"];
+        put?: never;
+        /** Enqueue Render */
+        post: operations["enqueue_render_v1_projects__project_id__scripts__script_id__render_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/render/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Retry Render */
+        post: operations["retry_render_v1_projects__project_id__render_retry_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/render/progress": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Render Progress */
+        get: operations["get_render_progress_v1_projects__project_id__render_progress_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/scripts/{script_id}/render/video": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Stream Render Video */
+        get: operations["stream_render_video_v1_projects__project_id__scripts__script_id__render_video_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/jobs": {
         parameters: {
             query?: never;
@@ -643,6 +712,205 @@ export interface components {
             orientation?: ("horizontal" | "vertical") | null;
             /** Target Duration Ms */
             target_duration_ms?: number | null;
+        };
+        /**
+         * RenderEnqueueRequest
+         * @description Which video to make. Both fields are required: the caller confirms the orientation and
+         *     quality they are asking for, rather than inheriting a default they may not have seen.
+         */
+        RenderEnqueueRequest: {
+            /**
+             * Orientation
+             * @enum {string}
+             */
+            orientation: "horizontal" | "vertical";
+            /**
+             * Quality
+             * @enum {string}
+             */
+            quality: "low" | "high";
+        };
+        /** RenderEnqueueResponse */
+        RenderEnqueueResponse: {
+            job: components["schemas"]["JobResponse"];
+            estimate: components["schemas"]["RenderEstimateResponse"];
+        };
+        /** RenderEstimateResponse */
+        RenderEstimateResponse: {
+            /** Chunk Count */
+            chunk_count: number;
+            /** Unique Chunk Count */
+            unique_chunk_count: number;
+            /** Chunks Reusable */
+            chunks_reusable: number;
+            /** Chunks To Render */
+            chunks_to_render: number;
+            /** Total Ms */
+            total_ms: number;
+            /** Width */
+            width: number;
+            /** Height */
+            height: number;
+            /** Fps */
+            fps: number;
+            /** Estimated Output Bytes */
+            estimated_output_bytes: number;
+            /** Required Free Bytes */
+            required_free_bytes: number;
+        };
+        /** RenderOutputResponse */
+        RenderOutputResponse: {
+            /**
+             * Orientation
+             * @enum {string}
+             */
+            orientation: "horizontal" | "vertical";
+            /**
+             * Quality
+             * @enum {string}
+             */
+            quality: "low" | "high";
+            /** Width */
+            width: number;
+            /** Height */
+            height: number;
+            /** Fps */
+            fps: number;
+            /** Duration Ms */
+            duration_ms: number;
+            /** Byte Size */
+            byte_size: number;
+            /** Encoder */
+            encoder: string;
+            /** Renderer Version */
+            renderer_version: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /** Is Current */
+            is_current: boolean;
+        };
+        /**
+         * RenderProgressResponse
+         * @description Live progress of a render job. ``percent`` is real work done (chunks rendered, plus one
+         *     unit for assembly); ``eta_seconds`` is only present once enough chunks have finished to
+         *     estimate from.
+         */
+        RenderProgressResponse: {
+            /** Stage */
+            stage?: string | null;
+            /** Chunks Total */
+            chunks_total?: number | null;
+            /** Chunks Reused */
+            chunks_reused?: number | null;
+            /** Chunks To Render */
+            chunks_to_render?: number | null;
+            /** Chunks Done */
+            chunks_done?: number | null;
+            /** Chunks Complete */
+            chunks_complete?: number | null;
+            /** Segment Index */
+            segment_index?: number | null;
+            /** Segment Count */
+            segment_count?: number | null;
+            /** Scene Index */
+            scene_index?: number | null;
+            /** Scene Count */
+            scene_count?: number | null;
+            /** Percent */
+            percent?: number | null;
+            /** Eta Seconds */
+            eta_seconds?: number | null;
+            /** Updated At */
+            updated_at?: string | null;
+        };
+        /**
+         * RenderProgressStatusResponse
+         * @description The cheap poll: the latest render job and its progress, without re-evaluating the
+         *     storyboard.
+         */
+        RenderProgressStatusResponse: {
+            job: components["schemas"]["JobResponse"] | null;
+            progress: components["schemas"]["RenderProgressResponse"] | null;
+        };
+        /**
+         * RenderRetryRequest
+         * @description Carries no fields: a retry repeats the last failed render as it was asked for. Exists so
+         *     an unknown field in the body is rejected with 422 (rule 10).
+         */
+        RenderRetryRequest: Record<string, never>;
+        /** RenderSceneResponse */
+        RenderSceneResponse: {
+            /** Position */
+            position: number;
+            /**
+             * Segment Id
+             * Format: uuid
+             */
+            segment_id: string;
+            /** Segment Index */
+            segment_index: number;
+            /** Scene Index */
+            scene_index: number;
+            /** Scene Count */
+            scene_count: number;
+            /**
+             * Template
+             * @enum {string}
+             */
+            template: "title_card" | "bullet_points" | "labelled_diagram" | "split_text_illustration" | "full_bleed_illustration" | "formula_or_code";
+            /** Start Ms */
+            start_ms: number;
+            /** Duration Ms */
+            duration_ms: number;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "ready" | "needs_render" | "stale" | "failed";
+        };
+        /** RenderStatusResponse */
+        RenderStatusResponse: {
+            script: components["schemas"]["ScriptResponse"];
+            /**
+             * Orientation
+             * @enum {string}
+             */
+            orientation: "horizontal" | "vertical";
+            /**
+             * Quality
+             * @enum {string}
+             */
+            quality: "low" | "high";
+            job: components["schemas"]["JobResponse"] | null;
+            progress: components["schemas"]["RenderProgressResponse"] | null;
+            /** Blockers */
+            blockers: string[];
+            /** Scenes */
+            scenes: components["schemas"]["RenderSceneResponse"][];
+            /** Ready Count */
+            ready_count: number;
+            /** Needs Render Count */
+            needs_render_count: number;
+            /** Stale Count */
+            stale_count: number;
+            /** Failed Count */
+            failed_count: number;
+            output: components["schemas"]["RenderOutputResponse"] | null;
+            /** Output Is Current */
+            output_is_current: boolean;
+            estimate: components["schemas"]["RenderEstimateResponse"] | null;
+            /** Total Ms */
+            total_ms: number | null;
+            /** Is Complete */
+            is_complete: boolean;
         };
         /** SceneResponse */
         SceneResponse: {
@@ -2061,6 +2329,192 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["StoryboardEnqueueResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_render_v1_projects__project_id__scripts__script_id__render_get: {
+        parameters: {
+            query: {
+                orientation: "horizontal" | "vertical";
+                quality: "low" | "high";
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+                script_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RenderStatusResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    enqueue_render_v1_projects__project_id__scripts__script_id__render_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "idempotency-key": string;
+                authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+                script_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RenderEnqueueRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RenderEnqueueResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    retry_render_v1_projects__project_id__render_retry_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "idempotency-key": string;
+                authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["RenderRetryRequest"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RenderEnqueueResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_render_progress_v1_projects__project_id__render_progress_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RenderProgressStatusResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    stream_render_video_v1_projects__project_id__scripts__script_id__render_video_get: {
+        parameters: {
+            query: {
+                orientation: "horizontal" | "vertical";
+                quality: "low" | "high";
+                download?: boolean;
+            };
+            header?: {
+                range?: string | null;
+                authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+                script_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */

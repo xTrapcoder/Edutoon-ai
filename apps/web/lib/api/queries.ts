@@ -10,9 +10,11 @@ import {
 import { useEffect, useRef } from 'react';
 import type {
   Job,
+  Orientation,
   Project,
   ProjectCreateRequest,
   ProjectUpdateRequest,
+  RenderQuality,
   Script,
   Topic,
   TopicUpdateRequest,
@@ -41,6 +43,11 @@ export const queryKeys = {
     ['projects', id, 'scripts', scriptId, 'synthesis'] as const,
   storyboard: (id: string, scriptId: string) =>
     ['projects', id, 'scripts', scriptId, 'storyboard'] as const,
+  render: (id: string, scriptId: string, orientation: string, quality: string) =>
+    ['projects', id, 'scripts', scriptId, 'render', orientation, quality] as const,
+  renderAll: (id: string, scriptId: string) =>
+    ['projects', id, 'scripts', scriptId, 'render'] as const,
+  renderProgress: (id: string) => ['projects', id, 'render-progress'] as const,
   claims: (id: string) => ['projects', id, 'claims'] as const,
 };
 
@@ -127,6 +134,40 @@ export function useStoryboardStatus(projectId: string, scriptId: string | undefi
     refetchInterval: (query) => {
       const job = query.state.data?.job;
       return job && isActiveJob(job) ? POLL_INTERVAL_MS : false;
+    },
+  });
+}
+
+/** How often a running render's progress is re-read (a single cheap query). */
+export const RENDER_POLL_INTERVAL_MS = 2_000;
+
+/**
+ * A script's render status for one orientation and quality: every scene's state, whether the
+ * current video is up to date, and what stands in the way. Read fresh whenever the render job
+ * changes state (the panel invalidates it), not polled - the progress query below does the polling.
+ */
+export function useRenderStatus(
+  projectId: string,
+  scriptId: string | undefined,
+  orientation: Orientation,
+  quality: RenderQuality,
+) {
+  return useQuery({
+    queryKey: queryKeys.render(projectId, scriptId ?? '', orientation, quality),
+    queryFn: () => api.getRenderStatus(projectId, scriptId as string, orientation, quality),
+    enabled: scriptId !== undefined,
+  });
+}
+
+/** The latest render job and its live progress, polled for as long as the job is queued or running. */
+export function useRenderProgress(projectId: string, enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.renderProgress(projectId),
+    queryFn: () => api.getRenderProgress(projectId),
+    enabled,
+    refetchInterval: (query) => {
+      const job = query.state.data?.job;
+      return job && isActiveJob(job) ? RENDER_POLL_INTERVAL_MS : false;
     },
   });
 }
@@ -458,6 +499,32 @@ export function useEnqueueStoryboard(projectId: string, scriptId: string) {
   return useIdempotentMutation((_: void, key) => api.enqueueStoryboard(projectId, scriptId, key), {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.storyboard(projectId, scriptId) });
+    },
+  });
+}
+
+export function useEnqueueRender(projectId: string, scriptId: string) {
+  const queryClient = useQueryClient();
+  return useIdempotentMutation(
+    (body: { orientation: Orientation; quality: RenderQuality }, key) =>
+      api.enqueueRender(projectId, scriptId, body, key),
+    {
+      onSuccess: () => {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.renderProgress(projectId) });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.jobs(projectId) });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.renderAll(projectId, scriptId) });
+      },
+    },
+  );
+}
+
+export function useRetryRender(projectId: string, scriptId: string) {
+  const queryClient = useQueryClient();
+  return useIdempotentMutation((_: void, key) => api.retryRender(projectId, key), {
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.renderProgress(projectId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.jobs(projectId) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.renderAll(projectId, scriptId) });
     },
   });
 }

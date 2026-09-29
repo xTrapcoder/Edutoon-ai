@@ -1,9 +1,14 @@
 import type {
   ClaimVerification,
   Job,
+  Orientation,
   Project,
   ProjectCreateRequest,
   ProjectUpdateRequest,
+  RenderEnqueueResponse,
+  RenderProgressStatus,
+  RenderQuality,
+  RenderStatus,
   Script,
   ScriptDetail,
   Source,
@@ -310,6 +315,87 @@ export function getStoryboardStatus(
       signal: timeoutSignal(),
     }),
   );
+}
+
+// --- video rendering (Phase 10) ---------------------------------------------------------
+
+export function enqueueRender(
+  projectId: string,
+  scriptId: string,
+  body: { orientation: Orientation; quality: RenderQuality },
+  key: string,
+): Promise<RenderEnqueueResponse> {
+  return unwrap(
+    getApiClient().POST('/v1/projects/{project_id}/scripts/{script_id}/render', {
+      params: { path: { project_id: projectId, script_id: scriptId }, header: idempotent(key) },
+      body,
+      signal: timeoutSignal(),
+    }),
+  );
+}
+
+export function retryRender(projectId: string, key: string): Promise<RenderEnqueueResponse> {
+  return unwrap(
+    getApiClient().POST('/v1/projects/{project_id}/render/retry', {
+      params: { path: { project_id: projectId }, header: idempotent(key) },
+      signal: timeoutSignal(),
+    }),
+  );
+}
+
+export function getRenderStatus(
+  projectId: string,
+  scriptId: string,
+  orientation: Orientation,
+  quality: RenderQuality,
+): Promise<RenderStatus> {
+  return unwrap(
+    getApiClient().GET('/v1/projects/{project_id}/scripts/{script_id}/render', {
+      params: {
+        path: { project_id: projectId, script_id: scriptId },
+        query: { orientation, quality },
+      },
+      signal: timeoutSignal(),
+    }),
+  );
+}
+
+/** The cheap poll: the project's latest render job and its live progress. */
+export function getRenderProgress(projectId: string): Promise<RenderProgressStatus> {
+  return unwrap(
+    getApiClient().GET('/v1/projects/{project_id}/render/progress', {
+      params: { path: { project_id: projectId } },
+      signal: timeoutSignal(),
+    }),
+  );
+}
+
+/**
+ * A playable, same-origin object URL for a finished video (see `fetchSegmentAudioUrl` for why a
+ * `blob:` URL: a plain `<video src>` cannot carry the `Authorization` header). The API streams
+ * the file and honours `Range` requests; this reads it whole, so the player can seek freely once
+ * it has loaded. The caller owns the URL and must revoke it when it is no longer shown.
+ */
+export async function fetchRenderVideoUrl(
+  projectId: string,
+  scriptId: string,
+  orientation: Orientation,
+  quality: RenderQuality,
+): Promise<string> {
+  const token = await getApiToken();
+  const response = await fetch(
+    `${API_BASE_URL}/v1/projects/${projectId}/scripts/${scriptId}/render/video` +
+      `?orientation=${orientation}&quality=${quality}`,
+    {
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      signal: timeoutSignal(UPLOAD_TIMEOUT_MS),
+    },
+  );
+  if (!response.ok) {
+    const body = await response.json().catch(() => undefined);
+    throw apiErrorFromResponse(response, body);
+  }
+  return URL.createObjectURL(await response.blob());
 }
 
 /**
