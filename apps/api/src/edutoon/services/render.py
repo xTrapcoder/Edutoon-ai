@@ -707,6 +707,33 @@ async def _render(
     progress.start(
         to_render_count=len(to_render), reused=len(set(plan.chunk_hashes)) - len(to_render)
     )
+
+    current = await db.run(
+        lambda s: render_repo.get_output(
+            s,
+            project_id=project_id,
+            script_id=script_id,
+            orientation=orientation,
+            quality=quality,
+        )
+    )
+    if current is not None and current.output_hash == plan.output_hash and not to_render:
+        try:
+            size = await storage.object_size(bucket=current.storage_bucket, key=current.storage_key)
+        except ObjectNotFoundError:
+            size = -1
+        if size == current.byte_size and belongs_to_project(current.storage_key, project_id):
+            # Nothing has changed since this video was made and it is still in storage:
+            # there is no work to do, and the answer is the video that already exists.
+            return {
+                **progress.summary(),
+                "outcome": "complete",
+                "output_reused": True,
+                "duration_ms": current.duration_ms,
+                "output_bytes": current.byte_size,
+                "probe": current.probe,
+            }
+
     _ensure_disk_space(render_domain.estimate_work_bytes(plan))
 
     workdir = _work_dir_root() / f"edutoon-render-{job_id}"
@@ -834,8 +861,12 @@ async def _render_chunks(
     profile = render_domain.profile_for(plan.quality)
     failures: list[dict[str, Any]] = []
 
+    aborted = asyncio.Event()
+
     async def one(chunk: PlannedChunk) -> None:
         async with semaphore:
+            if aborted.is_set():
+                return  # the worker is going down: start nothing new
             await progress.chunk_started(chunk)
             dest = workdir / f"{chunk.chunk_hash}.mp4"
             try:
@@ -879,7 +910,11 @@ async def _render_chunks(
                     )
                 )
                 local[chunk.chunk_hash] = dest
-            except Exception as exc:  # noqa: BLE001 - one chunk's failure must not stop the rest
+            except BaseException as exc:
+                if not isinstance(exc, Exception):
+                    aborted.set()  # cancellation or process shutdown: let nothing else begin
+                    dest.unlink(missing_ok=True)
+                    raise
                 dest.unlink(missing_ok=True)
                 failures.append(
                     {
@@ -899,7 +934,15 @@ async def _render_chunks(
             await progress.chunk_finished()
 
     await progress.report("rendering")
-    await asyncio.gather(*(one(chunk) for chunk in to_render))
+    tasks = [asyncio.ensure_future(one(chunk)) for chunk in to_render]
+    try:
+        await asyncio.gather(*tasks)
+    except BaseException:
+        # The worker is being stopped (or something outside a chunk failed): do not leave the
+        # other chunk tasks running unsupervised.
+        for task in tasks:
+            task.cancel()
+        raise
     failures.sort(key=lambda f: f["position"])
     return failures
 

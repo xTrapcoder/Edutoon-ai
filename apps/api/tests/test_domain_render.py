@@ -247,7 +247,7 @@ def test_output_sizes() -> None:
             assert width % 2 == 0 and height % 2 == 0
 
 
-# --- fingerprints: what invalidates what ----------------------------------------------------------
+# --- fingerprints: what invalidates what ---
 
 
 def _hashes(plan: r.RenderPlan) -> list[str]:
@@ -295,9 +295,7 @@ def test_editing_one_scene_changes_only_that_scenes_chunk() -> None:
     assert specs != edited_specs
 
 
-def test_renarrating_one_segment_changes_only_its_chunks_and_shifts_the_rest_without_invalidating_them() -> (
-    None
-):
+def test_renarrating_one_segment_invalidates_only_its_chunks_while_later_ones_just_move() -> None:
     before = _plan(_script(BASE))
     after = _plan(_script([[3000, 2000], [4700, 2500], [3500]], {1: {"audio_hash": "audio-1-new"}}))
     changed = [
@@ -356,7 +354,7 @@ def test_chunks_to_render_skips_valid_artifacts_only() -> None:
     assert r.chunks_to_render(plan, set(hashes)) == []
 
 
-# --- scene states ---------------------------------------------------------------------------------
+# --- scene states ---
 
 
 @pytest.mark.parametrize(

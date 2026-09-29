@@ -174,7 +174,7 @@ async def stream_render_video(
     )
     if opened.stream is None:
         return Response(
-            status_code=status.HTTP_416_REQUESTED_RANGE_NOT_SATISFIABLE,
+            status_code=status.HTTP_416_RANGE_NOT_SATISFIABLE,
             headers={"Content-Range": f"bytes */{opened.unsatisfiable_size}"},
         )
     stream = opened.stream
