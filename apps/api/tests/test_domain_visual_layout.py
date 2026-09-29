@@ -515,7 +515,8 @@ def test_it_retries_at_smaller_type_and_reports_which_size_it_used():
 
 def test_text_is_never_drawn_below_a_roles_minimum_even_if_that_means_overflow():
     with pytest.raises(vl.LayoutOverflow):
-        lay(flow(4), measurer=FixedMeasurer(max_size=vl.Units(1080).u(20)))
+        # 29 px is just under the label role's 30 px floor: it must overflow rather than shrink it
+        lay(flow(4), measurer=FixedMeasurer(max_size=vl.Units(1080).u(29)))
 
 
 def test_the_ladder_is_the_documented_one_and_every_role_has_a_floor_below_its_size():
