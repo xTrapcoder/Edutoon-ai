@@ -67,8 +67,10 @@ import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any, Final, Literal, get_args
+from uuid import UUID
 
 from edutoon.domain.generation_settings import ORIENTATIONS
+from edutoon.domain.source_storage import project_storage_prefix
 from edutoon.domain.storyboard_template import StoryboardContentError, validate_scene_content
 
 # --- production constants -----------------------------------------------------------
@@ -607,3 +609,63 @@ def estimate_work_bytes(plan: RenderPlan) -> int:
     video = estimate_video_bytes(plan.total_ms, plan.quality)
     wav = plan.total_ms * 22_050 * 2 // 1000
     return video * 3 + wav * 2
+
+
+# --- storage keys --------------------------------------------------------------------------
+
+
+def chunk_storage_key(project_id: UUID, orientation: str, quality: str, chunk_hash: str) -> str:
+    """Where a rendered chunk lives: inside its project's own prefix, addressed by its
+    fingerprint. Deterministic, so re-rendering the same chunk overwrites the same object, and
+    built only from the project id and values this module validates - never from client input."""
+    if orientation not in ORIENTATIONS or quality not in QUALITIES:
+        raise RenderPlanError("Unknown render configuration.")
+    if not chunk_hash.isalnum():
+        raise RenderPlanError("Invalid chunk fingerprint.")
+    prefix = project_storage_prefix(project_id)
+    return f"{prefix}renders/chunks/{orientation}-{quality}/{chunk_hash}.mp4"
+
+
+def output_storage_key(project_id: UUID, script_id: UUID, orientation: str, quality: str) -> str:
+    """Where the finished video for one ``(script, orientation, quality)`` lives."""
+    if orientation not in ORIENTATIONS or quality not in QUALITIES:
+        raise RenderPlanError("Unknown render configuration.")
+    return f"{project_storage_prefix(project_id)}renders/{script_id}/{orientation}-{quality}.mp4"
+
+
+# --- verifying a finished video --------------------------------------------------------------
+
+
+def check_output(summary: Mapping[str, Any], plan: RenderPlan) -> list[str]:
+    """What is wrong with a finished video (an empty list means it is right).
+
+    ``summary`` is the ffprobe reduction a renderer reports (``MediaProbe.summary()``). Every
+    check is objective: the codecs, the size, the frame rate, the exact frame count the plan
+    calls for, that both streams run for the narration's length (within
+    :data:`DURATION_TOLERANCE_MS`) and that it can start playing before it has downloaded.
+    """
+    profile = profile_for(plan.quality)
+    problems: list[str] = []
+
+    def expect(name: str, actual: Any, wanted: Any) -> None:
+        if actual != wanted:
+            problems.append(f"{name} is {actual!r}, expected {wanted!r}")
+
+    expect("video codec", summary.get("video_codec"), "h264")
+    expect("audio codec", summary.get("audio_codec"), "aac")
+    expect("width", summary.get("width"), plan.width)
+    expect("height", summary.get("height"), plan.height)
+    expect("frame rate", summary.get("fps"), float(plan.fps))
+    expect("frame count", summary.get("video_frames"), plan.total_frames)
+    expect("pixel format", summary.get("pix_fmt"), profile.pix_fmt)
+    expect("sample rate", summary.get("sample_rate"), profile.audio_sample_rate)
+    expect("channels", summary.get("channels"), profile.audio_channels)
+    if summary.get("faststart") is not True:
+        problems.append("the index is not at the start of the file")
+    for name in ("video_duration_ms", "audio_duration_ms", "container_duration_ms"):
+        value = summary.get(name)
+        if not isinstance(value, int) or abs(value - plan.total_ms) > DURATION_TOLERANCE_MS:
+            problems.append(
+                f"{name} is {value!r}, expected {plan.total_ms} +/- {DURATION_TOLERANCE_MS}"
+            )
+    return problems

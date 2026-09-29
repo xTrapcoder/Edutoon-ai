@@ -19,6 +19,7 @@ from edutoon.domain.generation_settings import (
 from edutoon.domain.source_storage import belongs_to_project
 from edutoon.providers.storage import Storage
 from edutoon.repositories import projects as projects_repo
+from edutoon.repositories import render as render_repo
 from edutoon.repositories import script_segment_audio as script_segment_audio_repo
 from edutoon.repositories import uploaded_sources as uploaded_sources_repo
 from edutoon.repositories.projects import ProjectRecord as ProjectRecord
@@ -95,7 +96,8 @@ async def delete_project(
 ) -> list[StorageLocation]:
     """Delete the project and everything the database holds under it (sources, topics, jobs,
     scripts, script_segment_audio - all ``ON DELETE CASCADE``), and return where its uploaded
-    files and synthesised segment audio (Phase 8) were stored.
+    files, synthesised segment audio (Phase 8) and rendered video chunks and outputs (Phase 10)
+    were stored.
 
     The files themselves are **not** touched here. Removing them is a separate step,
     :func:`remove_stored_files`, that the caller runs *after* this deletion is committed: the
@@ -111,7 +113,12 @@ async def delete_project(
     audio_files = await script_segment_audio_repo.list_storage_locations_for_project(
         session, project_id
     )
-    files = [*files, *(StorageLocation(bucket=a.bucket, key=a.key) for a in audio_files)]
+    render_files = await render_repo.list_storage_locations_for_project(session, project_id)
+    files = [
+        *files,
+        *(StorageLocation(bucket=a.bucket, key=a.key) for a in audio_files),
+        *(StorageLocation(bucket=r.bucket, key=r.key) for r in render_files),
+    ]
 
     deleted = await projects_repo.delete(session, project_id=project_id, owner_id=owner_id)
     if not deleted:

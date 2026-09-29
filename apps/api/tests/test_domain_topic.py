@@ -194,6 +194,7 @@ _STDLIB_ALLOWED = {
     "collections",
     "dataclasses",
     "hashlib",
+    "json",
     "re",
     "typing",
     "unicodedata",

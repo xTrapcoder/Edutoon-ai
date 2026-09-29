@@ -65,6 +65,15 @@ class IdempotencyInProgressError(AppError):
     code = "idempotency_in_progress"
 
 
+class InsufficientStorageError(AppError):
+    """The server does not have room to do the work asked of it (e.g. not enough free disk
+    space for a render). Nothing has been started, so the request can simply be repeated once
+    space is available."""
+
+    status_code = status.HTTP_507_INSUFFICIENT_STORAGE
+    code = "insufficient_storage"
+
+
 class PayloadTooLargeError(AppError):
     """The request body exceeds a configured size limit (e.g. max upload size)."""
 

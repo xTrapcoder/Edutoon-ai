@@ -750,6 +750,7 @@ def test_the_worker_has_a_handler_for_each_implemented_job_kind_and_no_others():
         "extract_claims",
         "synthesise_voice",
         "generate_storyboard",
+        "render_video",
     }
 
 
@@ -983,11 +984,12 @@ async def test_process_one_job_marks_a_corrupt_extract_claims_payload_failed_wit
 async def test_process_one_job_marks_an_unknown_job_kind_failed_without_crashing(
     db_session, worker_sessionmaker
 ):
-    # ``render_video`` is a valid ``jobs.kind`` with no handler registered - the
-    # case this test is about. (It used ``extract_topics`` until that gained a
-    # real handler; any still-unimplemented kind exercises the same path.)
+    # ``parse_source`` is a valid ``jobs.kind`` with no handler registered - the
+    # case this test is about. (It used ``extract_topics`` and then ``render_video``
+    # until those gained real handlers; any still-unimplemented kind exercises the
+    # same path.)
     project = await _make_project(db_session)
-    job = await jobs_repo.create(db_session, project_id=project.id, kind="render_video")
+    job = await jobs_repo.create(db_session, project_id=project.id, kind="parse_source")
     await db_session.commit()
 
     providers = _idle_providers()
@@ -997,7 +999,7 @@ async def test_process_one_job_marks_an_unknown_job_kind_failed_without_crashing
     finished = await jobs_repo.get_by_id(db_session, job.id)
     assert finished is not None
     assert finished.status == "failed"
-    assert "render_video" in finished.error
+    assert "parse_source" in finished.error
     assert finished.finished_at is not None
 
 

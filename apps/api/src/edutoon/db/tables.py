@@ -279,3 +279,60 @@ script_segment_scenes = sa.Table(
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
 )
+
+
+# Migration 0016 (Phase 10). ``render_chunks`` is a content-addressed cache of rendered scene
+# videos (one row per ``(project_id, chunk_hash)``, inserted only once its object is uploaded);
+# ``render_outputs`` is the finished MP4 for one ``(script, orientation, quality)``;
+# ``render_output_scenes`` records which chunk each scene used in that output. No video bytes
+# live in the database - only the names of stored objects.
+render_chunks = sa.Table(
+    "render_chunks",
+    metadata,
+    sa.Column("id", UUID(as_uuid=True), primary_key=True, server_default=sa.FetchedValue()),
+    sa.Column("project_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("chunk_hash", sa.Text, nullable=False),
+    sa.Column("orientation", sa.Text, nullable=False),
+    sa.Column("quality", sa.Text, nullable=False),
+    sa.Column("renderer_version", sa.Text, nullable=False),
+    sa.Column("storage_bucket", sa.Text, nullable=False),
+    sa.Column("storage_key", sa.Text, nullable=False),
+    sa.Column("byte_size", sa.BigInteger, nullable=False),
+    sa.Column("frame_count", sa.Integer, nullable=False),
+    sa.Column("duration_ms", sa.BigInteger, nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+)
+
+render_outputs = sa.Table(
+    "render_outputs",
+    metadata,
+    sa.Column("id", UUID(as_uuid=True), primary_key=True, server_default=sa.FetchedValue()),
+    sa.Column("project_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("script_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("job_id", UUID(as_uuid=True)),
+    sa.Column("orientation", sa.Text, nullable=False),
+    sa.Column("quality", sa.Text, nullable=False),
+    sa.Column("output_hash", sa.Text, nullable=False),
+    sa.Column("renderer_version", sa.Text, nullable=False),
+    sa.Column("encoder", sa.Text, nullable=False),
+    sa.Column("fps", sa.Integer, nullable=False),
+    sa.Column("width", sa.Integer, nullable=False),
+    sa.Column("height", sa.Integer, nullable=False),
+    sa.Column("duration_ms", sa.BigInteger, nullable=False),
+    sa.Column("byte_size", sa.BigInteger, nullable=False),
+    sa.Column("storage_bucket", sa.Text, nullable=False),
+    sa.Column("storage_key", sa.Text, nullable=False),
+    sa.Column("probe", JSONB, nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+)
+
+render_output_scenes = sa.Table(
+    "render_output_scenes",
+    metadata,
+    sa.Column("render_output_id", UUID(as_uuid=True), primary_key=True),
+    sa.Column("position", sa.Integer, primary_key=True),
+    sa.Column("script_segment_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("scene_index", sa.Integer, nullable=False),
+    sa.Column("chunk_hash", sa.Text, nullable=False),
+)

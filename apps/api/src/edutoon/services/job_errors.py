@@ -30,12 +30,14 @@ import structlog
 from sqlalchemy.exc import SQLAlchemyError
 
 from edutoon.core.errors import AppError
+from edutoon.domain.render import RenderPlanError
 from edutoon.domain.script_provenance import UnsourcedSegmentError
 from edutoon.domain.storyboard_provenance import FabricatedContentError
 from edutoon.domain.storyboard_template import StoryboardContentError
 from edutoon.domain.topic_tree import TopicError
 from edutoon.providers.errors import describe_provider_error
 from edutoon.providers.llm import LLMResponseError
+from edutoon.providers.renderer.base import RendererError
 
 log = structlog.get_logger()
 
@@ -59,6 +61,8 @@ _OWN_MESSAGE = (
     LLMResponseError,
     StoryboardContentError,
     FabricatedContentError,
+    RenderPlanError,
+    RendererError,
 )
 
 
