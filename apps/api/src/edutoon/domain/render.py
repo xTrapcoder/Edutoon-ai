@@ -72,6 +72,7 @@ from uuid import UUID
 from edutoon.domain.generation_settings import ORIENTATIONS
 from edutoon.domain.source_storage import project_storage_prefix
 from edutoon.domain.storyboard_template import StoryboardContentError, validate_scene_content
+from edutoon.domain.storyboard_timing import segment_absolute_starts
 
 # --- production constants -----------------------------------------------------------
 
@@ -533,19 +534,20 @@ def build_render_plan(
         )
         cursor = end_ms
 
-    narration: list[PlannedNarration] = []
-    cursor = 0
-    for segment in ordered:
-        narration.append(
-            PlannedNarration(
-                segment_id=segment.segment_id,
-                segment_index=segment.segment_index,
-                start_ms=cursor,
-                duration_ms=segment.audio_duration_ms,
-                content_hash=segment.audio_content_hash,
-            )
+    # Narration is placed with the storyboard's own prefix sum (the read model shows the very same
+    # numbers): one rule, so the timeline a reviewer sees is the timeline that renders.
+    segment_starts = segment_absolute_starts([segment.audio_duration_ms for segment in ordered])
+    narration: list[PlannedNarration] = [
+        PlannedNarration(
+            segment_id=segment.segment_id,
+            segment_index=segment.segment_index,
+            start_ms=start_ms,
+            duration_ms=segment.audio_duration_ms,
+            content_hash=segment.audio_content_hash,
         )
-        cursor += segment.audio_duration_ms
+        for segment, start_ms in zip(ordered, segment_starts, strict=True)
+    ]
+    cursor = sum(segment.audio_duration_ms for segment in ordered)
 
     plan = RenderPlan(
         orientation=orientation,

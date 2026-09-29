@@ -55,6 +55,27 @@ def _plan(segments, *, orientation="horizontal", quality="high", encoder="libx26
     return r.build_render_plan(segments, orientation=orientation, quality=quality, encoder=encoder)
 
 
+def test_the_render_plan_and_the_storyboard_read_model_place_every_scene_identically() -> None:
+    """One timing rule: what the storyboard shows is where the scene renders."""
+    from edutoon.domain.storyboard_timing import SegmentTimingInput, timeline_positions
+
+    segments = _script([[3000, 2000], [4000, 1500, 2500], [6000]])
+    plan = _plan(segments)
+    positions = timeline_positions(
+        [
+            SegmentTimingInput(
+                audio_duration_ms=segment.audio_duration_ms,
+                scene_durations_ms=[scene.duration_ms for scene in segment.scenes],
+                settled=True,
+            )
+            for segment in segments
+        ]
+    )
+    shown = [start for segment_starts in positions.scene_starts_ms for start in segment_starts]
+    assert [chunk.start_ms for chunk in plan.chunks] == shown
+    assert [n.start_ms for n in plan.narration] == list(positions.segment_starts_ms)
+
+
 # --- frame mapping -----------------------------------------------------------------------
 
 

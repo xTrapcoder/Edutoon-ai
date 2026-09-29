@@ -54,10 +54,12 @@ from edutoon.core.errors import ConflictError, JobError, NotFoundError, Validati
 from edutoon.domain.storyboard_provenance import has_lexical_overlap, require_provenance
 from edutoon.domain.storyboard_template import validate_scene_content
 from edutoon.domain.storyboard_timing import (
+    SegmentTimingInput,
     allocate_scene_durations,
     effective_scene_count,
     scene_timings,
     segment_absolute_starts,
+    timeline_positions,
 )
 from edutoon.providers.llm import LLM, StoryboardSegmentBrief
 from edutoon.repositories import jobs as jobs_repo
@@ -71,6 +73,7 @@ from edutoon.repositories.script_segment_scenes import NewScene, ScriptSegmentSc
 from edutoon.repositories.scripts import ScriptRecord, ScriptSegmentRecord
 from edutoon.services import audit_logs as audit_logs_service
 from edutoon.services import projects as projects_service
+from edutoon.services import script_audio as script_audio_service
 from edutoon.services.job_errors import describe_job_failure, public_job_error
 
 log = structlog.get_logger()
@@ -97,6 +100,10 @@ class StoryboardEnqueued:
 @dataclass(frozen=True, slots=True)
 class SceneDetail:
     scene: ScriptSegmentSceneRecord
+    # Where the scene starts on the whole timeline, computed on read from the *current*
+    # narration (``domain.storyboard_timing.timeline_positions``) - never the scene row's
+    # stored ``start_ms``, which an earlier segment's re-narration leaves out of date.
+    start_ms: int
     # The soft provenance signal (spec section 14), recomputed fresh at read
     # time - never persisted, never a rejection: True means "worth a
     # reviewer's attention", not "wrong".
@@ -121,6 +128,10 @@ class StoryboardStatus:
     ready_segment_count: int
     not_ready_segment_ids: tuple[UUID, ...]
     is_complete: bool
+    # ``True`` only when every timing input is final: no narration is being made right now
+    # and every segment's narration and scenes are current. ``False`` means the start
+    # positions shown are a best estimate that may move once narration finishes.
+    timings_authoritative: bool
     estimated_provider_calls: int
     actual_provider_calls: int | None
 
@@ -482,6 +493,8 @@ async def _generate_storyboard(
                 new_scenes = [
                     NewScene(
                         scene_index=timing.scene_index,
+                        # Advisory only (correct *now*, out of date after an earlier
+                        # segment is re-narrated); reads use timeline_positions.
                         start_ms=timing.start_ms,
                         duration_ms=timing.duration_ms,
                         template=scene.template,
@@ -628,7 +641,9 @@ async def get_storyboard_status(
     computed fresh from current state, never copied from a job's historical
     result (spec: completeness is separate from job status).
     """
-    await projects_service.get_project(session, project_id=project_id, owner_id=owner_id)
+    project = await projects_service.get_project(
+        session, project_id=project_id, owner_id=owner_id
+    )
 
     script = await scripts_repo.get_by_id_for_project(session, script_id, project_id)
     if script is None:
@@ -643,10 +658,11 @@ async def get_storyboard_status(
     ):
         scenes_by_segment.setdefault(scene.script_segment_id, []).append(scene)
 
-    details: list[SegmentStoryboardDetail] = []
+    # Per segment: (expected scene count, stale, ready, settled, its scenes in order).
+    prepared: list[tuple[int, bool, bool, bool, list[ScriptSegmentSceneRecord]]] = []
     for segment in segments:
         audio = audio_by_segment.get(segment.id)
-        scenes = scenes_by_segment.get(segment.id, [])
+        scenes = sorted(scenes_by_segment.get(segment.id, []), key=lambda s: s.scene_index)
         if audio is not None and audio.status == "ready":
             expected_count = effective_scene_count(
                 audio.measured_duration_ms or 0,
@@ -663,18 +679,51 @@ async def get_storyboard_status(
             expected_count = 0
             is_stale = len(scenes) > 0
             is_ready = False
+        # Settled: nothing about this segment's timing can still move - its narration is the
+        # current text in the current voice, and its scenes were made from that narration.
+        settled = is_ready and script_audio_service.audio_matches_current_narration(
+            audio, segment, language=project.language
+        )
+        prepared.append((expected_count, is_stale, is_ready, settled, scenes))
 
+    # Positions are computed here, on read, from the current narration - the same rule the
+    # render plan uses. The ``start_ms`` stored on a scene row is advisory and never read: an
+    # earlier segment's re-narration leaves it out of date (see ``domain.storyboard_timing``).
+    timeline = timeline_positions(
+        [
+            SegmentTimingInput(
+                audio_duration_ms=(
+                    audio_by_segment[segment.id].measured_duration_ms
+                    if segment.id in audio_by_segment
+                    and audio_by_segment[segment.id].status == "ready"
+                    else None
+                ),
+                scene_durations_ms=[scene.duration_ms for scene in scenes],
+                settled=settled,
+            )
+            for segment, (_, _, _, settled, scenes) in zip(segments, prepared, strict=True)
+        ],
+        narration_in_flight=await script_audio_service.is_synthesis_in_flight(
+            session, project_id=project_id
+        ),
+    )
+
+    details: list[SegmentStoryboardDetail] = []
+    for index, (segment, (expected_count, is_stale, is_ready, _, scenes)) in enumerate(
+        zip(segments, prepared, strict=True)
+    ):
         scene_details = tuple(
             SceneDetail(
                 scene=scene,
+                start_ms=timeline.scene_starts_ms[index][position],
                 reviewer_flag=not has_lexical_overlap(scene.content, segment.narration_text),
             )
-            for scene in sorted(scenes, key=lambda s: s.scene_index)
+            for position, scene in enumerate(scenes)
         )
         details.append(
             SegmentStoryboardDetail(
                 segment=segment,
-                audio=audio,
+                audio=audio_by_segment.get(segment.id),
                 expected_scene_count=expected_count,
                 scenes=scene_details,
                 is_stale=is_stale,
@@ -707,6 +756,7 @@ async def get_storyboard_status(
         ready_segment_count=ready_segment_count,
         not_ready_segment_ids=not_ready_segment_ids,
         is_complete=len(not_ready_segment_ids) == 0,
+        timings_authoritative=timeline.authoritative,
         estimated_provider_calls=estimated_provider_calls,
         actual_provider_calls=actual_provider_calls,
     )

@@ -11,10 +11,12 @@ from __future__ import annotations
 import pytest
 
 from edutoon.domain.storyboard_timing import (
+    SegmentTimingInput,
     allocate_scene_durations,
     effective_scene_count,
     scene_timings,
     segment_absolute_starts,
+    timeline_positions,
 )
 
 # --- effective_scene_count -----------------------------------------------------------
@@ -161,3 +163,69 @@ def test_segment_absolute_starts_rejects_empty_input() -> None:
 def test_segment_absolute_starts_rejects_a_non_positive_duration() -> None:
     with pytest.raises(ValueError, match="positive"):
         segment_absolute_starts([5_000, 0, 2_000])
+
+
+# --- timeline_positions (Phase 11: positions computed on read) ---------------------------
+
+
+def _segment(
+    audio_ms: int | None, scenes: list[int], *, settled: bool = True
+) -> SegmentTimingInput:
+    return SegmentTimingInput(
+        audio_duration_ms=audio_ms, scene_durations_ms=scenes, settled=settled
+    )
+
+
+def test_scene_starts_are_segment_start_plus_earlier_scenes_in_the_segment() -> None:
+    positions = timeline_positions(
+        [_segment(10_000, [4_000, 6_000]), _segment(8_000, [3_000, 3_000, 2_000])]
+    )
+    assert positions.segment_starts_ms == (0, 10_000)
+    assert positions.scene_starts_ms == ((0, 4_000), (10_000, 13_000, 16_000))
+
+
+def test_a_lengthened_earlier_segment_moves_every_later_scene() -> None:
+    """The regression: segment 0 re-narrated 10 s -> 14 s. Its scenes are stale, but segment 1
+    (unchanged) must now start at 14 000 - the stored 10 000 is out of date."""
+    before = timeline_positions([_segment(10_000, [10_000]), _segment(8_000, [8_000])])
+    after = timeline_positions([_segment(14_000, [10_000]), _segment(8_000, [8_000])])
+    assert before.scene_starts_ms[1] == (10_000,)
+    assert after.scene_starts_ms[1] == (14_000,)
+
+
+def test_a_segment_with_no_ready_audio_contributes_its_last_known_scene_length() -> None:
+    positions = timeline_positions(
+        [_segment(None, [3_000, 2_000], settled=False), _segment(8_000, [8_000])]
+    )
+    assert positions.segment_starts_ms == (0, 5_000)
+
+
+def test_a_segment_with_no_audio_and_no_scenes_contributes_nothing() -> None:
+    positions = timeline_positions([_segment(None, [], settled=False), _segment(4_000, [4_000])])
+    assert positions.segment_starts_ms == (0, 0)
+    assert positions.scene_starts_ms == ((), (0,))
+
+
+def test_the_timeline_uses_the_same_prefix_sum_as_segment_absolute_starts() -> None:
+    durations = [5_000, 3_000, 2_000, 7_000]
+    positions = timeline_positions([_segment(d, [d]) for d in durations])
+    assert positions.segment_starts_ms == segment_absolute_starts(durations)
+
+
+def test_timings_are_authoritative_only_when_every_segment_is_settled() -> None:
+    assert timeline_positions([_segment(1_000, [1_000]), _segment(2_000, [2_000])]).authoritative
+    assert not timeline_positions(
+        [_segment(1_000, [1_000]), _segment(2_000, [2_000], settled=False)]
+    ).authoritative
+
+
+def test_timings_are_not_authoritative_while_narration_is_in_flight() -> None:
+    settled = [_segment(1_000, [1_000])]
+    assert timeline_positions(settled, narration_in_flight=False).authoritative
+    assert not timeline_positions(settled, narration_in_flight=True).authoritative
+
+
+def test_an_empty_timeline_is_trivially_authoritative() -> None:
+    positions = timeline_positions([])
+    assert positions.segment_starts_ms == ()
+    assert positions.authoritative

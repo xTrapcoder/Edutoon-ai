@@ -206,6 +206,7 @@ export function storyboardStatus(over: Partial<StoryboardStatus> = {}): Storyboa
     ready_segment_count: 0,
     not_ready_segment_ids: [ID(50)],
     is_complete: false,
+    timings_authoritative: true,
     estimated_provider_calls: 1,
     actual_provider_calls: null,
     ...over,

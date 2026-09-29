@@ -4412,6 +4412,10 @@
             "type": "boolean",
             "title": "Is Complete"
           },
+          "timings_authoritative": {
+            "type": "boolean",
+            "title": "Timings Authoritative"
+          },
           "estimated_provider_calls": {
             "type": "integer",
             "title": "Estimated Provider Calls"
@@ -4436,6 +4440,7 @@
           "ready_segment_count",
           "not_ready_segment_ids",
           "is_complete",
+          "timings_authoritative",
           "estimated_provider_calls",
           "actual_provider_calls"
         ],

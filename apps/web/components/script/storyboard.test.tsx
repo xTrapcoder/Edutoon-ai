@@ -171,6 +171,83 @@ describe('Storyboard (Phase 9)', () => {
     expect(document.querySelector('img')).toBeNull();
   });
 
+  it('shows one banner, and no per-row placeholders, while timings can still move', async () => {
+    serveProject({
+      ...ready,
+      scripts: [approvedDetail],
+      scriptDetail: approvedDetail,
+      storyboardStatus: storyboardStatus({
+        script: approvedDetail,
+        timings_authoritative: false,
+        segments: [
+          segmentStoryboard({
+            id: approvedSegment.id,
+            is_ready: true,
+            scenes: [
+              scene({ start_ms: 14_000, duration_ms: 9_000 }),
+              scene({
+                id: '00000000-0000-4000-8000-000000000081',
+                scene_index: 1,
+                start_ms: 23_000,
+              }),
+            ],
+          }),
+        ],
+        ready_segment_count: 1,
+        not_ready_segment_ids: [],
+        is_complete: true,
+      }),
+    });
+
+    renderProjectPage(<ScriptPage />, 'script');
+
+    expect(await screen.findAllByText('Timings update when narration finishes.')).toHaveLength(1);
+    // The times themselves are still shown as ordinary numbers - no dashes or nulls.
+    expect(screen.getByText(/14 s–23 s/)).toBeInTheDocument();
+    expect(screen.queryByText('—')).toBeNull();
+  });
+
+  it('shows no timings banner when every timing input is final', async () => {
+    serveProject({
+      ...ready,
+      scripts: [approvedDetail],
+      scriptDetail: approvedDetail,
+      storyboardStatus: storyboardStatus({
+        script: approvedDetail,
+        timings_authoritative: true,
+        segments: [
+          segmentStoryboard({ id: approvedSegment.id, is_ready: true, scenes: [scene()] }),
+        ],
+        ready_segment_count: 1,
+        not_ready_segment_ids: [],
+        is_complete: true,
+      }),
+    });
+
+    renderProjectPage(<ScriptPage />, 'script');
+
+    expect(await screen.findByText('Storyboard: Complete')).toBeInTheDocument();
+    expect(screen.queryByText('Timings update when narration finishes.')).toBeNull();
+  });
+
+  it('does not show the timings banner before any scene exists', async () => {
+    serveProject({
+      ...ready,
+      scripts: [approvedDetail],
+      scriptDetail: approvedDetail,
+      storyboardStatus: storyboardStatus({
+        script: approvedDetail,
+        timings_authoritative: false,
+        segments: [segmentStoryboard({ id: approvedSegment.id })],
+      }),
+    });
+
+    renderProjectPage(<ScriptPage />, 'script');
+
+    expect(await screen.findByText('Storyboard')).toBeInTheDocument();
+    expect(screen.queryByText('Timings update when narration finishes.')).toBeNull();
+  });
+
   it('shows the reviewer flag as a warning, never a failure', async () => {
     serveProject({
       ...ready,

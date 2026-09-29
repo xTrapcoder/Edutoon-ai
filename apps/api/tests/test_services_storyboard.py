@@ -22,16 +22,20 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from edutoon.core.config import get_settings
 from edutoon.core.errors import ConflictError, NotFoundError, ValidationError
+from edutoon.domain.script_audio import compute_content_hash
 from edutoon.domain.storyboard_timing import (
     segment_absolute_starts,
 )
+from edutoon.providers import tts as tts_provider
 from edutoon.providers.llm import LLM, StoryboardSceneDraft, StoryboardSceneSetDraft, TokenUsage
+from edutoon.repositories import jobs as jobs_repo
 from edutoon.repositories import projects as projects_repo
 from edutoon.repositories import script_segment_audio as audio_repo
 from edutoon.repositories import script_segment_scenes as scenes_repo
 from edutoon.repositories import scripts as scripts_repo
 from edutoon.repositories import users as users_repo
 from edutoon.repositories.scripts import NewScriptSegment
+from edutoon.services import script_audio as script_audio_service
 from edutoon.services import storyboard as service
 
 # Stands in for an external provider (OpenAI / Anthropic): these tests prove how our code
@@ -683,6 +687,151 @@ async def test_re_narrating_a_segment_makes_its_scenes_stale_and_they_are_regene
     )
     assert status_after.segments[0].is_stale is False
     assert status_after.is_complete is True
+
+
+# --- read model: positions are computed on read, timings_authoritative (Phase 11) ----------
+
+
+async def _make_narration_current(db_session, project, segments, durations_ms):
+    """Give every segment audio whose fingerprint matches today's text, voice and engine - what a
+    finished, up-to-date synthesis leaves behind."""
+    voice = script_audio_service.voice_selection_from_settings(get_settings(), project.language)
+    for segment, duration in zip(segments, durations_ms, strict=True):
+        await audio_repo.upsert(
+            db_session,
+            script_segment_id=segment.id,
+            status="ready",
+            storage_bucket=BUCKET,
+            storage_key=f"k/{segment.id}",
+            format="wav",
+            sample_rate=22_050,
+            channels=1,
+            measured_duration_ms=duration,
+            voice_model=voice.voice_model,
+            is_temporary_voice_substitute=False,
+            content_hash=compute_content_hash(
+                narration_text=segment.narration_text,
+                voice_model=voice.voice_model,
+                engine_version=tts_provider.engine_version(),
+                sample_rate=22_050,
+            ),
+        )
+
+
+async def _storyboarded_project(db_session, monkeypatch, durations_ms):
+    _owner, project, script, segments = await _project_with_ready_audio(
+        db_session, durations_ms=durations_ms
+    )
+    await _make_narration_current(db_session, project, segments, durations_ms)
+    llm, _mock, _calls = _llm_with(
+        monkeypatch, {i: _title_scene(f"S{i}") for i in range(len(durations_ms))}
+    )
+    enq = await service.enqueue_storyboard_generation(
+        db_session,
+        project_id=project.id,
+        owner_id=project.owner_id,
+        script_id=script.id,
+        idempotency_key="k1",
+    )
+    await service.run_generate_storyboard_job(db_session, llm, job_id=enq.job.id)
+    return project, script, segments
+
+
+async def _status(db_session, project, script):
+    return await service.get_storyboard_status(
+        db_session, project_id=project.id, owner_id=project.owner_id, script_id=script.id
+    )
+
+
+def _scene_starts(status) -> list[list[int]]:
+    return [[scene.start_ms for scene in segment.scenes] for segment in status.segments]
+
+
+async def test_timings_are_authoritative_when_narration_and_scenes_are_current(
+    db_session, monkeypatch
+):
+    project, script, _segments = await _storyboarded_project(
+        db_session, monkeypatch, [10_000, 8_000]
+    )
+    status = await _status(db_session, project, script)
+    assert status.timings_authoritative is True
+    assert _scene_starts(status) == [[0], [10_000]]
+
+
+async def test_a_later_segments_start_follows_an_earlier_re_narration_not_the_stored_offset(
+    db_session, monkeypatch
+):
+    """The regression: re-narrating segment 0 (10 s -> 14 s) leaves segment 1's scenes 'fresh',
+    so their stored start_ms (10 000) is never rewritten. The read model must show 14 000."""
+    project, script, segments = await _storyboarded_project(
+        db_session, monkeypatch, [10_000, 8_000]
+    )
+    stored = await scenes_repo.list_by_segment_id(db_session, segments[1].id)
+    assert stored[0].start_ms == 10_000  # the stored value is what goes out of date
+
+    await audio_repo.upsert(
+        db_session,
+        script_segment_id=segments[0].id,
+        status="ready",
+        storage_bucket=BUCKET,
+        storage_key=f"k/{segments[0].id}",
+        format="wav",
+        sample_rate=22_050,
+        channels=1,
+        measured_duration_ms=14_000,
+        voice_model="en_GB-cori-medium",
+        is_temporary_voice_substitute=False,
+        content_hash="re-narrated-in-another-voice",
+    )
+    status = await _status(db_session, project, script)
+
+    assert _scene_starts(status)[1] == [14_000]
+    assert (await scenes_repo.list_by_segment_id(db_session, segments[1].id))[0].start_ms == 10_000
+    assert status.timings_authoritative is False  # segment 0 is stale, so the numbers may move
+
+
+async def test_timings_are_not_authoritative_while_narration_is_being_made(db_session, monkeypatch):
+    project, script, _segments = await _storyboarded_project(
+        db_session, monkeypatch, [10_000, 8_000]
+    )
+    await jobs_repo.create(
+        db_session, project_id=project.id, kind="synthesise_voice", idempotency_key="synth-1"
+    )
+    status = await _status(db_session, project, script)
+    assert status.timings_authoritative is False
+    assert _scene_starts(status) == [[0], [10_000]]  # still shown, still integers
+
+
+async def test_timings_are_not_authoritative_when_a_segments_narration_failed(
+    db_session, monkeypatch
+):
+    project, script, segments = await _storyboarded_project(
+        db_session, monkeypatch, [10_000, 8_000]
+    )
+    await audio_repo.upsert(
+        db_session,
+        script_segment_id=segments[0].id,
+        status="failed",
+        voice_model="en_GB-cori-medium",
+        is_temporary_voice_substitute=False,
+        content_hash="x",
+        error="The voice could not be loaded.",
+    )
+    status = await _status(db_session, project, script)
+    assert status.timings_authoritative is False
+    # A failed segment has no measured length: it contributes its last known scene length.
+    assert _scene_starts(status)[1] == [10_000]
+
+
+async def test_a_finished_job_is_not_narration_in_flight(db_session, monkeypatch):
+    project, script, _segments = await _storyboarded_project(
+        db_session, monkeypatch, [10_000, 8_000]
+    )
+    job = await jobs_repo.create(
+        db_session, project_id=project.id, kind="synthesise_voice", idempotency_key="synth-2"
+    )
+    await jobs_repo.update(db_session, job_id=job.id, status="succeeded")
+    assert (await _status(db_session, project, script)).timings_authoritative is True
 
 
 # --- read model: completeness, reviewer flags ------------------------------------------

@@ -437,6 +437,12 @@ export function StoryboardPanel({ project, script, renderSelection }: Storyboard
 
         {total > 0 ? (
           <div className="space-y-5 border-t border-line pt-4">
+            {/* One banner, not a dash on every row: the start times are best estimates while
+                narration is stale, being made or failed, and they settle once it finishes. */}
+            {status?.timings_authoritative === false &&
+            segments.some((segment) => segment.scenes.length > 0) ? (
+              <Alert tone="info">Timings update when narration finishes.</Alert>
+            ) : null}
             {segments.map((segment, index) => (
               <SegmentTimeline
                 key={segment.id}

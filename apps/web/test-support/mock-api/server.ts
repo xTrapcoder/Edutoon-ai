@@ -695,6 +695,8 @@ function advance(job_: Row) {
   }
 }
 
+let forceTimingsNotFinal = false;
+
 function tick() {
   jobs.filter((j) => j.status === 'queued' || j.status === 'running').forEach(advance);
 }
@@ -994,6 +996,13 @@ async function route(req: IncomingMessage, res: ServerResponse) {
 
   if (method === 'OPTIONS') return send(res, 204);
   if (path === '/health') return send(res, 200, { status: 'ok', mock: true });
+  if (path === '/__mock/timings-not-final' && method === 'POST') {
+    // Test tooling: make the storyboard report timings_authoritative=false (as while narration
+    // is stale or being made), so the "Timings update when narration finishes" banner shows.
+    const body = JSON.parse((await readBody(req)).toString() || '{}') as { value?: boolean };
+    forceTimingsNotFinal = body.value ?? true;
+    return send(res, 200, { forceTimingsNotFinal });
+  }
   if (path === '/__mock/edit-scene' && method === 'POST') {
     // Test tooling: change one scene's content, as if it had been edited, so the video panel can
     // be looked at with a stale scene.
@@ -1500,12 +1509,27 @@ async function route(req: IncomingMessage, res: ServerResponse) {
             .sort(
               (x, y) => Date.parse(y.created_at as string) - Date.parse(x.created_at as string),
             )[0];
+          // Positions are computed on read from the current narration (never the stored start_ms),
+          // exactly as the API does: a segment starts where the previous one's audio ends.
+          let cursor = 0;
           const segmentBodies = segs.map((seg) => {
             const audio = segmentAudio.find((au) => au.script_segment_id === seg.id);
             const segScenes = scenes
               .filter((sn) => sn.script_segment_id === seg.id)
               .sort((x, y) => (x.scene_index as number) - (y.scene_index as number));
             const isReady = segScenes.length > 0;
+            const audioMs =
+              audio?.status === 'ready' ? ((audio.measured_duration_ms as number | null) ?? 0) : 0;
+            let offset = cursor;
+            const positioned = segScenes.map((sn) => {
+              const at = offset;
+              offset += sn.duration_ms as number;
+              return { ...sn, start_ms: at };
+            });
+            cursor +=
+              audioMs > 0
+                ? audioMs
+                : segScenes.reduce((n, sn) => n + (sn.duration_ms as number), 0);
             return {
               id: seg.id,
               segment_index: seg.segment_index,
@@ -1513,9 +1537,15 @@ async function route(req: IncomingMessage, res: ServerResponse) {
               audio_measured_duration_ms: (audio?.measured_duration_ms as number | null) ?? null,
               is_stale: false,
               is_ready: isReady,
-              scenes: segScenes,
+              scenes: positioned,
             };
           });
+          const narrationInFlight = jobs.some(
+            (j) =>
+              j.project_id === pid &&
+              j.kind === 'synthesise_voice' &&
+              (j.status === 'queued' || j.status === 'running'),
+          );
           const readyCount = segmentBodies.filter((s) => s.is_ready).length;
           const notReady = segmentBodies.filter((s) => !s.is_ready).map((s) => s.id);
           return send(res, 200, {
@@ -1525,6 +1555,8 @@ async function route(req: IncomingMessage, res: ServerResponse) {
             ready_segment_count: readyCount,
             not_ready_segment_ids: notReady,
             is_complete: notReady.length === 0,
+            timings_authoritative:
+              !forceTimingsNotFinal && !narrationInFlight && notReady.length === 0,
             estimated_provider_calls:
               (latest?.payload as { estimated_provider_calls?: number } | undefined)
                 ?.estimated_provider_calls ?? readySegs.length,

@@ -118,6 +118,35 @@ def voice_selection_from_settings(settings: Settings, language: str) -> VoiceSel
     )
 
 
+def audio_matches_current_narration(
+    audio: ScriptSegmentAudioRecord | None, segment: ScriptSegmentRecord, *, language: str
+) -> bool:
+    """Whether ``audio`` is the ready narration of ``segment``'s text in the voice and engine
+    that would be used *today*. ``False`` for no audio, audio that is not ``ready``, or audio a
+    changed voice, engine or sample rate has made out of date - such a segment will be
+    re-synthesised, so its measured duration is not final. Same fingerprint the synthesis job
+    and the render gate use (:func:`~edutoon.domain.script_audio.compute_content_hash`)."""
+    if audio is None or audio.status != "ready":
+        return False
+    voice = voice_selection_from_settings(get_settings(), language)
+    expected = compute_content_hash(
+        narration_text=segment.narration_text,
+        voice_model=voice.voice_model,
+        engine_version=tts_provider.engine_version(),
+        sample_rate=audio.sample_rate or 0,
+    )
+    return audio.content_hash == expected
+
+
+async def is_synthesis_in_flight(session: AsyncSession, *, project_id: UUID) -> bool:
+    """Whether a ``synthesise_voice`` job is queued or running for the project - narration is
+    being (re)made right now, so measured durations are about to change."""
+    active = await jobs_repo.get_active_by_project_kind(
+        session, project_id=project_id, kind=SYNTHESISE_VOICE_JOB_KIND
+    )
+    return active is not None
+
+
 # --- enqueue -----------------------------------------------------------------------
 
 

@@ -55,6 +55,8 @@ class StoryboardEnqueueResponse(BaseModel):
 class SceneResponse(BaseModel):
     id: UUID
     scene_index: int
+    # Computed on read from the current narration - never the stored value (see
+    # ``StoryboardStatusResponse.timings_authoritative`` for when it may still move).
     start_ms: int
     duration_ms: int
     template: Template
@@ -87,7 +89,7 @@ class SegmentStoryboardResponse(BaseModel):
                 SceneResponse(
                     id=scene.scene.id,
                     scene_index=scene.scene.scene_index,
-                    start_ms=scene.scene.start_ms,
+                    start_ms=scene.start_ms,
                     duration_ms=scene.scene.duration_ms,
                     template=scene.scene.template,  # type: ignore[arg-type]
                     content=scene.scene.content,
@@ -106,6 +108,10 @@ class StoryboardStatusResponse(BaseModel):
     ready_segment_count: int
     not_ready_segment_ids: list[UUID]
     is_complete: bool
+    # ``False`` while narration is stale, being (re)made or failed: the ``start_ms`` values are
+    # then a best estimate that may move once narration finishes. ``True`` means every timing
+    # input is final.
+    timings_authoritative: bool
     estimated_provider_calls: int
     actual_provider_calls: int | None
 
@@ -118,6 +124,7 @@ class StoryboardStatusResponse(BaseModel):
             ready_segment_count=status.ready_segment_count,
             not_ready_segment_ids=list(status.not_ready_segment_ids),
             is_complete=status.is_complete,
+            timings_authoritative=status.timings_authoritative,
             estimated_provider_calls=status.estimated_provider_calls,
             actual_provider_calls=status.actual_provider_calls,
         )

@@ -22,6 +22,11 @@ This module turns that measured duration into:
 - :func:`scene_timings` - one segment's scenes' own absolute start positions,
   the same prefix-sum discipline applied one level down, offset by the
   segment's own absolute start.
+- :func:`timeline_positions` - the same positions computed **on read** from the
+  segments' *current* narration (Phase 11), with an explicit ``authoritative``
+  verdict. Scene ``start_ms`` values written at generation time are advisory
+  only: re-narrating an earlier segment leaves them out of date, so nothing
+  that shows or plans positions may read them.
 
 Nothing here ever rounds: every duration and start is an exact integer
 millisecond derived from ``divmod``/prefix sums, so
@@ -152,9 +157,87 @@ def segment_absolute_starts(segment_durations_ms: Sequence[int]) -> tuple[int, .
     if any(duration <= 0 for duration in segment_durations_ms):
         raise ValueError("Every segment duration must be positive.")
 
+    return _prefix_starts(segment_durations_ms)
+
+
+def _prefix_starts(durations_ms: Sequence[int]) -> tuple[int, ...]:
+    """Exact prefix sums: item ``i`` starts where item ``i - 1`` ends. The one place a
+    timeline's absolute positions are added up - the render plan, the storyboard's read
+    model and this module's own :func:`segment_absolute_starts` all go through it, so the
+    three can never disagree."""
     starts: list[int] = []
     cursor = 0
-    for duration in segment_durations_ms:
+    for duration in durations_ms:
         starts.append(cursor)
         cursor += duration
     return tuple(starts)
+
+
+# --- the read-time timeline --------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class SegmentTimingInput:
+    """One segment as the *read-time* timeline sees it.
+
+    ``audio_duration_ms`` is the measured length of the segment's ready narration, or ``None``
+    when it has none (missing, failed, still being made). ``scene_durations_ms`` are the
+    segment's stored scene durations in scene order - only a segment's own scenes are ever laid
+    out from stored data, and only their *lengths*, never their stored offsets.
+    ``settled`` is the caller's verdict that this segment's timing can no longer change: its
+    narration is ready *and* matches the current text and voice, and its scenes were made from
+    exactly that narration.
+    """
+
+    audio_duration_ms: int | None
+    scene_durations_ms: Sequence[int]
+    settled: bool
+
+
+@dataclass(frozen=True, slots=True)
+class TimelinePositions:
+    """Where everything sits, computed on read. ``segment_starts_ms[i]`` is segment ``i``'s
+    absolute start; ``scene_starts_ms[i][j]`` is scene ``j`` of segment ``i``. ``authoritative``
+    is ``True`` only when every input above is final - see :func:`timeline_positions`."""
+
+    segment_starts_ms: tuple[int, ...]
+    scene_starts_ms: tuple[tuple[int, ...], ...]
+    authoritative: bool
+
+
+def timeline_positions(
+    segments: Sequence[SegmentTimingInput], *, narration_in_flight: bool = False
+) -> TimelinePositions:
+    """The absolute start of every segment and scene, derived - never read back from storage.
+
+    This is the *same* rule the render plan uses: a segment starts where the previous
+    segment's **current measured narration** ends (an exact prefix sum, see
+    :func:`segment_absolute_starts`), and a scene starts at its segment's start plus the
+    durations of the scenes before it inside that segment. A scene's own stored ``start_ms``
+    is never consulted: it was correct when the scene was made, but re-narrating an earlier
+    segment moves every later segment while leaving their (still valid) scenes untouched, so
+    the stored offset goes out of date silently.
+
+    A segment with no ready narration has no measured length to add up, so it contributes the
+    total of its stored scene durations (its last known length), or nothing if it has none.
+    Every value is still an integer millisecond. Whether those numbers can be trusted is a
+    separate, explicit answer, ``authoritative``: ``True`` only if narration is not being
+    (re)made right now (``narration_in_flight``) and every segment is ``settled``. When it is
+    ``False`` the positions are a best estimate that may move once narration finishes.
+    """
+    spans = [
+        segment.audio_duration_ms
+        if segment.audio_duration_ms is not None and segment.audio_duration_ms > 0
+        else sum(segment.scene_durations_ms)
+        for segment in segments
+    ]
+    segment_starts = _prefix_starts(spans)
+    scene_starts = tuple(
+        tuple(start + offset for offset in _prefix_starts(segment.scene_durations_ms))
+        for start, segment in zip(segment_starts, segments, strict=True)
+    )
+    return TimelinePositions(
+        segment_starts_ms=segment_starts,
+        scene_starts_ms=scene_starts,
+        authoritative=(not narration_in_flight) and all(segment.settled for segment in segments),
+    )

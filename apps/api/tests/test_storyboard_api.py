@@ -28,13 +28,17 @@ from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey, RSAPubl
 
 from edutoon.core.config import get_settings
 from edutoon.db.session import get_session
+from edutoon.domain.script_audio import compute_content_hash
 from edutoon.main import create_app
 from edutoon.providers import clerk
+from edutoon.providers import tts as tts_provider
 from edutoon.providers.cache import get_redis_client
 from edutoon.providers.llm import LLM
+from edutoon.repositories import projects as projects_repo
 from edutoon.repositories import script_segment_audio as audio_repo
 from edutoon.repositories import scripts as scripts_repo
 from edutoon.repositories.scripts import NewScriptSegment
+from edutoon.services import script_audio as script_audio_service
 from edutoon.services import storyboard as storyboard_service
 from tests.idempotency_helpers import INVALID_KEYS
 
@@ -410,3 +414,95 @@ async def test_status_reflects_generated_scenes(client_factory, auth_headers, db
     assert scene["content"] == {"title": "Hi there"}
     assert scene["duration_ms"] == 9_000
     assert scene["start_ms"] == 0
+
+
+# --- timings (Phase 11) --------------------------------------------------------------------------
+
+
+async def _narrate(db_session, project_id: str, script_id: str, durations_ms: list[int]) -> None:
+    """Give each segment ready audio of the given length whose fingerprint matches today's text,
+    voice and engine - a finished, up-to-date synthesis."""
+    project = await projects_repo.get_by_id(db_session, UUID(project_id))
+    assert project is not None
+    voice = script_audio_service.voice_selection_from_settings(get_settings(), project.language)
+    segments = await scripts_repo.list_segments(
+        db_session, project_id=UUID(project_id), script_id=UUID(script_id)
+    )
+    for segment, duration in zip(segments, durations_ms, strict=True):
+        await audio_repo.upsert(
+            db_session,
+            script_segment_id=segment.id,
+            status="ready",
+            storage_bucket=BUCKET,
+            storage_key=f"k/{segment.id}",
+            format="wav",
+            sample_rate=22_050,
+            channels=1,
+            measured_duration_ms=duration,
+            voice_model=voice.voice_model,
+            is_temporary_voice_substitute=False,
+            content_hash=compute_content_hash(
+                narration_text=segment.narration_text,
+                voice_model=voice.voice_model,
+                engine_version=tts_provider.engine_version(),
+                sample_rate=22_050,
+            ),
+        )
+
+
+async def _storyboarded(client, headers, db_session, texts: list[str]) -> tuple[str, str]:
+    project_id = await _create_project(client, headers)
+    script_id = await _approved_script_with_measured_audio(db_session, project_id, texts)
+    await _narrate(db_session, project_id, script_id, [9_000] * len(texts))
+    await db_session.commit()
+    enqueued = await client.post(_storyboard_url(project_id, script_id), headers=_headers(headers))
+    llm = _storyboard_llm([{"template": "title_card", "content": {"title": "Hi there"}}])
+    await storyboard_service.run_generate_storyboard_job(
+        db_session, llm, job_id=UUID(enqueued.json()["job"]["id"])
+    )
+    return project_id, script_id
+
+
+async def test_status_says_timings_are_authoritative_when_narration_is_current(
+    client_factory, auth_headers, db_session
+):
+    headers = auth_headers()
+    async with client_factory() as client:
+        project_id, script_id = await _storyboarded(client, headers, db_session, ["One.", "Two."])
+        body = (await client.get(_storyboard_url(project_id, script_id), headers=headers)).json()
+
+    assert body["timings_authoritative"] is True
+    assert [seg["scenes"][0]["start_ms"] for seg in body["segments"]] == [0, 9_000]
+
+
+async def test_status_follows_a_re_narration_and_says_timings_are_not_final(
+    client_factory, auth_headers, db_session
+):
+    """The regression: segment 0 becomes 15 s long, so segment 1 must now start at 15 000, not at
+    the 9 000 stored when its scene was made; and the response says the numbers may still move."""
+    headers = auth_headers()
+    async with client_factory() as client:
+        project_id, script_id = await _storyboarded(client, headers, db_session, ["One.", "Two."])
+        segments = await scripts_repo.list_segments(
+            db_session, project_id=UUID(project_id), script_id=UUID(script_id)
+        )
+        await audio_repo.upsert(
+            db_session,
+            script_segment_id=segments[0].id,
+            status="ready",
+            storage_bucket=BUCKET,
+            storage_key=f"k/{segments[0].id}",
+            format="wav",
+            sample_rate=22_050,
+            channels=1,
+            measured_duration_ms=15_000,
+            voice_model="another-voice",
+            is_temporary_voice_substitute=False,
+            content_hash="made-in-another-voice",
+        )
+        await db_session.commit()
+        body = (await client.get(_storyboard_url(project_id, script_id), headers=headers)).json()
+
+    assert [seg["scenes"][0]["start_ms"] for seg in body["segments"]] == [0, 15_000]
+    assert body["timings_authoritative"] is False
+    assert body["segments"][0]["is_stale"] is True  # the existing stale badge is untouched

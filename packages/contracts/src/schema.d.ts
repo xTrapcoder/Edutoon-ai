@@ -1164,6 +1164,8 @@ export interface components {
             not_ready_segment_ids: string[];
             /** Is Complete */
             is_complete: boolean;
+            /** Timings Authoritative */
+            timings_authoritative: boolean;
             /** Estimated Provider Calls */
             estimated_provider_calls: number;
             /** Actual Provider Calls */
