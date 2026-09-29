@@ -29,6 +29,13 @@
   always ends ``succeeded`` unless *every* segment failed; whether the
   storyboard is *complete* is a separate question the read model answers
   fresh from current state, never from a job's historical result.
+  A scene's optional procedural ``visual`` (Phase 11) is handled here too: a *structurally*
+  invalid visual - or one too big for its template - is dropped, never repaired: the scene is
+  kept (drawn by the deterministic fallback), the job continues, the drop is logged and marked
+  on the scene (``illustration.visual_dropped``), and the read model counts every such scene
+  (``dropped_visual_count``) so a reviewer is told. Provenance is a different matter and stays
+  a hard failure: fabricated text or a fabricated number anywhere in the model's output - in a
+  visual that is about to be dropped as well - rejects the whole segment.
 - ``get_storyboard_status`` - the read model the API's status route uses:
   per-segment scene sets, staleness, completeness, and both the worst-case
   estimate and (once a job has run) the actual provider calls it made.
@@ -61,6 +68,7 @@ from edutoon.domain.storyboard_timing import (
     segment_absolute_starts,
     timeline_positions,
 )
+from edutoon.domain.visual import visual_problem, without_invalid_visual
 from edutoon.providers.llm import LLM, StoryboardSegmentBrief
 from edutoon.repositories import jobs as jobs_repo
 from edutoon.repositories import projects as projects_repo
@@ -132,6 +140,10 @@ class StoryboardStatus:
     # and every segment's narration and scenes are current. ``False`` means the start
     # positions shown are a best estimate that may move once narration finishes.
     timings_authoritative: bool
+    # How many current scenes had a model-written visual dropped as invalid (they are drawn by
+    # the text fallback). Counted fresh from the scenes themselves, never from a job's result,
+    # so a reviewer is always told, and it drops back to 0 once those scenes are regenerated.
+    dropped_visual_count: int
     estimated_provider_calls: int
     actual_provider_calls: int | None
 
@@ -437,6 +449,7 @@ async def _generate_storyboard(
     ready_count = 0
     failed_segment_ids: list[str] = []
     provider_calls = 0
+    dropped_visuals = 0
 
     for index, segment in enumerate(segments):
         await _report_progress(
@@ -481,8 +494,25 @@ async def _generate_storyboard(
                 )
                 provider_calls += 1
 
+                # An invalid visual is dropped (the scene stays); everything else about the
+                # scene must still meet its template's contract.
+                prepared: list[tuple[str, dict[str, object]]] = []
+                dropped_here = 0
                 for scene in draft.scenes:
-                    validate_scene_content(scene.template, scene.content)
+                    content, dropped = without_invalid_visual(scene.template, scene.content)
+                    if dropped:
+                        dropped_here += 1
+                        log.warning(
+                            "storyboard.visual_dropped",
+                            job_id=str(job_id),
+                            script_segment_id=str(segment.id),
+                            template=scene.template,
+                            reason=visual_problem(scene.template, scene.content),
+                        )
+                    validate_scene_content(scene.template, content)
+                    prepared.append((scene.template, content))
+                # Provenance is checked on what the model actually wrote - including the text of a
+                # visual just dropped - and stays a hard failure for the whole segment.
                 for scene in draft.scenes:
                     require_provenance(scene.content, segment.narration_text)
 
@@ -497,15 +527,16 @@ async def _generate_storyboard(
                         # segment is re-narrated); reads use timeline_positions.
                         start_ms=timing.start_ms,
                         duration_ms=timing.duration_ms,
-                        template=scene.template,
-                        content=scene.content,
+                        template=template,
+                        content=content,
                         source_audio_content_hash=audio.content_hash,
                     )
-                    for scene, timing in zip(draft.scenes, timings, strict=True)
+                    for (template, content), timing in zip(prepared, timings, strict=True)
                 ]
                 await _replace_segment_scenes(
                     sessionmaker, session, script_segment_id=segment.id, scenes=new_scenes
                 )
+                dropped_visuals += dropped_here
             ready_count += 1
         except Exception as exc:  # noqa: BLE001 - one segment's failure must not crash the job
             error = public_job_error(exc)
@@ -528,7 +559,13 @@ async def _generate_storyboard(
         "failed_segment_ids": failed_segment_ids,
         "outcome": outcome,
         "provider_calls": provider_calls,
+        "dropped_visual_count": dropped_visuals,
     }
+
+
+def _visual_was_dropped(scene: ScriptSegmentSceneRecord) -> bool:
+    illustration = scene.content.get("illustration")
+    return isinstance(illustration, dict) and illustration.get("visual_dropped") is True
 
 
 def _is_fresh(
@@ -757,6 +794,9 @@ async def get_storyboard_status(
         not_ready_segment_ids=not_ready_segment_ids,
         is_complete=len(not_ready_segment_ids) == 0,
         timings_authoritative=timeline.authoritative,
+        dropped_visual_count=sum(
+            1 for detail in details for scene in detail.scenes if _visual_was_dropped(scene.scene)
+        ),
         estimated_provider_calls=estimated_provider_calls,
         actual_provider_calls=actual_provider_calls,
     )

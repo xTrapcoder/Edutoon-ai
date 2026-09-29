@@ -4416,6 +4416,10 @@
             "type": "boolean",
             "title": "Timings Authoritative"
           },
+          "dropped_visual_count": {
+            "type": "integer",
+            "title": "Dropped Visual Count"
+          },
           "estimated_provider_calls": {
             "type": "integer",
             "title": "Estimated Provider Calls"
@@ -4441,6 +4445,7 @@
           "not_ready_segment_ids",
           "is_complete",
           "timings_authoritative",
+          "dropped_visual_count",
           "estimated_provider_calls",
           "actual_provider_calls"
         ],

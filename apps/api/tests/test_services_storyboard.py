@@ -834,6 +834,278 @@ async def test_a_finished_job_is_not_narration_in_flight(db_session, monkeypatch
     assert (await _status(db_session, project, script)).timings_authoritative is True
 
 
+# --- procedural visuals: invalid ones are dropped and counted, provenance stays hard ---------
+
+WATER = "Water evaporates from the ocean. Clouds form and rain falls."
+
+
+def _flow_visual(*labels: str) -> dict:
+    return {"type": "process_flow", "nodes": [{"label": text} for text in labels]}
+
+
+def _diagram(visual: object, *, with_labels: bool = False) -> list[tuple[str, dict]]:
+    content: dict = {"illustration": {"description": "The water cycle", "visual": visual}}
+    if with_labels:
+        content["labels"] = [{"text": "Ocean", "position": "left"}]
+    return [("labelled_diagram", content)]
+
+
+async def _run(db_session, monkeypatch, responses, *, narrations=None, durations=None):
+    _owner, project, script, segments = await _project_with_ready_audio(
+        db_session, narrations=narrations, durations_ms=durations or [10_000]
+    )
+    llm, _mock, _calls = _llm_with(monkeypatch, responses)
+    enq = await service.enqueue_storyboard_generation(
+        db_session,
+        project_id=project.id,
+        owner_id=project.owner_id,
+        script_id=script.id,
+        idempotency_key="k1",
+    )
+    job = await service.run_generate_storyboard_job(db_session, llm, job_id=enq.job.id)
+    status = await service.get_storyboard_status(
+        db_session, project_id=project.id, owner_id=project.owner_id, script_id=script.id
+    )
+    return job, status, segments
+
+
+async def test_a_valid_visual_is_stored_intact_and_nothing_is_counted_as_dropped(
+    db_session, monkeypatch
+):
+    visual = _flow_visual("Water evaporates", "Clouds form", "Rain falls")
+    job, status, _ = await _run(db_session, monkeypatch, {0: _diagram(visual)}, narrations=[WATER])
+    assert job.status == "succeeded"
+    [scene] = status.segments[0].scenes
+    assert scene.scene.content["illustration"]["visual"] == visual
+    assert "visual_dropped" not in scene.scene.content["illustration"]
+    assert status.dropped_visual_count == 0
+    assert job.result["dropped_visual_count"] == 0
+
+
+async def test_a_labelled_diagram_with_a_visual_and_no_labels_is_stored(db_session, monkeypatch):
+    visual = _flow_visual("Water evaporates", "Rain falls")
+    _job, status, _ = await _run(db_session, monkeypatch, {0: _diagram(visual)}, narrations=[WATER])
+    assert status.segments[0].is_ready is True
+    assert "labels" not in status.segments[0].scenes[0].scene.content
+
+
+async def test_a_structurally_invalid_visual_is_dropped_the_scene_and_job_survive(
+    db_session, monkeypatch
+):
+    invalid = {"type": "cycle", "nodes": [{"label": "Water"}]}  # a cycle needs three steps
+    job, status, _ = await _run(
+        db_session, monkeypatch, {0: _diagram(invalid, with_labels=True)}, narrations=[WATER]
+    )
+
+    assert job.status == "succeeded"
+    assert job.result["outcome"] == "complete"
+    assert status.is_complete is True
+    [scene] = status.segments[0].scenes
+    illustration = scene.scene.content["illustration"]
+    assert "visual" not in illustration
+    assert illustration["visual_dropped"] is True
+    assert illustration["description"] == "The water cycle"  # the rest of the scene is kept
+    assert scene.scene.content["labels"] == [{"text": "Ocean", "position": "left"}]
+
+
+async def test_dropping_a_visual_is_never_silent_it_is_counted_in_the_status_and_the_job(
+    db_session, monkeypatch
+):
+    invalid = {"type": "cycle", "nodes": [{"label": "Water"}]}
+    job, status, _ = await _run(
+        db_session, monkeypatch, {0: _diagram(invalid, with_labels=True)}, narrations=[WATER]
+    )
+    assert status.dropped_visual_count == 1
+    assert job.result["dropped_visual_count"] == 1
+
+
+async def test_an_unknown_key_in_a_visual_drops_it_the_model_is_never_trusted_to_be_close(
+    db_session, monkeypatch
+):
+    sneaky = {**_flow_visual("Water evaporates", "Rain falls"), "colour": "red"}
+    _job, status, _ = await _run(
+        db_session, monkeypatch, {0: _diagram(sneaky, with_labels=True)}, narrations=[WATER]
+    )
+    assert status.dropped_visual_count == 1
+    assert "visual" not in status.segments[0].scenes[0].scene.content["illustration"]
+
+
+async def test_a_value_chart_is_not_in_the_vocabulary_so_it_is_dropped(db_session, monkeypatch):
+    chart = {"type": "value_chart", "nodes": [{"label": "Water"}, {"label": "Rain"}]}
+    _job, status, _ = await _run(
+        db_session, monkeypatch, {0: _diagram(chart, with_labels=True)}, narrations=[WATER]
+    )
+    assert status.dropped_visual_count == 1
+
+
+async def test_a_value_chart_cannot_smuggle_numbers_in_they_are_a_hard_provenance_failure(
+    db_session, monkeypatch
+):
+    """Numbers stored as JSON values must appear in the narration exactly like numbers in text -
+    so even a visual that would only be dropped fails the segment if its values are invented."""
+    chart = {"type": "value_chart", "values": [73, 42]}
+    job, status, _ = await _run(
+        db_session, monkeypatch, {0: _diagram(chart, with_labels=True)}, narrations=[WATER]
+    )
+    assert job.status == "failed"
+    assert status.dropped_visual_count == 0
+
+
+async def test_a_visual_too_big_for_a_split_scene_is_dropped(db_session, monkeypatch):
+    big = _flow_visual("Water", "Ocean", "Clouds", "Rain", "Falls")  # 5 steps > 4 in a half
+    scene = [
+        (
+            "split_text_illustration",
+            {"text": "Water evaporates.", "illustration": {"description": "d", "visual": big}},
+        )
+    ]
+    _job, status, _ = await _run(db_session, monkeypatch, {0: scene}, narrations=[WATER])
+    assert status.dropped_visual_count == 1
+    assert status.segments[0].is_ready is True
+
+
+async def test_dropped_visuals_are_counted_across_scenes_and_segments(db_session, monkeypatch):
+    invalid = {"type": "cycle", "nodes": [{"label": "Water"}]}
+    responses = {
+        0: _diagram(invalid, with_labels=True) * 2,
+        1: _diagram(_flow_visual("Water evaporates", "Rain falls")),
+    }
+    _job, status, _ = await _run(
+        db_session,
+        monkeypatch,
+        responses,
+        narrations=[WATER, WATER],
+        durations=[10_000, 8_000],
+    )
+    assert status.dropped_visual_count == 2
+    assert status.is_complete is True
+
+
+async def test_a_visual_dropped_flag_written_by_the_model_is_discarded(db_session, monkeypatch):
+    forged = [
+        (
+            "labelled_diagram",
+            {
+                "illustration": {"description": "d", "visual_dropped": True},
+                "labels": [{"text": "Ocean", "position": "left"}],
+            },
+        )
+    ]
+    _job, status, _ = await _run(db_session, monkeypatch, {0: forged}, narrations=[WATER])
+    assert status.dropped_visual_count == 0
+    assert "visual_dropped" not in status.segments[0].scenes[0].scene.content["illustration"]
+
+
+async def test_regenerating_a_scene_with_a_valid_visual_clears_the_dropped_count(
+    db_session, monkeypatch
+):
+    invalid = {"type": "cycle", "nodes": [{"label": "Water"}]}
+    _job, status, segments = await _run(
+        db_session, monkeypatch, {0: _diagram(invalid, with_labels=True)}, narrations=[WATER]
+    )
+    assert status.dropped_visual_count == 1
+    # Re-narrate: the scene set goes stale and is regenerated - this time with a valid visual.
+    await audio_repo.upsert(
+        db_session,
+        script_segment_id=segments[0].id,
+        status="ready",
+        storage_bucket=BUCKET,
+        storage_key=f"k/{segments[0].id}",
+        format="wav",
+        sample_rate=22_050,
+        channels=1,
+        measured_duration_ms=10_000,
+        voice_model="en_GB-cori-medium",
+        is_temporary_voice_substitute=False,
+        content_hash="a-new-hash",
+    )
+    project_id = status.script.project_id
+    owner_id = (await projects_repo.get_by_id(db_session, project_id)).owner_id
+    llm, _mock, _calls = _llm_with(
+        monkeypatch, {0: _diagram(_flow_visual("Water evaporates", "Rain falls"))}
+    )
+    enq = await service.enqueue_storyboard_generation(
+        db_session,
+        project_id=project_id,
+        owner_id=owner_id,
+        script_id=status.script.id,
+        idempotency_key="k2",
+    )
+    await service.run_generate_storyboard_job(db_session, llm, job_id=enq.job.id)
+    again = await service.get_storyboard_status(
+        db_session, project_id=project_id, owner_id=owner_id, script_id=status.script.id
+    )
+    assert again.dropped_visual_count == 0
+
+
+# provenance stays a hard failure ------------------------------------------------------------
+
+
+async def test_fabricated_text_in_a_valid_visual_rejects_the_segment(db_session, monkeypatch):
+    fabricated = _flow_visual(
+        "Water evaporates", "Rain over Delhi"
+    )  # Delhi is not in the narration
+    job, status, _ = await _run(
+        db_session, monkeypatch, {0: _diagram(fabricated)}, narrations=[WATER]
+    )
+    assert job.status == "failed"  # the only segment failed
+    assert status.segments[0].scenes == ()
+    assert status.dropped_visual_count == 0
+
+
+async def test_fabricated_text_in_an_invalid_visual_is_not_downgraded_to_a_dropped_visual(
+    db_session, monkeypatch
+):
+    """The visual is structurally invalid (one step) AND fabricates a number: it must not be
+    quietly dropped - the segment fails, exactly as for any fabrication."""
+    both = {"type": "cycle", "nodes": [{"label": "About 99 percent of rain"}]}
+    job, status, _ = await _run(
+        db_session, monkeypatch, {0: _diagram(both, with_labels=True)}, narrations=[WATER]
+    )
+    assert job.status == "failed"
+    assert status.segments[0].scenes == ()
+    assert status.dropped_visual_count == 0
+
+
+async def test_a_fabricated_percentage_in_visual_text_fails_the_segment_only(
+    db_session, monkeypatch
+):
+    responses = {
+        0: _diagram(_flow_visual("Water evaporates", "40% of rain falls")),
+        1: _diagram(_flow_visual("Water evaporates", "Rain falls")),
+    }
+    job, status, _ = await _run(
+        db_session,
+        monkeypatch,
+        responses,
+        narrations=[WATER, WATER],
+        durations=[10_000, 8_000],
+    )
+    assert job.status == "succeeded"  # one segment still succeeded
+    assert job.result["outcome"] == "succeeded_with_failures"
+    assert status.segments[0].scenes == ()
+    assert status.segments[1].is_ready is True
+
+
+async def test_a_fabricated_number_stored_as_a_json_number_fails_the_segment(
+    db_session, monkeypatch
+):
+    scene = [("title_card", {"title": "Water", "stat": 73})]  # 73 is not in the narration
+    job, _status, _ = await _run(db_session, monkeypatch, {0: scene}, narrations=[WATER])
+    assert job.status == "failed"
+
+
+async def test_a_json_number_the_narration_has_is_accepted(db_session, monkeypatch):
+    scene = [("title_card", {"title": "Water", "stat": 3})]
+    job, _status, _ = await _run(
+        db_session,
+        monkeypatch,
+        {0: scene},
+        narrations=["Water has 3 states. Ice, water and steam."],
+    )
+    assert job.status == "succeeded"
+
+
 # --- read model: completeness, reviewer flags ------------------------------------------
 
 

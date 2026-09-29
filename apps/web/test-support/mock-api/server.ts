@@ -1557,6 +1557,7 @@ async function route(req: IncomingMessage, res: ServerResponse) {
             is_complete: notReady.length === 0,
             timings_authoritative:
               !forceTimingsNotFinal && !narrationInFlight && notReady.length === 0,
+            dropped_visual_count: 0,
             estimated_provider_calls:
               (latest?.payload as { estimated_provider_calls?: number } | undefined)
                 ?.estimated_provider_calls ?? readySegs.length,

@@ -498,6 +498,20 @@ def visual_of(content: Mapping[str, object]) -> Visual | None:
         return None
 
 
+def visual_problem(template: str, content: Mapping[str, object]) -> str | None:
+    """Why the visual in ``content`` cannot be used on ``template`` - a message safe for logs
+    (it names the field and the rule, never the text) - or ``None`` if there is no visual, or it
+    is valid and fits."""
+    illustration = content.get("illustration")
+    if not isinstance(illustration, Mapping) or "visual" not in illustration:
+        return None
+    try:
+        validate_visual_for_template(template, parse_visual(illustration["visual"]))
+    except VisualSpecError as exc:
+        return str(exc)
+    return None
+
+
 def without_invalid_visual(
     template: str, content: Mapping[str, object]
 ) -> tuple[dict[str, object], bool]:
@@ -515,15 +529,10 @@ def without_invalid_visual(
     if not isinstance(illustration, Mapping):
         return result, False
     cleaned = {key: value for key, value in illustration.items() if key != "visual_dropped"}
-    if "visual" not in cleaned:
+    if visual_problem(template, {"illustration": cleaned}) is None:
         result["illustration"] = cleaned
         return result, False
-    try:
-        validate_visual_for_template(template, parse_visual(cleaned["visual"]))
-    except VisualSpecError:
-        del cleaned["visual"]
-        cleaned["visual_dropped"] = True
-        result["illustration"] = cleaned
-        return result, True
+    del cleaned["visual"]
+    cleaned["visual_dropped"] = True
     result["illustration"] = cleaned
-    return result, False
+    return result, True

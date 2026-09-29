@@ -506,3 +506,55 @@ async def test_status_follows_a_re_narration_and_says_timings_are_not_final(
     assert [seg["scenes"][0]["start_ms"] for seg in body["segments"]] == [0, 15_000]
     assert body["timings_authoritative"] is False
     assert body["segments"][0]["is_stale"] is True  # the existing stale badge is untouched
+
+
+# --- dropped visuals (Phase 11) -----------------------------------------------------------------
+
+
+async def test_status_counts_visuals_that_were_dropped_and_shows_the_scene_as_text(
+    client_factory, auth_headers, db_session
+):
+    headers = auth_headers()
+    invalid = {"type": "cycle", "nodes": [{"label": "Hi"}]}  # a cycle needs three steps
+    async with client_factory() as client:
+        project_id = await _create_project(client, headers)
+        script_id = await _approved_script_with_measured_audio(
+            db_session, project_id, ["Hi there."]
+        )
+        await db_session.commit()
+        enqueued = await client.post(
+            _storyboard_url(project_id, script_id), headers=_headers(headers)
+        )
+        llm = _storyboard_llm(
+            [
+                {
+                    "template": "labelled_diagram",
+                    "content": {
+                        "illustration": {"description": "Hi there", "visual": invalid},
+                        "labels": [{"text": "Hi", "position": "top"}],
+                    },
+                }
+            ]
+        )
+        finished = await storyboard_service.run_generate_storyboard_job(
+            db_session, llm, job_id=UUID(enqueued.json()["job"]["id"])
+        )
+        assert finished.status == "succeeded"
+        body = (await client.get(_storyboard_url(project_id, script_id), headers=headers)).json()
+
+    assert body["dropped_visual_count"] == 1
+    assert body["is_complete"] is True  # the storyboard is still whole
+    [scene] = body["segments"][0]["scenes"]
+    assert "visual" not in scene["content"]["illustration"]
+    assert scene["content"]["illustration"]["visual_dropped"] is True
+    assert "Traceback" not in str(body) and "VisualSpecError" not in str(body)  # nothing raw
+
+
+async def test_status_reports_no_dropped_visuals_when_none_were_dropped(
+    client_factory, auth_headers, db_session
+):
+    headers = auth_headers()
+    async with client_factory() as client:
+        project_id, script_id = await _storyboarded(client, headers, db_session, ["One."])
+        body = (await client.get(_storyboard_url(project_id, script_id), headers=headers)).json()
+    assert body["dropped_visual_count"] == 0

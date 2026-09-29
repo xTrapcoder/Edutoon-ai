@@ -1166,6 +1166,8 @@ export interface components {
             is_complete: boolean;
             /** Timings Authoritative */
             timings_authoritative: boolean;
+            /** Dropped Visual Count */
+            dropped_visual_count: number;
             /** Estimated Provider Calls */
             estimated_provider_calls: number;
             /** Actual Provider Calls */

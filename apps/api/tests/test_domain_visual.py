@@ -392,3 +392,23 @@ def test_a_drop_flag_written_by_the_model_is_discarded_only_the_service_sets_it(
 def test_a_scene_without_an_illustration_mapping_is_returned_as_is():
     result, dropped = v.without_invalid_visual("full_bleed_illustration", {"caption": "c"})
     assert (result, dropped) == ({"caption": "c"}, False)
+
+
+def test_visual_problem_explains_a_rejection_without_echoing_the_text():
+    bad = _content({"type": "cycle", "nodes": [node("SECRET-LABEL")]})
+    reason = v.visual_problem("full_bleed_illustration", bad)
+    assert reason is not None and "nodes" in reason
+    assert "SECRET-LABEL" not in reason
+
+
+def test_visual_problem_is_none_for_no_visual_a_valid_one_and_a_scene_with_no_illustration():
+    assert (
+        v.visual_problem("full_bleed_illustration", {"illustration": {"description": "d"}}) is None
+    )
+    assert v.visual_problem("full_bleed_illustration", _content(flow(3))) is None
+    assert v.visual_problem("full_bleed_illustration", {"caption": "c"}) is None
+
+
+def test_visual_problem_names_a_visual_too_big_for_its_template():
+    reason = v.visual_problem("split_text_illustration", _content(flow(6)))
+    assert reason is not None and "too large" in reason

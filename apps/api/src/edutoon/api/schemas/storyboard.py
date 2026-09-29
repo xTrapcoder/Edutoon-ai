@@ -112,6 +112,9 @@ class StoryboardStatusResponse(BaseModel):
     # then a best estimate that may move once narration finishes. ``True`` means every timing
     # input is final.
     timings_authoritative: bool
+    # Current scenes whose model-written visual was invalid and dropped: they show text instead.
+    # Always counted fresh from the scenes, so a reviewer is told until they are regenerated.
+    dropped_visual_count: int
     estimated_provider_calls: int
     actual_provider_calls: int | None
 
@@ -125,6 +128,7 @@ class StoryboardStatusResponse(BaseModel):
             not_ready_segment_ids=list(status.not_ready_segment_ids),
             is_complete=status.is_complete,
             timings_authoritative=status.timings_authoritative,
+            dropped_visual_count=status.dropped_visual_count,
             estimated_provider_calls=status.estimated_provider_calls,
             actual_provider_calls=status.actual_provider_calls,
         )
