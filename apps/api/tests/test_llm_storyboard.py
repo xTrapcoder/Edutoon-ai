@@ -300,3 +300,92 @@ async def test_injected_instructions_in_the_narration_reach_the_model_only_as_in
     [scene] = draft.scenes
     assert scene.template == "title_card"
     assert scene.content == {"title": "Fabricated 9999"}
+
+
+# --- the visual the model may produce (Phase 11) --------------------------------------------
+# Still never a real call: only ``messages.create`` is replaced. What is proved is the request
+# the model is given (its schema and prompt) and that the provider never repairs or filters what
+# comes back - dropping or rejecting a visual is ``services.storyboard``'s job.
+
+
+def _visual_scene(visual: object) -> dict[str, Any]:
+    return {
+        "template": "labelled_diagram",
+        "content": {"illustration": {"description": "The water cycle", "visual": visual}},
+    }
+
+
+def test_the_tool_schema_gives_the_model_the_generated_visual_schema():
+    from edutoon.domain.visual_schema import build_visual_json_schema
+    from edutoon.providers.llm import _storyboard_tool
+
+    scene = _storyboard_tool(4)["input_schema"]["properties"]["scenes"]["items"]
+    content = scene["properties"]["content"]
+    assert (
+        content["properties"]["illustration"]["properties"]["visual"] == build_visual_json_schema()
+    )
+
+
+def test_the_visual_the_model_is_shown_is_closed():
+    from edutoon.providers.llm import _storyboard_tool
+
+    scene = _storyboard_tool(4)["input_schema"]["properties"]["scenes"]["items"]
+    visual = scene["properties"]["content"]["properties"]["illustration"]["properties"]["visual"]
+    assert len(visual["anyOf"]) == 5
+    assert all(branch["additionalProperties"] is False for branch in visual["anyOf"])
+
+
+def test_the_output_budget_covers_a_visual_on_every_scene_and_stays_under_the_cap():
+    from edutoon.providers.llm import _storyboard_max_tokens
+
+    assert _storyboard_max_tokens(1) >= 1_200  # a visual is up to ~2 KB of JSON
+    assert _storyboard_max_tokens(6) <= 8_192
+
+
+def test_the_prompt_tells_the_model_what_a_visual_is_and_is_not():
+    from edutoon.providers.llm import _STORYBOARD_SYSTEM_PROMPT
+
+    prompt = _STORYBOARD_SYSTEM_PROMPT
+    assert '"visual"' in prompt
+    assert "no charts" in prompt.lower()  # there is no chart form and no way to give a value
+    assert "labelled parts" in prompt.lower() or "labelled PARTS" in prompt
+    assert "no image exists" in prompt.lower()
+    assert "optional" in prompt.lower()
+
+
+async def test_a_valid_visual_comes_back_exactly_as_the_model_wrote_it(monkeypatch):
+    visual = {
+        "type": "process_flow",
+        "nodes": [{"label": "Water evaporates"}, {"label": "Clouds form"}],
+    }
+    llm, _ = _llm(monkeypatch, {"scenes": [_visual_scene(visual)]})
+
+    draft, _ = await _compose(llm)
+
+    [scene] = draft.scenes
+    assert scene.content["illustration"]["visual"] == visual
+
+
+async def test_an_invalid_visual_is_never_repaired_or_filtered_by_the_provider(monkeypatch):
+    """The provider checks structure only; it neither trims nor drops - the storyboard service
+    decides (drop the visual, keep the scene, count it)."""
+    invalid = {
+        "type": "process_flow",
+        "nodes": [{"label": "x" * 200, "colour": "red"}],
+        "x": 10,
+        "focus": 99,
+    }
+    llm, _ = _llm(monkeypatch, {"scenes": [_visual_scene(invalid)]})
+
+    draft, _ = await _compose(llm)
+
+    assert draft.scenes[0].content["illustration"]["visual"] == invalid
+
+
+async def test_a_value_chart_the_model_invents_reaches_the_service_untouched(monkeypatch):
+    chart = {"type": "value_chart", "values": [1, 2, 3]}
+    llm, _ = _llm(monkeypatch, {"scenes": [_visual_scene(chart)]})
+
+    draft, _ = await _compose(llm)
+
+    assert draft.scenes[0].content["illustration"]["visual"] == chart
