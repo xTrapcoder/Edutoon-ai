@@ -767,6 +767,10 @@ Size depends on content: illustration placeholders and text compress far better 
   header; the API streams and honours `Range`, but the browser holds the whole file. A proxy route would give true streaming
   for much longer videos.
 - Formula/code scenes draw the text as given, in a monospace font; there is no LaTeX typesetting.
+- A chunk whose upload succeeds but whose row cannot be written (the database went away at that moment, which
+  `scripts/verify_phase10.py --db-restart` provokes on purpose) leaves an orphan object at its deterministic key: the retry
+  overwrites it if the same chunk is rendered again, but deleting the project cannot remove it, because no row names it.
+  The same is true of an upload racing a project deletion.
 - Rendered on Windows only; the Linux container path (FFmpeg on PATH, the vendored fonts) is unverified.
 
 ## Testing, and what is not yet verified against a real provider
