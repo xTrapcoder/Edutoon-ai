@@ -42,6 +42,17 @@ that few content words are shared verbatim.
   lower) that is not the first word of its sentence, matched
   case-insensitively against every word in the narration.
 
+- **Numeric JSON leaves** (Phase 11): a number stored as a JSON number (``73``, ``3.5``) is checked
+  exactly like a digit run in text - it must appear in the narration - so a value can never be
+  smuggled into a scene as data instead of text. ``3.5`` and ``3.50`` are the same number.
+  The only numbers exempt are the integer *indices* a visual uses to point at its own items
+  (``parent``, ``focus`` inside ``visual``): they are structure, and are validated separately.
+- **Visual text** (Phase 11): every free-text field of a scene's procedural ``visual`` is walked
+  like any other slot (its labels, details, headings, points, subject, title), at any depth, in
+  raw content *before* an invalid visual is dropped - so fabricated text cannot be discarded
+  quietly. Its enumerated fields (``type``, ``relation``, ``form``) hold structure, not claims,
+  and are skipped only when the value is one of the allowed ones.
+
 ## What normalisation does not catch
 
 - A number spelled out in the scene that the narration also spells out but
@@ -63,10 +74,14 @@ that few content words are shared verbatim.
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from typing import Final
+
+from edutoon.domain.visual import ENUM_FIELDS, STRUCTURAL_INDEX_FIELDS
 
 _WORD_RE = re.compile(r"[A-Za-z][A-Za-z'-]*")
 _NUMBER_TOKEN_RE = re.compile(r"\d[\d,]*(?:\.\d+)?%?")
@@ -175,11 +190,24 @@ def _protected_tokens(text: str) -> list[tuple[str, str]]:
     return tokens
 
 
+def _canonical_number(text: str) -> str:
+    """A number's plain decimal form, so ``3.50`` and ``3.5``, or ``1000`` and ``1e3``, compare
+    equal. A string that is not a number comes back unchanged."""
+    try:
+        value = abs(Decimal(text))
+    except InvalidOperation:
+        return text
+    if not value.is_finite():
+        return text
+    return format(value.normalize(), "f")
+
+
 def _narration_numbers(narration_text: str) -> set[str]:
-    return {
+    found = {
         match.group().replace(",", "").rstrip("%")
         for match in _NUMBER_TOKEN_RE.finditer(narration_text)
     }
+    return found | {_canonical_number(number) for number in found}
 
 
 def _narration_words(narration_text: str) -> set[str]:
@@ -202,7 +230,7 @@ def check_scene_text(
     violations: list[ProvenanceViolation] = []
     for token, kind in _protected_tokens(scene_text):
         if kind == "number":
-            allowed = token in narration_numbers
+            allowed = token in narration_numbers or _canonical_number(token) in narration_numbers
         elif kind == "currency":
             allowed = token in narration_text
         else:  # number_word, date_word, unit, proper_noun
@@ -212,35 +240,71 @@ def check_scene_text(
     return violations
 
 
-def _iter_text_slots(
-    content: Mapping[str, object], *, prefix: str = ""
-) -> Iterator[tuple[str, str]]:
+def _walk_leaves(
+    value: object, *, path: str, key: str, in_visual: bool
+) -> Iterator[tuple[str, str, object, bool]]:
+    """Every scalar leaf (string or number; never a bool or null) of a decoded JSON value, at any
+    depth and through lists of anything, as ``(path, owning key, value, inside a visual)``. The
+    path style is ``illustration.description`` / ``labels[0].text`` / ``bullets[1]``."""
+    if isinstance(value, Mapping):
+        for child_key, child in value.items():
+            yield from _walk_leaves(
+                child,
+                path=f"{path}.{child_key}" if path else str(child_key),
+                key=str(child_key),
+                in_visual=in_visual or child_key == "visual",
+            )
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            yield from _walk_leaves(item, path=f"{path}[{index}]", key=key, in_visual=in_visual)
+    elif isinstance(value, bool) or value is None:
+        return
+    elif isinstance(value, str | int | float):
+        yield path, key, value, in_visual
+
+
+def _iter_text_slots(content: Mapping[str, object]) -> Iterator[tuple[str, str]]:
     """Every string leaf in a (possibly nested) scene ``content`` dict, with
     a dotted/indexed path identifying where it came from - illustration
-    descriptions and label text included, since those are exactly the kind
-    of free text a model could use to slip in a fabricated figure.
+    descriptions, label text and a visual's words included, since those are
+    exactly the kind of free text a model could use to slip in a fabricated
+    figure. A visual's enumerated fields (``type``, ``relation``, ``form``) are
+    structure, not text, and are skipped when their value is an allowed one.
     """
-    for key, value in content.items():
-        path = f"{prefix}{key}"
-        if isinstance(value, str):
-            yield path, value
-        elif isinstance(value, list):
-            for index, item in enumerate(value):
-                if isinstance(item, str):
-                    yield f"{path}[{index}]", item
-                elif isinstance(item, Mapping):
-                    yield from _iter_text_slots(item, prefix=f"{path}[{index}].")
-        elif isinstance(value, Mapping):
-            yield from _iter_text_slots(value, prefix=f"{path}.")
+    for path, key, value, in_visual in _walk_leaves(content, path="", key="", in_visual=False):
+        if not isinstance(value, str):
+            continue
+        if in_visual and key in ENUM_FIELDS and value in ENUM_FIELDS[key]:
+            continue
+        yield path, value
+
+
+def _iter_numeric_slots(content: Mapping[str, object]) -> Iterator[tuple[str, int | float]]:
+    """Every numeric JSON leaf of ``content`` - except the integer indices a visual uses to point
+    at its own items (``parent``, ``focus``), which are structure."""
+    for path, key, value, in_visual in _walk_leaves(content, path="", key="", in_visual=False):
+        if isinstance(value, bool) or not isinstance(value, int | float):
+            continue
+        if in_visual and key in STRUCTURAL_INDEX_FIELDS and isinstance(value, int):
+            continue
+        yield path, value
 
 
 def check_provenance(
     content: Mapping[str, object], narration_text: str
 ) -> list[ProvenanceViolation]:
-    """Every hard-rule violation across all of ``content``'s text slots."""
+    """Every hard-rule violation across all of ``content``'s text slots *and* numeric leaves."""
     violations: list[ProvenanceViolation] = []
     for slot_path, text in _iter_text_slots(content):
         violations.extend(check_scene_text(slot_path, text, narration_text))
+    numbers = _narration_numbers(narration_text)
+    for slot_path, number in _iter_numeric_slots(content):
+        if isinstance(number, float) and not math.isfinite(number):
+            violations.append(ProvenanceViolation(slot_path, "number", repr(number)))
+            continue
+        token = _canonical_number(repr(number))
+        if token not in numbers:
+            violations.append(ProvenanceViolation(slot_path, "number", token))
     return violations
 
 

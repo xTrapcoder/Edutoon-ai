@@ -10,9 +10,12 @@ no "section recap" template - a recap is represented as an ordinary
 slot and are fully renderable from text alone; the other three
 (``labelled_diagram``, ``split_text_illustration``, ``full_bleed_illustration``)
 require one bounded :func:`validate_illustration` slot each. No image is ever
-generated in this phase - an illustration slot is only a description and a
-handful of subject labels; the frontend shows "Illustration pending" for it
-and must never pretend the image exists.
+generated - an illustration slot is a description, a handful of subject labels
+and (Phase 11) an optional procedural ``visual``: one of five closed diagram
+forms drawn by the renderer (``domain.visual``). ``labelled_diagram`` is
+honestly a *labelled parts* diagram - structure and words, never a picture of
+the thing. Without a valid visual a scene is drawn by a deterministic text
+fallback; nothing ever pretends an image exists.
 
 **Content is orientation-independent** (spec section 8): the same
 ``content`` dict is valid for both orientations, and
@@ -33,6 +36,7 @@ from dataclasses import dataclass
 from typing import Final, Literal, get_args
 
 from edutoon.domain.generation_settings import Orientation
+from edutoon.domain.visual import VisualSpecError, parse_visual, validate_visual_for_template
 
 Template = Literal[
     "title_card",
@@ -116,12 +120,21 @@ def _optional_str(content: Mapping[str, object], key: str, *, max_chars: int) ->
     return value
 
 
-def validate_illustration(data: object) -> None:
+def validate_illustration(data: object, *, template: str | None = None) -> bool:
     """Validate one bounded illustration specification (spec section 9): a
     required ``description`` (<= 160 chars) and an optional list of up to 3
     ``subject_labels`` (<= 30 chars each). No image, url or icon vocabulary
-    field is ever accepted here - Phase 9 generates no image, and a caller
+    field is ever accepted here - no image is ever generated, and a caller
     must never invent one.
+
+    Phase 11 adds two optional fields, both additive (a Phase 9/10 illustration is still
+    valid unchanged): ``visual`` - a procedural diagram specification
+    (:func:`edutoon.domain.visual.parse_visual`, which also checks it fits ``template``'s
+    region) - and ``visual_dropped`` (``true`` only, and only when there is no ``visual``):
+    the storyboard service's own mark that the model supplied a visual that was not valid and
+    was dropped, so the scene is drawn by the deterministic fallback and a reviewer is told.
+
+    Returns ``True`` if the illustration carries a valid ``visual``.
     """
     mapping = _require_mapping(data, what="illustration")
     _require_str(mapping, "description", max_chars=ILLUSTRATION_DESCRIPTION_MAX_CHARS)
@@ -143,6 +156,21 @@ def validate_illustration(data: object) -> None:
                 "Each illustration.subject_labels entry must be at most "
                 f"{ILLUSTRATION_SUBJECT_LABEL_MAX_CHARS} characters."
             )
+
+    dropped = mapping.get("visual_dropped")
+    if "visual_dropped" in mapping and dropped is not True:
+        raise StoryboardContentError("illustration.visual_dropped must be true when given.")
+    if "visual" not in mapping:
+        return False
+    if dropped is True:
+        raise StoryboardContentError("illustration cannot have both a visual and visual_dropped.")
+    try:
+        visual = parse_visual(mapping["visual"], path="illustration.visual")
+        if template is not None:
+            validate_visual_for_template(template, visual)
+    except VisualSpecError as exc:
+        raise StoryboardContentError(str(exc)) from exc
+    return True
 
 
 def _validate_title_card(content: Mapping[str, object]) -> None:
@@ -169,9 +197,13 @@ def _validate_bullet_points(content: Mapping[str, object]) -> None:
 
 
 def _validate_labelled_diagram(content: Mapping[str, object]) -> None:
-    validate_illustration(content.get("illustration"))
+    has_visual = validate_illustration(content.get("illustration"), template="labelled_diagram")
+    illustration = content.get("illustration")
+    was_dropped = isinstance(illustration, Mapping) and illustration.get("visual_dropped") is True
 
     labels = content.get("labels")
+    if labels is None and (has_visual or was_dropped):
+        return  # a labelled-parts visual carries its own labels; a dropped one leaves none
     if not isinstance(labels, list):
         raise StoryboardContentError("'labels' is required and must be a list.")
     if not (MIN_LABELS <= len(labels) <= MAX_LABELS):
@@ -197,11 +229,11 @@ def _validate_labelled_diagram(content: Mapping[str, object]) -> None:
 
 def _validate_split_text_illustration(content: Mapping[str, object]) -> None:
     _require_str(content, "text", max_chars=SPLIT_TEXT_MAX_CHARS)
-    validate_illustration(content.get("illustration"))
+    validate_illustration(content.get("illustration"), template="split_text_illustration")
 
 
 def _validate_full_bleed_illustration(content: Mapping[str, object]) -> None:
-    validate_illustration(content.get("illustration"))
+    validate_illustration(content.get("illustration"), template="full_bleed_illustration")
     _optional_str(content, "caption", max_chars=CAPTION_MAX_CHARS)
 
 
