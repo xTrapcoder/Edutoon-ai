@@ -289,6 +289,9 @@ class Settings(BaseSettings):
     # scene count; MAX_STORYBOARD_SEGMENTS bounds how many segments (and so provider
     # calls - exactly one per segment, never one per scene) one storyboard generation
     # may cover.
+    # (300 scenes is a scene-count ceiling, not a time limit: at the default scene lengths it
+    # bounds a script to roughly an hour of video, and at ten minutes it is far from binding. It is
+    # enforced with a clear message, never by dropping scenes, and is a long-video item to revisit.)
     MAX_SCENES_PER_SCRIPT: int = Field(default=300, ge=1)
     MAX_STORYBOARD_SEGMENTS: int = Field(default=200, ge=1)
 
@@ -307,10 +310,19 @@ class Settings(BaseSettings):
     # (apps/api/README.md, "Video rendering").
     #
     # MAX_RENDER_DURATION_MS is the longest video one render may produce (10 minutes today;
-    # the chunked design itself does not depend on it). RENDER_WORK_DIR is where a render's
-    # scratch files live ("" = the operating system's temporary directory); before a render
-    # is queued the free space there must cover the estimate plus RENDER_MIN_FREE_DISK_MB.
-    # RENDER_CONCURRENCY is how many chunks one job renders at once.
+    # the chunked design itself does not depend on it). It is the single source of truth for
+    # "the longest video this product can make end to end", so it is also the longest *target* a
+    # script will be written for (``services.scripts``) - writing, narrating and storyboarding a
+    # script that then could not be rendered would spend money on a dead end - and the web app
+    # mirrors it as the longest length it offers. The database and the API schema still accept 1
+    # to 60 minutes (``domain.generation_settings``): the ceiling is a verified capability, not a
+    # data limit, and raising this number is the whole of lifting it once the long-video work
+    # (the scene ceiling below, all-or-nothing generation, real-provider runs) is done.
+    #
+    # RENDER_WORK_DIR is where a render's scratch files live ("" = the operating system's
+    # temporary directory); before a render is queued the free space there must cover the
+    # estimate plus RENDER_MIN_FREE_DISK_MB. RENDER_CONCURRENCY is how many chunks one job
+    # renders at once.
     FFMPEG_BINARY: str = "ffmpeg"
     FFPROBE_BINARY: str = "ffprobe"
     RENDER_VIDEO_ENCODER: Literal["libx264", "h264_nvenc"] = "libx264"

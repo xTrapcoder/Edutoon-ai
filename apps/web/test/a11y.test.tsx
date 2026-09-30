@@ -41,8 +41,12 @@ describe('accessibility', () => {
     const { container } = renderWithClient(<CreateProjectWizard />);
     expect(await violationsIn(container)).toEqual([]);
 
-    await userEvent.click(screen.getByRole('radio', { name: /^Keywords/ }));
+    await userEvent.click(screen.getByRole('radio', { name: /^PDF \+ Keywords/ }));
     await userEvent.type(screen.getByLabelText(/project title/i), 'Digital Electronics');
+    await userEvent.upload(
+      screen.getByLabelText(/drag and drop your pdf/i),
+      new File([new Uint8Array(1000)], 'electronics.pdf', { type: 'application/pdf' }),
+    );
     await userEvent.type(screen.getByLabelText('Add a keyword'), 'Logic gates{Enter}');
     expect(await violationsIn(container)).toEqual([]);
 

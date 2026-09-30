@@ -18,8 +18,8 @@ const USES = [
     'The target duration and language shape the length and style of the script.',
   ],
   [
-    'Later production stages',
-    'Orientation is kept for when scenes and video are added. Nothing is rendered yet.',
+    'Video',
+    'Orientation is the shape of the video that is rendered. Videos up to 10:00 are supported for now.',
   ],
 ] as const;
 
@@ -29,7 +29,7 @@ export function SettingsStep({ values, onChange, disabled }: SettingsStepProps) 
       <GenerationSettingsFields
         value={{
           orientation: values.orientation,
-          durationMinutes: values.durationMinutes,
+          durationMs: values.durationMs,
           language: values.language,
         }}
         disabled={disabled}

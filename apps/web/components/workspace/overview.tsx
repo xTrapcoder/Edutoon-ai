@@ -11,7 +11,7 @@ import { formatBytes, formatDateTime, formatDuration, pluralise } from '@/lib/fo
 import { languageLabel, orientationLabel } from '@/lib/generation-settings';
 import { STAGES, type StageId, type Tone } from '@/lib/workflow';
 import { ActivityCard } from './activity-card';
-import { AddKeywordsForm, AddPdfForm } from './add-source';
+import { AddPdfForm } from './add-source';
 import { DeleteProjectCard } from './delete-project';
 import { EditSettingsModal } from './edit-settings-modal';
 import { useWorkspaceContext } from './workspace-context';
@@ -33,6 +33,10 @@ const GUIDANCE: Record<StageId, Guidance> = {
   needs_source: {
     title: 'Add your source material',
     body: 'Everything in the video will be traced back to what you add here.',
+  },
+  keywords_unsupported: {
+    title: 'Keyword-only projects are not supported yet',
+    body: 'Every claim in a video is checked against your own source material, and keywords alone give nothing to check against. Start a new project from a PDF - you can add keywords to guide it.',
   },
   source_failed: {
     title: "We couldn't read that PDF",
@@ -82,7 +86,6 @@ function NextStepCard() {
   const guidance = GUIDANCE[stage];
   const showPdfForm =
     project.source_type === 'pdf' && (stage === 'needs_source' || stage === 'source_failed');
-  const showKeywordForm = project.source_type === 'topic' && stage === 'needs_source';
 
   return (
     <Card className="overflow-hidden">
@@ -100,7 +103,7 @@ function NextStepCard() {
             </h2>
             <p className="mt-1 max-w-xl text-sm text-ink-500">{guidance.body}</p>
           </div>
-          {next && !showPdfForm && !showKeywordForm ? (
+          {next && !showPdfForm ? (
             <ButtonLink
               href={next.href}
               trailingIcon={<ArrowRight className="size-4" aria-hidden />}
@@ -111,7 +114,6 @@ function NextStepCard() {
         </div>
         {meta.busy ? <Progress label={guidance.title} /> : null}
         {showPdfForm ? <AddPdfForm projectId={project.id} /> : null}
-        {showKeywordForm ? <AddKeywordsForm projectId={project.id} /> : null}
       </CardBody>
     </Card>
   );

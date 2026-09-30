@@ -11,7 +11,7 @@ import { PageHeader } from '@/components/ui/page-header';
 import { describeError } from '@/lib/api/errors';
 import { cn } from '@/lib/cn';
 import {
-  DEFAULT_DURATION_MINUTES,
+  DEFAULT_DURATION_MS,
   DEFAULT_LANGUAGE,
   DEFAULT_ORIENTATION,
 } from '@/lib/generation-settings';
@@ -40,7 +40,7 @@ const INITIAL_VALUES: WizardValues = {
   file: null,
   keywords: [],
   orientation: DEFAULT_ORIENTATION,
-  durationMinutes: DEFAULT_DURATION_MINUTES,
+  durationMs: DEFAULT_DURATION_MS,
   language: DEFAULT_LANGUAGE,
 };
 

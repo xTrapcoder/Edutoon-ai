@@ -14,6 +14,7 @@ import { isActiveJob, latestJobOfKind } from '@/lib/jobs';
 export type StageId =
   | 'unknown'
   | 'needs_source'
+  | 'keywords_unsupported'
   | 'source_failed'
   | 'reading_source'
   | 'ready_for_topics'
@@ -37,6 +38,7 @@ export interface StageMeta {
 export const STAGES: Record<StageId, StageMeta> = {
   unknown: { label: 'Draft', tone: 'neutral', busy: false },
   needs_source: { label: 'Needs source', tone: 'warning', busy: false },
+  keywords_unsupported: { label: 'Keywords not supported yet', tone: 'warning', busy: false },
   source_failed: { label: 'Source problem', tone: 'danger', busy: false },
   reading_source: { label: 'Reading source', tone: 'info', busy: true },
   ready_for_topics: { label: 'Ready for topics', tone: 'neutral', busy: false },
@@ -94,6 +96,7 @@ export interface WorkflowInput {
 const STAGE_STEP: Record<StageId, number> = {
   unknown: 0,
   needs_source: 0,
+  keywords_unsupported: 0,
   source_failed: 0,
   reading_source: 0,
   ready_for_topics: 1,
@@ -148,6 +151,10 @@ export function deriveStage(input: WorkflowInput): StageId {
         return 'script_failed';
     }
   }
+  // A keyword-only project (made before the mode was switched off) has nothing to verify claims
+  // against and cannot go further: say so, plainly, rather than leading the person on.
+  if (project.source_type === 'topic') return 'keywords_unsupported';
+
   // Without the script list we cannot tell whether a script exists, so say no more than "draft".
   if (scripts === undefined && jobs === undefined) return 'unknown';
 
@@ -177,6 +184,8 @@ function nextActionFor(stage: StageId, projectId: string): NextAction | null {
   switch (stage) {
     case 'needs_source':
       return { label: 'Add source material', href: base };
+    case 'keywords_unsupported':
+      return { label: 'Start a PDF project', href: '/projects/new' };
     case 'source_failed':
       return { label: 'Upload a different PDF', href: base };
     case 'reading_source':

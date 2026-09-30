@@ -1323,6 +1323,15 @@ async function route(req: IncomingMessage, res: ServerResponse) {
       return send(res, 422, {
         error: { code: 'VALIDATION_ERROR', message: 'Request validation failed.' },
       });
+    // Mirrors the API: a keyword-only project cannot be created (the seeded one below stands
+    // for a project made before that was switched off).
+    if (body.source_type === 'topic')
+      return fail(
+        res,
+        400,
+        'validation_error',
+        'Keyword-only projects are not supported yet. Every claim in a video must be checked against your own source material, and keywords alone give nothing to check against. Upload a PDF - you can add keywords to guide it.',
+      );
     const p = project({
       title: body.title,
       source_type: body.source_type as string,

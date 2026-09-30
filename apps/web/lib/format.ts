@@ -24,6 +24,19 @@ export function formatDuration(ms: number): string {
   return minutes === 0 ? `${hours} h` : `${hours} h ${minutes} min`;
 }
 
+/**
+ * A length the person chose, exactly: "5 minutes" for a whole number of minutes, otherwise
+ * "3 min 45 s". Unlike {@link formatDuration} it never rounds, because a target can be any
+ * whole number of seconds.
+ */
+export function formatTargetDuration(ms: number): string {
+  const totalSeconds = Math.round(ms / 1000);
+  if (totalSeconds % 60 === 0) return formatDuration(totalSeconds * 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return minutes === 0 ? `${seconds} s` : `${minutes} min ${String(seconds).padStart(2, '0')} s`;
+}
+
 /** "2 min 05 s" - for how long a running job has been going. */
 export function formatElapsed(ms: number): string {
   const totalSeconds = Math.max(0, Math.floor(ms / 1000));

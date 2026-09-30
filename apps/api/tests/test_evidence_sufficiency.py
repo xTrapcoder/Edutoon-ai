@@ -208,7 +208,13 @@ async def test_one_claim_and_a_five_minute_target_is_refused_before_any_job_exis
     assert (await jobs_repo.list_by_project(db_session, project.id)).items == []
 
 
-async def test_a_sixty_minute_target_over_thin_evidence_is_refused(db_session, real_default):
+async def test_a_sixty_minute_target_over_thin_evidence_is_refused(
+    db_session, real_default, monkeypatch
+):
+    # Lift the render ceiling (a separate guard) to reach the evidence guard: this is what the
+    # guard will say the day a 60-minute video can be made.
+    monkeypatch.setenv("MAX_RENDER_DURATION_MS", "3600000")
+    get_settings.cache_clear()
     owner, project, _topics, _claims = await _project_with_topics(
         db_session,
         [("A", ["a1", "a2"]), ("B", ["b1", "b2"]), ("C", ["c1", "c2"])],
@@ -283,3 +289,60 @@ async def test_the_guard_does_not_change_the_no_evidence_message(db_session, rea
 
     with pytest.raises(ValidationError, match="no verified evidence yet"):
         await _enqueue(db_session, project, owner)
+
+
+# --- the longest supported length ---------------------------------------------------------------
+
+
+async def test_a_target_longer_than_the_longest_renderable_video_is_refused_before_anything_else(
+    db_session, real_default
+):
+    """The first paid step is where an unsupported length stops: a script that could not be
+    rendered would be written, narrated and storyboarded for nothing. The model still holds 1-60
+    minutes; the ceiling is the render limit, the one number to raise when long video is done."""
+    owner, project, _topics, _claims = await _project_with_topics(
+        db_session,
+        [("A", [f"a{i}" for i in range(15)])] * 1,
+        target_duration_ms=11 * MINUTE,
+    )
+
+    with pytest.raises(ValidationError) as caught:
+        await _enqueue(db_session, project, owner)
+
+    assert "target of 11:00 is longer than the longest video that can be made today (10:00)" in (
+        caught.value.message
+    )
+    assert "Shorten the target" in caught.value.message
+    assert (await jobs_repo.list_by_project(db_session, project.id)).items == []
+
+
+async def test_a_target_exactly_at_the_ceiling_is_not_refused_for_its_length(
+    db_session, real_default
+):
+    owner, project, _topics, _claims = await _project_with_topics(
+        db_session,
+        [(f"T{t}", [f"t{t}c{i}" for i in range(15)]) for t in range(2)],
+        target_duration_ms=10 * MINUTE,
+    )  # 2 topics x 15 claims: 2 x (450 + 10) + 15 = 935 s, enough for 10:00
+
+    result = await _enqueue(db_session, project, owner)
+
+    assert result.job.status == "queued"
+
+
+async def test_the_ceiling_is_the_render_limit_so_raising_it_lifts_it(
+    db_session, real_default, monkeypatch
+):
+    owner, project, _topics, _claims = await _project_with_topics(
+        db_session,
+        [(f"T{t}", [f"t{t}c{i}" for i in range(15)]) for t in range(3)],
+        target_duration_ms=20 * MINUTE,
+    )  # 3 x (450 + 10) + 15 = 1395 s: enough evidence for 20:00
+    with pytest.raises(ValidationError, match="longer than the longest video"):
+        await _enqueue(db_session, project, owner, key="before")
+
+    monkeypatch.setenv("MAX_RENDER_DURATION_MS", str(30 * MINUTE))
+    get_settings.cache_clear()
+    result = await _enqueue(db_session, project, owner, key="after")
+
+    assert result.job.status == "queued"

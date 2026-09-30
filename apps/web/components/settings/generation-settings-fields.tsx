@@ -6,19 +6,22 @@ import type { Language, Orientation } from '@edutoon/contracts';
 import { Card, CardBody, CardHeader } from '@/components/ui/card';
 import { RadioCard } from '@/components/ui/radio-card';
 import { cn } from '@/lib/cn';
-import { formatDuration } from '@/lib/format';
+import { formatTargetDuration } from '@/lib/format';
 import {
-  isValidDurationMinutes,
+  durationProblem,
+  formatClock,
+  isValidDurationMs,
   LANGUAGE_OPTIONS,
-  MAX_DURATION_MINUTES,
-  MIN_DURATION_MINUTES,
-  minutesToMs,
+  MAX_SUPPORTED_DURATION_MS,
+  MIN_DURATION_MS,
+  MS_PER_SECOND,
   ORIENTATION_OPTIONS,
+  parseClock,
 } from '@/lib/generation-settings';
 
 export interface GenerationSettingsValue {
   orientation: Orientation;
-  durationMinutes: number;
+  durationMs: number;
   language: Language;
 }
 
@@ -43,26 +46,29 @@ function OrientationGlyph({ orientation }: { orientation: Orientation }) {
 }
 
 function DurationControl({
-  minutes,
+  durationMs,
   onChange,
   disabled,
 }: {
-  minutes: number;
-  onChange: (minutes: number) => void;
+  durationMs: number;
+  onChange: (durationMs: number) => void;
   disabled?: boolean;
 }) {
   const sliderId = useId();
-  const numberId = useId();
+  const boxId = useId();
   const errorId = useId();
-  const [text, setText] = useState(String(minutes));
+  const [text, setText] = useState(formatClock(durationMs));
 
-  // Keep the box in step when the slider (or a reset) changes the value.
+  // Keep the box in step when the slider (or a reset) changes the value - but never rewrite what
+  // the person is typing: "3" already means 3:00, and turning it into "3:00" under their cursor
+  // would break "3:45".
   useEffect(() => {
-    setText(String(minutes));
-  }, [minutes]);
+    setText((current) => (parseClock(current) === durationMs ? current : formatClock(durationMs)));
+  }, [durationMs]);
 
-  const typed = Number(text);
-  const invalid = text.trim() === '' || !isValidDurationMinutes(typed);
+  const typed = parseClock(text);
+  const problem = durationProblem(typed);
+  const invalid = problem !== null;
 
   return (
     <div className="space-y-4">
@@ -72,58 +78,64 @@ function DurationControl({
             Target duration
           </label>
           <p className="text-sm text-ink-600">
-            Choose from {MIN_DURATION_MINUTES} to {MAX_DURATION_MINUTES} minutes.{' '}
-            <span className="font-semibold text-ink-950">
-              {formatDuration(minutesToMs(minutes))}
-            </span>{' '}
+            Any length from {formatClock(MIN_DURATION_MS)} to{' '}
+            {formatClock(MAX_SUPPORTED_DURATION_MS)}, to the second.{' '}
+            <span className="font-semibold text-ink-950">{formatTargetDuration(durationMs)}</span>{' '}
             selected.
+          </p>
+          <p className="mt-1 text-[13px] text-ink-500">
+            Videos longer than {formatClock(MAX_SUPPORTED_DURATION_MS)} are not supported yet.
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <label htmlFor={numberId} className="sr-only">
-            Target duration in minutes
+          <label htmlFor={boxId} className="sr-only">
+            Target duration, minutes and seconds
           </label>
           <input
-            id={numberId}
-            type="number"
+            id={boxId}
+            type="text"
             inputMode="numeric"
-            min={MIN_DURATION_MINUTES}
-            max={MAX_DURATION_MINUTES}
-            step={1}
+            autoComplete="off"
+            placeholder="5:00"
             value={text}
             disabled={disabled}
             aria-invalid={invalid || undefined}
             aria-describedby={invalid ? errorId : undefined}
             onChange={(event) => {
               setText(event.target.value);
-              const next = Number(event.target.value);
-              if (event.target.value.trim() !== '' && isValidDurationMinutes(next)) onChange(next);
+              const next = parseClock(event.target.value);
+              if (next !== null && durationProblem(next) === null) onChange(next);
             }}
-            onBlur={() => setText(String(minutes))}
-            className="h-10 w-20 rounded-md border border-line-strong bg-surface px-3 text-center text-sm font-semibold text-ink-900 shadow-xs focus:border-brand-500 focus-visible:outline-2 focus-visible:outline-offset-0 focus-visible:outline-brand-500/40 aria-[invalid=true]:border-danger-600"
+            onBlur={() => setText(formatClock(durationMs))}
+            className="h-10 w-24 rounded-md border border-line-strong bg-surface px-3 text-center text-sm font-semibold text-ink-900 shadow-xs focus:border-brand-500 focus-visible:outline-2 focus-visible:outline-offset-0 focus-visible:outline-brand-500/40 aria-[invalid=true]:border-danger-600"
           />
-          <span className="text-sm text-ink-600">minutes</span>
+          <span className="text-sm text-ink-600">min:sec</span>
         </div>
       </div>
       <input
         id={sliderId}
         type="range"
-        min={MIN_DURATION_MINUTES}
-        max={MAX_DURATION_MINUTES}
-        step={1}
-        value={minutes}
+        min={MIN_DURATION_MS}
+        max={MAX_SUPPORTED_DURATION_MS}
+        step={MS_PER_SECOND}
+        value={Math.min(Math.max(durationMs, MIN_DURATION_MS), MAX_SUPPORTED_DURATION_MS)}
         disabled={disabled}
-        aria-valuetext={formatDuration(minutesToMs(minutes))}
+        aria-valuetext={formatTargetDuration(durationMs)}
         onChange={(event) => onChange(Number(event.target.value))}
         className="h-2 w-full cursor-pointer accent-brand-600"
       />
       <div className="flex justify-between text-xs text-ink-500" aria-hidden>
-        <span>{MIN_DURATION_MINUTES} min</span>
-        <span>{MAX_DURATION_MINUTES} min</span>
+        <span>{formatClock(MIN_DURATION_MS)}</span>
+        <span>{formatClock(MAX_SUPPORTED_DURATION_MS)}</span>
       </div>
       {invalid ? (
         <p id={errorId} role="alert" className="text-[13px] font-medium text-danger-700">
-          Enter a whole number of minutes from {MIN_DURATION_MINUTES} to {MAX_DURATION_MINUTES}.
+          {problem}
+        </p>
+      ) : null}
+      {!invalid && !isValidDurationMs(durationMs) ? (
+        <p role="alert" className="text-[13px] font-medium text-danger-700">
+          {durationProblem(durationMs)}
         </p>
       ) : null}
     </div>
@@ -205,8 +217,8 @@ export function GenerationSettingsFields({ value, onChange, disabled, framed = t
         icon={<Clock className="size-4" aria-hidden />}
       >
         <DurationControl
-          minutes={value.durationMinutes}
-          onChange={(durationMinutes) => onChange({ ...value, durationMinutes })}
+          durationMs={value.durationMs}
+          onChange={(durationMs) => onChange({ ...value, durationMs })}
           disabled={disabled}
         />
       </Group>

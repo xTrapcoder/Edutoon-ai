@@ -112,6 +112,28 @@ function TopicsView() {
     : null;
   const failed = extraction?.status === 'failed';
 
+  // --- a keyword-only project: there is nothing to verify claims against ------------------
+  if (workflow.stage === 'keywords_unsupported' && !hasTopics) {
+    return (
+      <Card>
+        <CardHeader
+          title="Keyword-only projects are not supported yet"
+          description="Every claim in a video is checked against your own source material, and keywords alone give nothing to check against."
+          icon={<FilePlus2 className="size-4" aria-hidden />}
+        />
+        <CardBody className="space-y-3">
+          <p className="text-sm text-ink-600">
+            Start a new project from a PDF. You can add keywords to it to steer which topics it
+            covers.
+          </p>
+          <ButtonLink href="/projects/new" leadingIcon={<Plus className="size-4" aria-hidden />}>
+            Start a PDF project
+          </ButtonLink>
+        </CardBody>
+      </Card>
+    );
+  }
+
   // --- the source is not ready ---------------------------------------------------------
   const sourceMissing = workflow.stage === 'needs_source' || workflow.stage === 'source_failed';
   if (sourceMissing && !hasTopics) {

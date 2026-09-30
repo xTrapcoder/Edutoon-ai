@@ -12,12 +12,12 @@ import { Alert } from '@/components/ui/feedback';
 import { Modal } from '@/components/ui/modal';
 import { describeError } from '@/lib/api/errors';
 import { useUpdateProject } from '@/lib/api/queries';
-import { isValidDurationMinutes, minutesToMs, msToMinutes } from '@/lib/generation-settings';
+import { isValidDurationMs } from '@/lib/generation-settings';
 
 function valuesFrom(project: Project): GenerationSettingsValue {
   return {
     orientation: project.orientation,
-    durationMinutes: msToMinutes(project.target_duration_ms),
+    durationMs: project.target_duration_ms,
     language: project.language,
   };
 }
@@ -38,11 +38,11 @@ export function EditSettingsModal({
   const patch: ProjectUpdateRequest = {};
   if (value.orientation !== project.orientation) patch.orientation = value.orientation;
   if (value.language !== project.language) patch.language = value.language;
-  if (minutesToMs(value.durationMinutes) !== project.target_duration_ms) {
-    patch.target_duration_ms = minutesToMs(value.durationMinutes);
+  if (value.durationMs !== project.target_duration_ms) {
+    patch.target_duration_ms = value.durationMs;
   }
   const changed = Object.keys(patch).length > 0;
-  const valid = isValidDurationMinutes(value.durationMinutes);
+  const valid = isValidDurationMs(value.durationMs);
 
   const close = () => {
     if (update.isPending) return;

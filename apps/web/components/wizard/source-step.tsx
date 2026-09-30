@@ -2,12 +2,15 @@
 
 import { FilePlus2, FileText, ListChecks } from 'lucide-react';
 import { useId } from 'react';
+import { Badge } from '@/components/ui/badge';
 import { Card, CardBody, CardHeader } from '@/components/ui/card';
 import { Field, Input } from '@/components/ui/field';
 import { RadioCard } from '@/components/ui/radio-card';
 import { FileDropzone } from './file-dropzone';
 import { KeywordInput } from './keyword-input';
 import {
+  isModeAvailable,
+  KEYWORD_ONLY_UNSUPPORTED_MESSAGE,
   MAX_TITLE_CHARS,
   suggestTitle,
   usesKeywords,
@@ -42,7 +45,7 @@ const MODES: readonly {
   {
     value: 'keywords',
     title: 'Keywords',
-    description: 'Enter the topics manually',
+    description: 'Not available yet - use a PDF and add keywords to guide it',
     icon: ListChecks,
   },
   {
@@ -106,13 +109,27 @@ export function SourceStep({
                   name={`${name}-mode`}
                   value={mode.value}
                   checked={values.mode === mode.value}
+                  disabled={!isModeAvailable(mode.value)}
                   onChange={() => onChange({ mode: mode.value })}
                   icon={<mode.icon className="size-5" aria-hidden />}
                   title={mode.title}
+                  badge={
+                    isModeAvailable(mode.value) ? undefined : <Badge tone="warning">Not yet</Badge>
+                  }
                   description={mode.description}
                 />
               ))}
             </div>
+            <p className="text-[13px] text-ink-500">
+              Keyword-only projects are not supported yet: every claim in a video is checked against
+              your own source material, and keywords alone give nothing to check against. Upload a
+              PDF, and add keywords if you want to steer which topics it covers.
+            </p>
+            {errors.mode ? (
+              <p role="alert" className="text-[13px] font-medium text-danger-700">
+                {errors.mode || KEYWORD_ONLY_UNSUPPORTED_MESSAGE}
+              </p>
+            ) : null}
 
             <div
               className={

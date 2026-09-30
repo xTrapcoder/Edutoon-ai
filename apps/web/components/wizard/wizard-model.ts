@@ -1,5 +1,5 @@
 import type { Language, Orientation, ProjectSourceType } from '@edutoon/contracts';
-import { isValidDurationMinutes } from '@/lib/generation-settings';
+import { durationProblem } from '@/lib/generation-settings';
 
 /**
  * The create-project form: what is asked for, and the checks made before anything is sent.
@@ -15,13 +15,28 @@ export const MAX_TITLE_CHARS = 200;
 
 export type SourceMode = 'pdf' | 'keywords' | 'both';
 
+/**
+ * Whether a project can be built from keywords alone. It cannot yet: every claim in a video is
+ * checked against the person's own material, and keywords alone give nothing to check against, so
+ * the API refuses to create one. The choice stays visible (people ask for it) but cannot be picked.
+ * PDF + keywords, where the keywords guide a PDF, is supported.
+ */
+export const KEYWORD_ONLY_SUPPORTED = false;
+
+export const KEYWORD_ONLY_UNSUPPORTED_MESSAGE =
+  'Keyword-only projects are not supported yet. Every claim in a video must be checked against your own source material, and keywords alone give nothing to check against. Upload a PDF - you can add keywords to guide it.';
+
+export const isModeAvailable = (mode: SourceMode): boolean =>
+  mode !== 'keywords' || KEYWORD_ONLY_SUPPORTED;
+
 export interface WizardValues {
   title: string;
   mode: SourceMode;
   file: File | null;
   keywords: string[];
   orientation: Orientation;
-  durationMinutes: number;
+  /** The target length in milliseconds - any whole number of seconds in range. */
+  durationMs: number;
   language: Language;
 }
 
@@ -93,6 +108,7 @@ export function suggestTitle(fileName: string): string {
 
 export interface SourceErrors {
   title?: string;
+  mode?: string;
   file?: string;
   keywords?: string;
 }
@@ -103,6 +119,8 @@ export function sourceErrors(values: WizardValues): SourceErrors {
   if (title.length === 0) errors.title = 'Give your project a name.';
   else if (title.length > MAX_TITLE_CHARS)
     errors.title = `Keep the name under ${MAX_TITLE_CHARS} characters.`;
+
+  if (!isModeAvailable(values.mode)) errors.mode = KEYWORD_ONLY_UNSUPPORTED_MESSAGE;
 
   if (usesPdf(values.mode)) {
     if (!values.file) errors.file = 'Choose a PDF to upload.';
@@ -120,7 +138,6 @@ export function sourceErrors(values: WizardValues): SourceErrors {
 export const hasErrors = (errors: object): boolean => Object.keys(errors).length > 0;
 
 export function settingsErrors(values: WizardValues): { duration?: string } {
-  return isValidDurationMinutes(values.durationMinutes)
-    ? {}
-    : { duration: 'Choose a whole number of minutes from 1 to 60.' };
+  const problem = durationProblem(values.durationMs);
+  return problem === null ? {} : { duration: problem };
 }

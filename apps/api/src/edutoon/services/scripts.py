@@ -187,7 +187,9 @@ async def enqueue_script_generation(
     give every accepted topic the ``MIN_SECTION_DURATION_MS`` floor; or any
     accepted topic has zero *supported* claims of its own. A repeat call with
     the same ``idempotency_key`` returns the original result with
-    ``replayed=True``. It also raises ``ValidationError`` when the verified evidence cannot carry
+    ``replayed=True``. It raises ``ValidationError`` when the project's target is longer than the
+    longest video that can be rendered (``MAX_RENDER_DURATION_MS``), and when the verified
+    evidence cannot carry
     the project's target duration (``domain.evidence_sufficiency``): a script is never padded.
 
     The job's payload freezes exactly which accepted topics this run covers
@@ -215,6 +217,17 @@ async def enqueue_script_generation(
     await _recover_stale_generations(session, project_id=project_id)
 
     settings = get_settings()
+
+    # The first paid step is where an unsupported length is refused: a script that could not be
+    # rendered would be written, narrated and storyboarded for nothing.
+    if project.target_duration_ms > settings.MAX_RENDER_DURATION_MS:
+        target = format_clock(project.target_duration_ms)
+        ceiling = format_clock(settings.MAX_RENDER_DURATION_MS)
+        raise ValidationError(
+            f"This project's target of {target} is longer than the longest video that can be "
+            f"made today ({ceiling}). Shorten the target in the project's settings, then write "
+            "the script."
+        )
 
     topics = await project_topics_repo.list_all_by_project(session, project_id)
     eligible = accepted_topics(topics)

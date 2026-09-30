@@ -6,7 +6,6 @@ import * as api from '@/lib/api/endpoints';
 import { newIdempotencyKey } from '@/lib/api/client';
 import { ApiError } from '@/lib/api/errors';
 import { queryKeys } from '@/lib/api/queries';
-import { minutesToMs } from '@/lib/generation-settings';
 import { projectSourceType, usesKeywords, usesPdf, type WizardValues } from './wizard-model';
 
 export type CreationStepKey = 'project' | 'upload' | 'keywords';
@@ -95,7 +94,7 @@ export function useProjectCreation() {
               source_type: projectSourceType(values.mode),
               language: values.language,
               orientation: values.orientation,
-              target_duration_ms: minutesToMs(values.durationMinutes),
+              target_duration_ms: values.durationMs,
             },
             attemptKeys.project,
           );

@@ -5,8 +5,8 @@ import { Button, ButtonLink } from '@/components/ui/button';
 import { Card, CardBody, CardHeader } from '@/components/ui/card';
 import { Alert } from '@/components/ui/feedback';
 import { describeError } from '@/lib/api/errors';
-import { formatBytes, formatDuration } from '@/lib/format';
-import { languageLabel, minutesToMs, orientationLabel } from '@/lib/generation-settings';
+import { formatBytes, formatTargetDuration } from '@/lib/format';
+import { languageLabel, orientationLabel } from '@/lib/generation-settings';
 import type { CreationStep } from './use-project-creation';
 import { usesKeywords, usesPdf, type WizardValues } from './wizard-model';
 
@@ -53,7 +53,7 @@ export function ReviewSummary({ values }: { values: WizardValues }) {
             </Row>
           ) : null}
           <Row label="Orientation">{orientationLabel(values.orientation)}</Row>
-          <Row label="Target duration">{formatDuration(minutesToMs(values.durationMinutes))}</Row>
+          <Row label="Target duration">{formatTargetDuration(values.durationMs)}</Row>
           <Row label="Language">{languageLabel(values.language)}</Row>
         </dl>
       </CardBody>

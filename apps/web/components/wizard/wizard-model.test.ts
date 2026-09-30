@@ -1,9 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   fileProblem,
+  isModeAvailable,
+  KEYWORD_ONLY_SUPPORTED,
+  KEYWORD_ONLY_UNSUPPORTED_MESSAGE,
   MAX_KEYWORDS,
   mergeKeywords,
   projectSourceType,
+  settingsErrors,
   sourceErrors,
   suggestTitle,
   type WizardValues,
@@ -18,7 +22,7 @@ const values = (over: Partial<WizardValues> = {}): WizardValues => ({
   file: pdf(),
   keywords: [],
   orientation: 'horizontal',
-  durationMinutes: 5,
+  durationMs: 300_000,
   language: 'en-IN',
   ...over,
 });
@@ -65,10 +69,48 @@ describe('sourceErrors', () => {
       title: 'Give your project a name.',
       file: 'Choose a PDF to upload.',
     });
-    expect(sourceErrors(values({ mode: 'keywords', file: null, keywords: [] }))).toEqual({
+    expect(sourceErrors(values({ mode: 'both', file: null, keywords: [] }))).toEqual({
+      file: 'Choose a PDF to upload.',
       keywords: 'Add at least one keyword.',
     });
-    expect(sourceErrors(values({ mode: 'keywords', file: null, keywords: ['a'] }))).toEqual({});
+    expect(sourceErrors(values({ mode: 'both', keywords: ['a'] }))).toEqual({});
+  });
+});
+
+describe('keyword-only projects', () => {
+  it('are not supported yet, and the only mode that is refused', () => {
+    expect(KEYWORD_ONLY_SUPPORTED).toBe(false);
+    expect(isModeAvailable('keywords')).toBe(false);
+    expect(isModeAvailable('pdf')).toBe(true);
+    expect(isModeAvailable('both')).toBe(true);
+  });
+
+  it('cannot be submitted even with keywords filled in', () => {
+    const errors = sourceErrors(values({ mode: 'keywords', file: null, keywords: ['a'] }));
+    expect(errors.mode).toBe(KEYWORD_ONLY_UNSUPPORTED_MESSAGE);
+    expect(Object.keys(errors)).toEqual(['mode']);
+  });
+
+  it('say why, and what to do instead, in the same words the API uses', () => {
+    expect(KEYWORD_ONLY_UNSUPPORTED_MESSAGE).toContain(
+      'Keyword-only projects are not supported yet',
+    );
+    expect(KEYWORD_ONLY_UNSUPPORTED_MESSAGE).toContain('Upload a PDF');
+  });
+});
+
+describe('settingsErrors', () => {
+  it('accepts any whole number of seconds from 1:00 to 10:00', () => {
+    for (const durationMs of [60_000, 61_000, 225_000, 331_000, 600_000]) {
+      expect(settingsErrors(values({ durationMs }))).toEqual({});
+    }
+  });
+
+  it('refuses a length that is too short, or longer than can be made yet, and says which', () => {
+    expect(settingsErrors(values({ durationMs: 59_000 })).duration).toMatch(/shorter than 1:00/);
+    expect(settingsErrors(values({ durationMs: 1_800_000 })).duration).toMatch(
+      /longer than 10:00 are not supported yet/,
+    );
   });
 });
 
