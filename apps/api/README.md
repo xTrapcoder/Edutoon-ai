@@ -576,7 +576,7 @@ configuration.
 ## Video rendering
 
 Phase 10 turns an approved script - with fully measured narration and a complete
-storyboard - into a real, seekable MP4: **H.264 High + AAC-LC, 30 fps**, 1920×1080
+storyboard - into a real, seekable MP4: **H.264 High + AAC-LC, 60 fps**, 1920×1080
 (horizontal) or 1080×1920 (vertical) at `high` quality, and half that size at `low`
 (a review render). Rendering makes no provider call and needs no key: it reads what
 Phases 8 and 9 stored and produces pictures and bytes. No image is generated. Since
@@ -789,8 +789,8 @@ one banner "Timings update when narration finishes." and keeps its per-scene sta
 | | `high` | `low` |
 | --- | --- | --- |
 | Size | 1920×1080 / 1080×1920 | 960×540 / 540×960 |
-| H.264 | High profile, level 4.0, `yuv420p`, BT.709 limited range, CRF 20, preset `medium` | High, level 3.1, CRF 30, `veryfast` |
-| GOP / B-frames | 60 frames, none (a chunk's last frame must be removable without re-encoding) | same |
+| H.264 | High profile, **level 4.2**, `yuv420p`, BT.709 limited range, CRF 20, preset `medium` | High, **level 3.2**, CRF 30, `veryfast` |
+| GOP / B-frames | 2 seconds = 120 frames, none (a chunk's last frame must be removable without re-encoding) | same |
 | x264 tuning | `scenecut=0:threads=4:rc-lookahead=10` | same |
 | Audio | AAC-LC, mono, 22 050 Hz (the narration's own format - never widened to stereo / 48 kHz), 96 kb/s target (≈ 109 kb/s achieved) | 64 kb/s target |
 | Container | MP4, `+faststart` (index first: plays and seeks before it has downloaded) | same |
@@ -801,10 +801,11 @@ works on this machine's RTX 3050 Ti but is not faster (the compositor, not the e
 bottleneck - 190 fps vs 220 fps for libx264 on a 1080p chunk) and produced 66% larger files
 (138 KB vs 83 KB for the same chunk), so `libx264` stays the default.
 
-**30 fps** rather than 24 or 25: slides, fades and slides-in are visibly smoother, the cost over 25
-is ~20% more frames of mostly-static content (a few percent of bytes), and web/phone playback is
-frame-rate agnostic, so there is no Indian-versus-European convention to honour. Phase 9 stores no
-frame rate; only the render configuration does.
+**60 fps** (it was 30 through Phase 11; the change and why the H.264 level had to change with it
+are in "Reliability and safety before the first real-provider run"). Level 4.2 / 3.2 are the lowest
+valid levels for 1080p and 540p at 60 fps, derived from the frame size rather than trusted
+(`domain.render.minimum_level_idc`). Slides, fades and slide-ins are smoother, and web/phone playback
+is frame-rate agnostic. Phase 9 stores no frame rate; only the render configuration does.
 
 x264's default thread count (one frame-thread per logical core, 20 here) held ~2 GB of frames in
 flight per render and was no faster; limiting it to four cut peak memory by about two thirds
@@ -842,7 +843,8 @@ The worker (1) plans the render and checks every stored chunk is real - its row 
 the project's prefix, its object exists with the recorded size (a missing or damaged one is forgotten and
 re-rendered); (2) renders the missing chunks (`RENDER_CONCURRENCY`, default 2 at a time), each uploaded and
 recorded in its own short transaction the moment it finishes; (3) only when every chunk exists, downloads
-them, assembles the narration and the video, **verifies the result with `ffprobe`** (codecs, size, 30 fps,
+them, assembles the narration and the video, **verifies the result with `ffprobe`** (codecs, profile and level
+- including that the level is valid for the pictures it holds - size, 60 fps and constant frame rate,
 exact frame count, both streams' durations within 120 ms of the narration, `+faststart`) and publishes it.
 A chunk that fails does not stop the others or discard finished work: the job ends `failed` with
 "*N* render section(s) need another attempt" and `result.failed_chunk_hashes`, and **Retry**
@@ -863,6 +865,9 @@ result - so a partly rendered video can never read as finished.
 script the caller does not own is a 404 on every route.
 
 ### Measured on this machine (i7-12700H, 14 cores / 20 threads, 16 GB, RTX 3050 Ti unused by libx264)
+
+> **These Phase 10 and Phase 11 tables were measured at 30 fps**, before the pre-API pass moved production to 60 fps. They
+> stay as history of how the design scales; today's numbers are in "Measured at 60 fps" below.
 
 A real lesson - 48 segments narrated by Piper (576 s of audio), a 120-scene storyboard using all six templates
 (scene text from a deterministic stand-in for the composer, through the real storyboard job) -
@@ -938,6 +943,52 @@ prefix-sum drift, the read model showing the stale `start_ms`, `timings_authorit
 a fade applied inside a topic or removed at a boundary, and more): **41 killed, 0 survived**; the Phase 10 script's 26
 are killed again.
 
+### Measured at 60 fps (pre-API pass, `scripts/verify_phase11.py`)
+
+Same machine, method and stand-ins as the two sections above (real Piper narration, the real storyboard job, the real
+compositor and FFmpeg; the storyboard *composer* is the deterministic stand-in because no LLM key exists), re-run after the
+frame rate, H.264 level and GOP changed. `uv run python scripts/verify_phase11.py` (2.5 minutes, 20 checks: **20 of 20
+passed**) and `--minutes 10 --perf-only` (**8 of 8 passed**). **MEASURED:**
+
+| Project | Render | Time | Output | Frames (found / expected) | Peak RAM (worker + FFmpeg) | Machine CPU (mean) |
+| --- | --- | --- | --- | --- | --- | --- |
+| 2.4 min, 30 scenes, 4 topics | horizontal `high` 1920x1080 | 39.4 s | 5.60 MB | 8 656 / 8 656 | 1.07 GB | 66% |
+| | vertical `high` 1080x1920 | 39.6 s | 5.57 MB | 8 656 / 8 656 | 1.10 GB | 71% |
+| | horizontal `low` 960x540 | 11.7 s | 2.21 MB | 8 656 / 8 656 | 0.75 GB | 56% |
+| | vertical `low` 540x960 | 11.4 s | 2.25 MB | 8 656 / 8 656 | 0.79 GB | 53% |
+| 9.7 min (581.98 s), 120 scenes, 14 dropped visuals | horizontal `high` | 149.2 s (15.4 s per video minute, 0.26x real time) | 22.84 MB | 34 919 / 34 919 | 1.21 GB (+0.69 GB over the worker's idle) | 67% |
+| | vertical `high` | 149.7 s | 22.62 MB | 34 919 / 34 919 | 1.26 GB | 66% |
+
+`ffprobe` on the 9.7 minute horizontal file: H.264 **High, level 4.2**, 1920x1080, `yuv420p`, BT.709 limited range, no
+B-frames, `r_frame_rate` = `avg_frame_rate` = **60/1** (constant), time base 1/60000, 34 919 frames over 581.983 s; AAC-LC
+mono 22 050 Hz, 581.977 s. **All 34 918 packet timestamps, presentation and decode, are exactly 1 000 ticks (1/60 s)
+apart** - no gap, no overlap - and there are 384 keyframes (a GOP is 2 seconds, and a chunk starts on one). The vertical file
+is identical in every field but the size. Both decode end to end with no errors. Video is 6.3 ms longer than the narration
+(the half-up frame rounding); audio is 0.0 ms different; horizontal and vertical audio are byte-identical. 34 919 is
+`round(581 977 x 60 / 1000)`, as the absolute-frame rule requires.
+
+| Check (2.4 min project) | Result |
+| --- | --- |
+| Every visual form (process flow, cycle, hierarchy, comparison, labelled parts as hub and layers) and all six templates | present in both orientations; the three text fallbacks and the glyph scenes (`→ ≤ ✓`) drawn, none blank |
+| Repeat render after deleting every chunk and video | byte-identical (same SHA-256), 30 chunks redrawn |
+| Nothing changed | 0 chunks drawn, the stored video returned |
+| Edit one visual's title | 1 of 30 chunks re-rendered, 29 reused |
+| Re-narrate one segment (real Piper) | 1 composer call, 2 of 30 chunks re-rendered, 28 reused; the new video is frame-exact (8 844 / 8 844); the read model showed the *current* start of the next segment with `timings_authoritative: false`, then `true` after regeneration |
+| Same-topic cuts (26) and topic boundaries (4) | straight cuts inside a topic (outgoing last frame at 1.0 of steady content); fades to and from the bare background at the four boundaries and the video's ends |
+
+What the numbers say. **Sixty frames a second costs time, not memory or much size**: the render took about 45% longer than
+the 30 fps run of the same length (149 s against 103 s; not a controlled comparison - the scenes differ - but the direction is
+the extra frames to encode); peak memory is flat (1.21 GB against 1.22 GB) because chunks are still rendered, uploaded and
+discarded one at a time; and the file came out *smaller* (22.8 MB against 30.5 MB; again different scenes) - a static frame costs almost nothing to
+encode, and most frames are static. Projected linearly, and **not run at these lengths**: 30 minutes is about 7.7 minutes of rendering
+and 71 MB, 60 minutes about 15 minutes and 142 MB. The frame counts for 1, 5, 10, 30 and 60 minutes (3 600, 18 000, 36 000,
+108 000, 216 000) are held by unit tests of the frame arithmetic, not by renders. The disk-space estimate
+(`ESTIMATED_VIDEO_BYTES_PER_SECOND`) still sits above the measured 39 KB/s at `high` (estimate 80) and 15 KB/s at `low` (estimate 27), so it
+was left as it was: over-estimating is the safe direction for a free-space check.
+
+**Not measured:** GPU use (libx264 does not use it; it was not sampled in this run, and Phase 10 sampled 0%); a render at
+exactly the 10:00 ceiling (the longest was 9.7 minutes, 581 977 ms); any render longer than that; `h264_nvenc` at 60 fps.
+
 ### Not decided / not verified
 
 - **H.264 and AAC patent licensing, and distributing an FFmpeg build that contains libx264 (GPL),** are business/legal decisions.
@@ -962,6 +1013,200 @@ are killed again.
   overwrites it if the same chunk is rendered again, but deleting the project cannot remove it, because no row names it.
   The same is true of an upload racing a project deletion.
 - Rendered on Windows only; the Linux container path (FFmpeg on PATH, the vendored fonts) is unverified.
+
+## Reliability and safety before the first real-provider run
+
+A pass made after Phase 11 and before any real API key is used, from an audit of the code. It adds
+no feature: it makes what exists fail safely, cost visibly and say honestly what it cannot do yet.
+Nothing here has been run against a real provider - every provider call in its tests is a stand-in
+(`pytest.mark.provider_mocked`). Each item says what is **implemented** (in the code, covered by
+tests), what was **verified locally** (run for real on this machine), and what stays **unverified
+against a real provider**.
+
+**Before any real testing, set a monthly spend limit in the OpenAI and Anthropic consoles.** The
+application has no billing and does not try to reproduce the providers'; the in-process guards below
+stop a runaway, not a budget.
+
+### 60 fps, and an H.264 level that is valid for it
+
+The production frame rate is a constant **60 fps** (`domain.render.FPS`; it was 30). The change is not
+the constant: an H.264 stream signals a *level* that bounds its macroblock rate, and a decoder may
+refuse a stream whose level is too low for its pictures. 1080p at 60 fps is 489 600 macroblocks a
+second; level 4.0 and 4.1 allow 245 760 (enough for 30 fps, not 60), level 4.2 allows 522 240. So `high`
+now signals **4.2** and `low` (960×540, 122 400 a second) **3.2**. `domain.render.minimum_level_idc`
+derives the lowest valid level from ITU-T H.264 Annex A Table A-1, a test holds each shipped profile
+to exactly that level for both orientations, `build_render_plan` refuses a profile whose level is too
+low for the frame size at the rate, and `check_output` verifies the finished file's own profile,
+level and constant frame rate - and that the level it signals is valid for the pictures it *holds*, so
+a falsely signalled file is refused, not published. The keyframe interval is stated in seconds
+(`GOP_SECONDS` = 2, 120 frames). `RENDERER_VERSION` is `pillow-ffmpeg/4`, a one-time intentional
+invalidation of every cached chunk (fps, profile and GOP were already fingerprint inputs, so none could
+have been reused). Frame positions are unchanged in kind: `frame = round(t_ms * fps / 1000)` from an
+absolute time, so a duration of *any* number of milliseconds has exactly `round(ms * 60 / 1000)`
+frames - 1, 5, 10, 30 and 60 minutes are 3 600 / 18 000 / 36 000 / 108 000 / 216 000 - with no
+drift however many scenes it is cut into. **Verified locally:** see "Measured at 60 fps" under "Video rendering".
+
+### Embeddings: batching and retry
+
+Indexing used to be one embeddings call for every chunk of a source. OpenAI's
+`text-embedding-3-small` allows 2 048 inputs and 300 000 tokens a request and 8 192 tokens an input, so a
+dense or long PDF could fail the whole document with nothing indexed. **Implemented:**
+`domain.embedding_batches` groups inputs into requests that respect all three (the real tokenizer is not
+a dependency, so a text's size is estimated by its UTF-8 bytes - a strict upper bound for any script,
+at the price of a few more, smaller requests); an input over the per-input limit is embedded **in windows
+whose vectors are pooled into the chunk's one vector** - nothing is ever truncated; `index_source` commits
+each batch as it is stored, so a failed batch costs only itself and a retry re-embeds only the chunks
+still missing a vector (a vector lives on the chunk, so nothing can be duplicated); the vector width
+(1 536) is checked before it is stored. Transient failures (429, 408, 409, 5xx, timeouts, dropped
+connections) are retried by the one policy in `providers.retry` (`PROVIDER_RETRY_*`, exponential backoff
+with jitter, `Retry-After` honoured and capped); an exhausted quota (a 429 with `insufficient_quota`)
+and every other 4xx are never retried. A *failed* indexing job can be retried through
+`POST /v1/projects/{id}/sources/{source_id}/index` (an `Idempotency-Key`, 404 across projects, 409 while
+queued, running or done): the same job is re-queued with its attempts reset, so a source still has exactly
+one indexing job. Model and dimension are unchanged. **Unverified:** the real token behaviour of the
+estimate and the real windowing quality of a very long page.
+
+### Language-model calls: fail clearly, never produce misleading content
+
+**Implemented** (`providers/llm.py`). Every capability passes one check before any of a response is
+read: a `refusal` (`LLMRefusalError`), `max_tokens`, `model_context_window_exceeded`, any other
+incomplete stop reason, a missing or wrongly named tool call and a tool input that is not an object
+all fail the call with a message for the owner. (The claim judge used to ignore `stop_reason`, so a
+rationale cut off mid-way could parse into a verdict.) Thinking is sent explicitly as
+`{"type": "disabled"}` (`LLM_THINKING`; `omit` leaves it out): a forced `tool_choice` cannot be combined
+with thinking and the model thinks adaptively when it is omitted, so with it off the output ceilings are
+all answer tokens. The SDK's own retries are off; `providers.retry` applies, with a per-attempt timeout
+(`LLM_TIMEOUT_SECONDS`). Tool schemas and prompts are unchanged, and **the model is unchanged:
+`claude-sonnet-5`** (`LLM_MODEL`, `SCRIPT_LLM_MODEL`). Models that reject a forced `tool_choice` or a
+disabled `thinking` value need more than a setting; that migration is not part of this pass.
+**Unverified:** that `claude-sonnet-5` accepts exactly this request shape, and its real stop reasons.
+
+### Token usage
+
+**Implemented.** `domain.llm_usage` records usage by kind of call - `topic_extraction`,
+`claim_extraction`, `claim_judge`, `script_outline`, `script_section`, `script_correction` (the bounded
+duration-correction pass, kept apart because it is the cost of missing the target), `storyboard` - on
+every job's `result["usage"]`, failed jobs and responses that were paid for and then rejected
+included (`LLMResponseError.usage`). A metric the provider did not return is `null` - unavailable, never
+zero - and `calls_with_usage` below `calls` says the sums are a lower bound. `GET
+/v1/projects/{id}/jobs/usage` sums a project's jobs. A claim typed in by hand has no job; its usage is
+in the `llm.call` log line, which every call writes (kind, model, stop reason, tokens, seconds - never
+its content).
+
+### Spend safety
+
+**Implemented** (`services/spend_guard.py`, `services/llm_usage.py`): (1) every job stops before the call
+that would exceed `MAX_PROVIDER_CALLS_PER_JOB` (500) - a tripwire against a runaway loop, held by a test to
+be at least five times above the proven worst case of any job (a full-length script makes at most 65),
+so it never fires on legitimate work; the existing `domain.script_duration.max_provider_calls` bound is
+untouched. (2) A project may start `MAX_PROVIDER_JOBS_PER_PROJECT_PER_HOUR` (30) paid jobs (indexing,
+topic and claim extraction, script and storyboard generation) and have
+`MAX_MANUAL_CLAIM_VERIFICATIONS_PER_PROJECT_PER_HOUR` (120) claims verified by hand; past that a request
+is a **429** before anything starts (an upload is refused before its bytes are stored). Counts come from
+the jobs and claims tables, a failed job counts, an idempotent replay never does. Rendering and narration
+are local compute with their own one-at-a-time guards and are not counted. This is not a quota system.
+
+### Evidence per minute
+
+**Implemented** (`domain/evidence_sufficiency.py`). The duration allocator will share any target across
+any evidence, so one supported claim and a 60-minute target still asked the model for an hour of
+narration, which can only be filled by repeating the fact or inventing more. Script generation now refuses
+that at enqueue time, from counts alone, before a job or any paid call exists. The rule is a
+**conservative heuristic, not a measurement**: a supported claim carries at most 30 s of narration
+(`EVIDENCE_SECONDS_PER_CLAIM`; about 75 words), each topic earns 10 s of connective narration, the lesson
+15 s, and a topic uses at most `MAX_CLAIMS_PER_SECTION` claims. A five-minute lesson needs about a dozen
+supported claims over a few topics; one claim cannot carry any target. The message says what the
+evidence can carry (for example 0:55) and what would fix it. Re-tune the allowance against the first
+real run; never to make an unsupported target pass. **Unverified:** how close 30 s is to what a real
+model can honestly do with a real claim.
+
+### Script grounding
+
+**Implemented** (`domain/script_provenance.py`). A segment marked `connective` is exempt from citing
+only up to 80 words. Every number, currency amount, month name and proper noun in *any* segment must
+appear in the claims the writer was shown for that segment's topic, or in the project's and topics' own
+titles, otherwise the generation fails (`UngroundedSegmentError`; nothing is attached). It reuses the
+storyboard token detector and leaves teaching language alone: number words ("first", "one"), everyday time
+words, sentence-initial capitals, possessives and the digits in chemical formulas (`CO2`, `H2O`) are free.
+It is a safety guard, not fact verification: it never judges whether a sentence is *true*, only that it does
+not introduce a figure or a name from nowhere, and it cannot see a fact stated in ordinary words.
+
+### Storyboard provenance: fall back, do not fail
+
+**Implemented** (`domain.storyboard_provenance.resolve_provenance`). Unsupported text in a scene's own
+slots still fails the segment. Unsupported text confined to its *illustration* (description, labels,
+diagram - where false positives live) falls back instead: the visual is dropped, or the scene becomes a
+text-only bullet slide built from the narration's own sentences. No second provider call; the storyboard stays
+complete; the fallback is logged, counted in the job's result (`provenance_visual_fallback_count`,
+`provenance_text_fallback_count`) and flagged for a reviewer. Unsupported figures and names never reach a
+stored scene.
+
+### PDF resource safety
+
+**Implemented.** An upload that declares more than `MAX_UPLOAD_BYTES` (plus 1 MiB of multipart framing) is
+refused with a 413 before its body is read, and a chunked body is cut off once it outgrows the limit
+(`api.middleware`); the route reads at most one byte past the limit. Pages are counted before any text
+is extracted. Whatever the PDF parser raises on hostile input is an unreadable file. A PDF with no
+extractable text (a scan, or nothing but page numbers) is recorded as `failed`, never "parsed" with zero
+chunks, and is not queued for indexing; a source's `failure_reason` (derived, not stored) says whether it
+could not be read, was too long, or had no text. The whole file is still held in memory while it is
+stored and parsed (up to 100 MB): streaming it is future work.
+
+### Keyword-only projects are switched off
+
+**Implemented** (`KEYWORD_ONLY_PROJECTS_ENABLED`, default `false`). With keywords and no material there is
+nothing to verify against, so a keyword-only project cannot produce a verified script. Creating one is a 400,
+a topic extraction from keywords alone is refused at enqueue and again when the job runs, and the wizard's
+Keywords card is disabled with an explanation; an existing keyword-only project shows a clear "not supported
+yet" stage. PDF projects, with or without keywords, are unaffected; no data model was removed. If the mode
+returns it should be a separate mode that says its output is unverified.
+
+### Duration: any length, up to what can actually be made
+
+The model, the database and the API schema hold milliseconds and accept 1 to 60 minutes. What is
+*supported end to end* is what rendering was built and verified to: `MAX_RENDER_DURATION_MS`, **10 minutes**.
+The web app offers any whole number of seconds from 1:00 to 10:00 (never presets) and says longer videos
+are not supported yet; script generation, the first paid step, refuses a longer target. Raising that
+setting lifts the limit in the API; the web app mirrors it in `lib/generation-settings.ts`.
+
+### Jobs: a live job is never reclaimed, and a reclaimed worker stops
+
+**Implemented.** Stale recovery measures a running job's silence from the later of its start and the last
+progress it reported (`payload.progress.updated_at`), so a long generation or render that keeps reporting is
+never failed, and one that goes quiet is reclaimed `*_STALE_AFTER_SECONDS` after its last word. Progress is
+written through `jobs.record_progress`, which refuses once the job is no longer `running`; the four progress
+writers then raise `JobAbandonedError`, so a worker whose job was reclaimed anyway (a machine that slept) stops
+at its next checkpoint instead of spending twice. Indexing reports progress per batch and its retry reclaims a
+dead indexing job. No migration.
+
+### Cleanup: what is done, and what is deferred
+
+Done: deleting a project removes its PDFs, narration audio and render objects (after the commit); a finished
+render prunes the chunks it no longer uses; a worker sweeps the scratch directories a killed render left
+behind (`sweep_abandoned_work_dirs`, narrowly matched and age-guarded). **Deferred, on purpose:** the narration audio
+and rendered videos of a *superseded* script stay in storage until the project is deleted (about 26 MB of audio
+and 32 MB of video per ten minutes per regeneration) - a collector must be written and tested with care because it
+deletes, and a bucket lifecycle rule is the simpler stop-gap; an object orphaned by a crash between an upload and its row
+is overwritten by a retry or, otherwise, only by a lifecycle rule.
+
+### Licensing and legal - not settled by any of this
+
+H.264 and AAC patent licensing; shipping an FFmpeg build with libx264 (GPL); Piper's `piper-tts`
+(GPL-3.0-or-later) for customer-facing distribution; Remotion's licence (not used). Choosing an encoder
+settles none of them; they are business and legal decisions.
+
+### Long-video work that remains (do not claim 60 minutes until it is done)
+
+The render ceiling above; `MAX_SCENES_PER_SCRIPT` (300, a scene-count ceiling that is far from binding at ten minutes);
+script and claim generation that are all-or-nothing (a failure late in a long generation discards it);
+`piper-tts` synthesis time and a 60-minute script's roughly 150 MB of WAV; the whole video being fetched
+into the browser before it plays (a proxy route is worth it beyond ten minutes); and a real-provider run at each
+length. Expanding these is a later, targeted task after the first controlled real-provider evaluation.
+
+### The first real-provider evaluation
+
+Planned, not done: a controlled educational PDF, a 3-5 minute target, the current model, usage and stop-reason
+capture, a provenance review, measured against target duration, and a manual review of the video.
 
 ## Testing, and what is not yet verified against a real provider
 
@@ -990,7 +1235,7 @@ the genuine local MinIO. `pytest.mark.provider_mocked` does not apply to it.
 1. **Keys and models.** That the keys authenticate and that `LLM_MODEL` and
    `EMBEDDING_MODEL` (and the `claude-sonnet-5` default) are available to the
    accounts.
-2. **Keywords-only extraction** against a live model.
+2. ~~Keywords-only extraction~~ - switched off (`KEYWORD_ONLY_PROJECTS_ENABLED=false`); see "Reliability and safety".
 3. **Long-PDF extraction:** how much of a real document the
    `TOPIC_INPUT_BUDGET_CHARS` sample covers, and the quality of the citations.
 4. **`scripts/smoke_test_phase4.py`**, run unmodified, against the real providers.
@@ -1023,14 +1268,17 @@ the genuine local MinIO. `pytest.mark.provider_mocked` does not apply to it.
 
 - **No way to cancel a job.** An extraction queued while no worker is running holds
   the project's keyword and wording edits (`409`) until a worker takes it.
-- **Only `extract_topics` and `extract_claims` jobs are recovered after a worker
-  crash.** An abandoned `build_evidence` or `generate_script` job stays `running`.
-- **No retries.** A failed job is run again by a new request with a new key.
+- **A job a worker crashed on is failed by the next request that needs the project**, not by a
+  timer: recovery runs when something is enqueued (or, for indexing, retried), measured from the job's
+  last progress (see "Jobs: a live job is never reclaimed").
+- **A failed job is run again by a new request with a new key** (a failed indexing job by its retry
+  route). Transient *provider* failures inside a call are retried (`providers.retry`).
 - **One model call over a budgeted sample.** A long document is sampled evenly
   (`truncated` says so), not read in windows; an outline the model returns that is
   too deep or has too many topics fails the extraction rather than being trimmed.
-- **No per-user rate limit or quota** on extraction: each `replace` run costs a
-  model call. Credits come with the ledger, in a later phase.
+- **No per-user quota or billing.** There is a per-job tripwire and a per-project hourly limit on
+  paid work (see "Spend safety"), not a meter: the provider consoles' spend limits are the real
+  ceiling. Credits come with the ledger, in a later phase.
 - **Replacing topics is guarded, not locked, against a script that references
   them.** The check is repeated immediately before the delete, which narrows the
   window to milliseconds but does not close it. Nothing links scripts to topics

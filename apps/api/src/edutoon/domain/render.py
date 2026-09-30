@@ -245,8 +245,10 @@ DURATION_TOLERANCE_MS: Final = 120
 # --- benchmark-derived sizing (MEASURED on the development machine; see the README) --------
 # Bytes of finished video per second of output, per quality; used only to size the disk check
 # and the estimate shown before a render. MEASURED on a real 10-minute lesson (text, shapes and
-# illustration placeholders): 53 KB/s at ``high`` and 18 KB/s at ``low``. Rounded up by half
-# again, since busier content (real photographs, once illustrations exist) will need more.
+# illustration placeholders): 53 KB/s at ``high`` and 18 KB/s at ``low``, at 30 fps. At 60 fps a
+# 9.7 minute lesson measured 39 KB/s at ``high`` and (2.4 minutes) 15 KB/s at ``low`` - smaller,
+# since a static frame is nearly free - so the figures below were left as they were: rounded up by
+# half again, since busier content (real photographs, once illustrations exist) will need more.
 ESTIMATED_VIDEO_BYTES_PER_SECOND: Final[Mapping[str, int]] = {"low": 27_000, "high": 80_000}
 
 

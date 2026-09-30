@@ -145,9 +145,8 @@ no provider call - never a scene squeezed under the minimum.
 **Pending real-provider verification when company API keys become available**
 (nothing below is verified; see `apps/api/README.md`, "Testing, and what is not yet
 verified against a real provider"): the keys and model availability
-(`LLM_MODEL`, `EMBEDDING_MODEL`, `SCRIPT_LLM_MODEL`), keywords-only extraction,
-long-PDF extraction, the quality of candidate claim extraction, the teacher-style
-tone and quality of `compose_script_outline` / `compose_script_section`, the
+(`LLM_MODEL`, `EMBEDDING_MODEL`, `SCRIPT_LLM_MODEL`), long-PDF extraction, the quality of
+candidate claim extraction, the teacher-style tone and quality of `compose_script_outline` / `compose_script_section`, the
 real quality of `compose_storyboard_scenes`' template choices and provenance
 compliance, `apps/api/scripts/smoke_test_phase4.py` run unmodified, and the
 real quality, latency and token behaviour of every prompt. No test calls an
@@ -173,9 +172,10 @@ LLM/embeddings providers.
 **Phase 10 - professional video rendering: built, and verified end to end on this
 machine (see `apps/api/README.md`, "Video rendering").** An approved script with fully
 measured narration and a complete storyboard renders to a real MP4: H.264 High +
-AAC-LC mono 22.05 kHz, 30 fps, 1920x1080 or 1080x1920 (`high`) or half-size (`low`, a
-review render), with `+faststart`. The engine is a **Pillow scene compositor feeding
-FFmpeg** behind a `Renderer` interface (`providers/renderer`); Remotion was rejected on
+AAC-LC mono 22.05 kHz, **60 fps** (H.264 level 4.2 for `high`, 3.2 for `low` - the lowest
+valid levels at that rate, derived not trusted; the pre-API pass below), 1920x1080 or
+1080x1920 (`high`) or half-size (`low`, a review render), with `+faststart`. The engine is a
+**Pillow scene compositor feeding FFmpeg** behind a `Renderer` interface (`providers/renderer`); Remotion was rejected on
 licensing (a paid company licence above three people) and is not used. All six
 storyboard templates render from text alone; since Phase 11 an illustrated scene's diagram
 is drawn procedurally from a structured `visual` (below), and a scene without one is drawn
@@ -237,6 +237,26 @@ scenes showing stale times.
 against a stand-in only); the procedural vocabulary is deliberately small (a concept outside the
 five shapes is drawn as text); the Pillow / FreeType library versions are deliberately **not** in
 the fingerprint (a documented gap - bump `RENDERER_VERSION` when upgrading them).
+
+**Pre-API reliability pass (after Phase 11, before any real key is used).** Migration head is
+still **0016**; no phase was started; nothing was run against a real provider (see
+`apps/api/README.md`, "Reliability and safety before the first real-provider run", which
+separates implemented / verified locally / unverified / future work). In short: production video
+is **60 fps** with a valid H.264 level and `RENDERER_VERSION` `pillow-ffmpeg/4`; embeddings are
+batched to the provider's limits (never truncating) and transient provider failures are retried by
+one policy; every language-model response is checked for refusal, truncation and malformed tool
+calls before it is read, thinking is explicitly disabled, and the model is unchanged
+(`claude-sonnet-5`); token usage is recorded by kind of call on every job's `result["usage"]`
+(`GET /v1/projects/{id}/jobs/usage`); a per-job provider-call tripwire and a per-project hourly limit
+guard spend (the provider consoles' spend limits must still be set); a target the verified claims
+cannot honestly fill is refused before any paid call (`domain/evidence_sufficiency.py`), a script's
+figures and names must come from its claims, and a storyboard illustration that fails provenance falls
+back instead of failing the segment; oversized uploads are refused before parsing, pages are counted
+before extraction and a PDF with no text is a clear failure; **keyword-only projects are switched off**
+(`KEYWORD_ONLY_PROJECTS_ENABLED`); the UI offers any length to the second from 1:00 to **10:00** (`MAX_RENDER_DURATION_MS`; the longest
+render verified at 60 fps was 9.7 minutes) while the model keeps 1-60 minutes; a live
+job is never reclaimed as stale and a reclaimed worker stops. Not settled: H.264/AAC/x264/Piper licensing,
+long-video (over ten minutes) work, cleanup of superseded scripts' audio and videos.
 
 **Phase 12 has not started and needs the owner's explicit approval.**
 

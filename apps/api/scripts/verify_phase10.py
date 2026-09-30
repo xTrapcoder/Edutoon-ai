@@ -352,7 +352,7 @@ async def make_project(
             )
             ctx.user_id = user.id
         project = await projects_service.create_project(
-            session, owner_id=ctx.user_id, title=title, source_type="topic", orientation=orientation
+            session, owner_id=ctx.user_id, title=title, source_type="pdf", orientation=orientation
         )
         script = await scripts_repo.create(
             session,
