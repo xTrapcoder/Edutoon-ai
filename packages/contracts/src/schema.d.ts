@@ -93,6 +93,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/sources/{source_id}/index": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Retry Source Indexing
+         * @description Retry a source's *failed* indexing (embedding). The job keeps its identity and only the
+         *     chunks still missing a vector are embedded, so a retry never duplicates work or evidence.
+         *     A source that is still being indexed, or already is, is a 409. Two-level ownership check
+         *     (rule 9), like ``GET .../chunks``; needs an ``Idempotency-Key`` (rule 8).
+         */
+        post: operations["retry_source_indexing_v1_projects__project_id__sources__source_id__index_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/sources/{source_id}/chunks": {
         parameters: {
             query?: never;
@@ -418,6 +441,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/jobs/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Project Usage
+         * @description What the language model has cost this project so far, by kind of call - the sum of what
+         *     its jobs recorded (``services.jobs.usage_for_project``).
+         */
+        get: operations["get_project_usage_v1_projects__project_id__jobs_usage_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/jobs": {
         parameters: {
             query?: never;
@@ -712,6 +756,20 @@ export interface components {
             orientation?: ("horizontal" | "vertical") | null;
             /** Target Duration Ms */
             target_duration_ms?: number | null;
+        };
+        /**
+         * ProjectUsageResponse
+         * @description What the language model has cost a project, by kind of call. ``by_call`` holds only the
+         *     kinds that were used; the keys are ``topic_extraction``, ``claim_extraction``,
+         *     ``claim_judge``, ``script_outline``, ``script_section``, ``script_correction`` and
+         *     ``storyboard``.
+         */
+        ProjectUsageResponse: {
+            total: components["schemas"]["UsageEntryResponse"];
+            /** By Call */
+            by_call: {
+                [key: string]: components["schemas"]["UsageEntryResponse"];
+            };
         };
         /**
          * RenderEnqueueRequest
@@ -1352,6 +1410,8 @@ export interface components {
              * @enum {string}
              */
             status: "pending" | "processing" | "parsed" | "failed";
+            /** Failure Reason */
+            failure_reason?: string | null;
             /**
              * Created At
              * Format: date-time
@@ -1362,6 +1422,26 @@ export interface components {
              * Format: date-time
              */
             updated_at: string;
+        };
+        /**
+         * UsageEntryResponse
+         * @description Language-model usage for one kind of call, or in total. A token figure is ``null`` when the
+         *     provider reported none - unavailable, never guessed as zero; ``calls_with_usage`` below
+         *     ``calls`` means the sums are a lower bound.
+         */
+        UsageEntryResponse: {
+            /** Calls */
+            calls: number;
+            /** Calls With Usage */
+            calls_with_usage: number;
+            /** Input Tokens */
+            input_tokens: number | null;
+            /** Output Tokens */
+            output_tokens: number | null;
+            /** Cache Creation Input Tokens */
+            cache_creation_input_tokens: number | null;
+            /** Cache Read Input Tokens */
+            cache_read_input_tokens: number | null;
         };
         /** ValidationError */
         ValidationError: {
@@ -1679,6 +1759,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["UploadedSourceResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    retry_source_indexing_v1_projects__project_id__sources__source_id__index_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "idempotency-key": string;
+                authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+                source_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobResponse"];
                 };
             };
             /** @description Validation Error */
@@ -2519,6 +2634,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_project_usage_v1_projects__project_id__jobs_usage_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectUsageResponse"];
                 };
             };
             /** @description Validation Error */
