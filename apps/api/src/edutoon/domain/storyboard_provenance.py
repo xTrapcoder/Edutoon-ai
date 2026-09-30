@@ -53,6 +53,26 @@ that few content words are shared verbatim.
   quietly. Its enumerated fields (``type``, ``relation``, ``form``) hold structure, not claims,
   and are skipped only when the value is one of the allowed ones.
 
+## What happens when the check fails (the fallback)
+
+:func:`resolve_provenance` is what a storyboard job calls. The check above finds *tokens*, and a
+token in a scene's illustration - the description that stands in for a picture, its labels, the
+procedural diagram's words - is the likeliest place for a false positive: an illustration describes
+a picture, and a description says "two arrows" or names the Sun where the narration said "sun". So
+a violation confined to the illustration is not allowed to fail the whole segment, and it is never
+allowed through either:
+
+1. if removing the procedural ``visual`` alone leaves nothing unsupported, the scene keeps its text
+   and is drawn by the template's deterministic fallback (marked ``illustration.visual_dropped``,
+   which the read model already counts and shows);
+2. otherwise the scene is replaced by a plain text-only bullet slide built from the narration's own
+   sentences (marked ``provenance_fallback``, which the read model flags for a reviewer) - text that
+   is supported by construction, no provider call needed, and the storyboard stays complete.
+
+A violation in the scene's *own* text - its title, bullets, caption, labels, formula - is the hard
+failure it always was: text a viewer reads as the lesson must be supported, and there is nothing to
+fall back to that keeps the scene.
+
 ## What normalisation does not catch
 
 - A number spelled out in the scene that the narration also spells out but
@@ -79,9 +99,10 @@ import re
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
-from typing import Final
+from typing import Final, Literal
 
-from edutoon.domain.visual import ENUM_FIELDS, STRUCTURAL_INDEX_FIELDS
+from edutoon.domain.storyboard_template import BULLET_MAX_CHARS, MAX_BULLETS, MIN_BULLETS
+from edutoon.domain.visual import ENUM_FIELDS, STRUCTURAL_INDEX_FIELDS, with_visual_dropped
 
 _WORD_RE = re.compile(r"[A-Za-z][A-Za-z'-]*")
 # A digit run counts as a number unless a letter sits right before it: the 2 in CO2, the 12 in
@@ -345,6 +366,84 @@ def require_provenance(content: Mapping[str, object], narration_text: str) -> No
     violations = check_provenance(content, narration_text)
     if violations:
         raise FabricatedContentError(violations)
+
+
+# --- the fallback ---------------------------------------------------------------------------
+
+FALLBACK_MARKER: Final = "provenance_fallback"
+"""The key a text-only replacement scene carries in its content (``true``), so a reader can tell it
+was not the model's scene."""
+
+FallbackKind = Literal["visual_dropped", "text_only"]
+
+_FALLBACK_BULLETS: Final = 3
+_CLAUSE_SPLIT_RE = re.compile(r"[,;:]\s+|\s+(?:and|but|because|so|which|while)\s+")
+
+
+@dataclass(frozen=True, slots=True)
+class ProvenanceResolution:
+    """A scene after the provenance check: what to store, and whether it had to fall back."""
+
+    template: str
+    content: dict[str, object]
+    fallback: FallbackKind | None
+
+
+def _in_illustration(slot_path: str) -> bool:
+    return slot_path == "illustration" or slot_path.startswith(("illustration.", "illustration["))
+
+
+def _fit(text: str, limit: int) -> str:
+    """``text`` without its closing punctuation, at most ``limit`` characters, cut at a space."""
+    text = " ".join(text.split()).rstrip(".!?;:, ")
+    if len(text) <= limit:
+        return text
+    cut = text.rfind(" ", 0, limit + 1)
+    return text[: cut if cut > 0 else limit].rstrip(".!?;:, ")
+
+
+def safe_text_only_content(narration_text: str) -> dict[str, object] | None:
+    """A ``bullet_points`` scene made only of the narration's own words: its first sentences, or -
+    for a narration with fewer than two - its first clauses, or its words split in half. Every
+    token in it is one the narration contains, so it passes the provenance check by construction.
+    ``None`` if the narration is too short to make :data:`MIN_BULLETS` bullets from."""
+    sentences = [s for s in _SENTENCE_SPLIT_RE.split(narration_text.strip()) if s.strip()]
+    pieces = [_fit(sentence, BULLET_MAX_CHARS) for sentence in sentences[:_FALLBACK_BULLETS]]
+    if len(pieces) < MIN_BULLETS:
+        clauses = [c for c in _CLAUSE_SPLIT_RE.split(narration_text.strip()) if c.strip()]
+        pieces = [_fit(clause, BULLET_MAX_CHARS) for clause in clauses[:_FALLBACK_BULLETS]]
+    if len(pieces) < MIN_BULLETS:
+        words = narration_text.split()
+        middle = len(words) // 2
+        pieces = [_fit(" ".join(words[:middle]), BULLET_MAX_CHARS)]
+        pieces.append(_fit(" ".join(words[middle:]), BULLET_MAX_CHARS))
+    pieces = [piece for piece in pieces if piece][:MAX_BULLETS]
+    if len(pieces) < MIN_BULLETS:
+        return None
+    return {"bullets": pieces, FALLBACK_MARKER: True}
+
+
+def resolve_provenance(
+    template: str, content: Mapping[str, object], narration_text: str
+) -> ProvenanceResolution:
+    """``content`` if it passes the provenance check; otherwise the safest scene that does (module
+    docstring, "What happens when the check fails"). Raises :class:`FabricatedContentError` -
+    with every violation - only when a scene's own text is unsupported, or when no fallback is
+    clean."""
+    violations = check_provenance(content, narration_text)
+    if not violations:
+        return ProvenanceResolution(template, dict(content), None)
+    if any(not _in_illustration(violation.slot_path) for violation in violations):
+        raise FabricatedContentError(violations)
+
+    without_visual = with_visual_dropped(content)
+    if without_visual is not None and not check_provenance(without_visual, narration_text):
+        return ProvenanceResolution(template, without_visual, "visual_dropped")
+
+    replacement = safe_text_only_content(narration_text)
+    if replacement is not None and not check_provenance(replacement, narration_text):
+        return ProvenanceResolution("bullet_points", replacement, "text_only")
+    raise FabricatedContentError(violations)
 
 
 def has_lexical_overlap(

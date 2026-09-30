@@ -938,17 +938,20 @@ async def test_a_value_chart_is_not_in_the_vocabulary_so_it_is_dropped(db_sessio
     assert status.dropped_visual_count == 1
 
 
-async def test_a_value_chart_cannot_smuggle_numbers_in_they_are_a_hard_provenance_failure(
+async def test_a_value_chart_cannot_smuggle_numbers_in_they_are_dropped_with_the_visual(
     db_session, monkeypatch
 ):
     """Numbers stored as JSON values must appear in the narration exactly like numbers in text -
-    so even a visual that would only be dropped fails the segment if its values are invented."""
+    so a visual whose values are invented is never drawn: it is dropped, the scene is kept, and
+    the invented numbers are nowhere in what is stored."""
     chart = {"type": "value_chart", "values": [73, 42]}
     job, status, _ = await _run(
         db_session, monkeypatch, {0: _diagram(chart, with_labels=True)}, narrations=[WATER]
     )
-    assert job.status == "failed"
-    assert status.dropped_visual_count == 0
+    assert job.status == "succeeded" and job.result["outcome"] == "complete"
+    assert status.dropped_visual_count == 1 and status.is_complete is True
+    assert "73" not in str(status.segments[0].scenes[0].scene.content)
+    assert job.result["provenance_visual_fallback_count"] == 1
 
 
 async def test_a_visual_too_big_for_a_split_scene_is_dropped(db_session, monkeypatch):
@@ -1038,36 +1041,49 @@ async def test_regenerating_a_scene_with_a_valid_visual_clears_the_dropped_count
     assert again.dropped_visual_count == 0
 
 
-# provenance stays a hard failure ------------------------------------------------------------
+# provenance is never weakened: unsupported text never reaches a stored scene -----------------
+# Text in a scene's own slots still fails the segment. Text confined to its illustration no longer
+# does (that is where false positives live): the visual is dropped, or the scene becomes a
+# text-only slide built from the narration - the storyboard stays complete, no call is repeated,
+# and the fallback is recorded and flagged.
 
 
-async def test_fabricated_text_in_a_valid_visual_rejects_the_segment(db_session, monkeypatch):
+async def test_fabricated_text_in_a_valid_visual_drops_the_visual_and_keeps_the_scene(
+    db_session, monkeypatch
+):
     fabricated = _flow_visual(
         "Water evaporates", "Rain over Delhi"
     )  # Delhi is not in the narration
     job, status, _ = await _run(
         db_session, monkeypatch, {0: _diagram(fabricated)}, narrations=[WATER]
     )
-    assert job.status == "failed"  # the only segment failed
-    assert status.segments[0].scenes == ()
-    assert status.dropped_visual_count == 0
+    [scene] = status.segments[0].scenes
+    assert job.status == "succeeded" and status.is_complete is True
+    assert status.dropped_visual_count == 1
+    assert "Delhi" not in str(scene.scene.content)  # the unsupported fact is nowhere on the scene
+    assert scene.scene.content["illustration"]["visual_dropped"] is True
+    assert job.result["provenance_visual_fallback_count"] == 1
+    assert job.result["provenance_text_fallback_count"] == 0
+    assert job.result["provider_calls"] == 1  # the fallback needed no second call
 
 
-async def test_fabricated_text_in_an_invalid_visual_is_not_downgraded_to_a_dropped_visual(
+async def test_fabrication_in_an_invalid_visual_is_dropped_and_recorded_as_provenance(
     db_session, monkeypatch
 ):
-    """The visual is structurally invalid (one step) AND fabricates a number: it must not be
-    quietly dropped - the segment fails, exactly as for any fabrication."""
+    """The visual is structurally invalid (one step) AND fabricates a number: either way it is
+    dropped, and the fabricated number is recorded as a provenance fallback, not merely as an
+    invalid visual."""
     both = {"type": "cycle", "nodes": [{"label": "About 99 percent of rain"}]}
     job, status, _ = await _run(
         db_session, monkeypatch, {0: _diagram(both, with_labels=True)}, narrations=[WATER]
     )
-    assert job.status == "failed"
-    assert status.segments[0].scenes == ()
-    assert status.dropped_visual_count == 0
+    assert job.status == "succeeded"
+    assert "99" not in str(status.segments[0].scenes[0].scene.content)
+    assert status.dropped_visual_count == 1
+    assert job.result["provenance_visual_fallback_count"] == 1
 
 
-async def test_a_fabricated_percentage_in_visual_text_fails_the_segment_only(
+async def test_a_fabricated_percentage_in_visual_text_no_longer_fails_the_segment(
     db_session, monkeypatch
 ):
     responses = {
@@ -1081,10 +1097,56 @@ async def test_a_fabricated_percentage_in_visual_text_fails_the_segment_only(
         narrations=[WATER, WATER],
         durations=[10_000, 8_000],
     )
-    assert job.status == "succeeded"  # one segment still succeeded
-    assert job.result["outcome"] == "succeeded_with_failures"
+    assert job.status == "succeeded" and job.result["outcome"] == "complete"
+    assert status.segments[0].is_ready is True and status.segments[1].is_ready is True
+    assert status.dropped_visual_count == 1  # only the first segment's visual was unsupported
+    assert "40" not in str(status.segments[0].scenes[0].scene.content)
+
+
+async def test_fabricated_text_in_the_illustrations_description_becomes_a_text_only_scene(
+    db_session, monkeypatch
+):
+    scene = [
+        (
+            "split_text_illustration",
+            {
+                "text": "Water evaporates.",
+                "illustration": {"description": "A market in Delhi at dawn"},
+            },
+        )
+    ]
+    job, status, _ = await _run(db_session, monkeypatch, {0: scene}, narrations=[WATER])
+
+    [detail] = status.segments[0].scenes
+    content = detail.scene.content
+    assert job.status == "succeeded" and status.is_complete is True
+    assert detail.scene.template == "bullet_points"
+    assert content["provenance_fallback"] is True
+    assert "Delhi" not in str(content)
+    assert all(bullet in WATER for bullet in content["bullets"])  # only the narration's own words
+    assert detail.reviewer_flag is True  # a reviewer is always shown a replaced scene
+    assert job.result["provenance_text_fallback_count"] == 1
+    assert job.result["provider_calls"] == 1
+
+
+async def test_fabricated_text_in_a_scenes_own_labels_still_fails_the_segment(
+    db_session, monkeypatch
+):
+    scene = [
+        (
+            "labelled_diagram",
+            {
+                "illustration": {"description": "d"},
+                "labels": [{"text": "Rain in 1998", "position": "left"}],
+            },
+        )
+    ]
+    job, status, _ = await _run(db_session, monkeypatch, {0: scene}, narrations=[WATER])
+
+    assert job.status == "failed"  # the only segment failed: the label is the scene's own text
     assert status.segments[0].scenes == ()
-    assert status.segments[1].is_ready is True
+    assert status.dropped_visual_count == 0
+    assert job.result["provenance_text_fallback_count"] == 0
 
 
 async def test_a_fabricated_number_stored_as_a_json_number_fails_the_segment(

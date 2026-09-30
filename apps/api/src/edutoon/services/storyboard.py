@@ -33,9 +33,14 @@
   invalid visual - or one too big for its template - is dropped, never repaired: the scene is
   kept (drawn by the deterministic fallback), the job continues, the drop is logged and marked
   on the scene (``illustration.visual_dropped``), and the read model counts every such scene
-  (``dropped_visual_count``) so a reviewer is told. Provenance is a different matter and stays
-  a hard failure: fabricated text or a fabricated number anywhere in the model's output - in a
-  visual that is about to be dropped as well - rejects the whole segment.
+  (``dropped_visual_count``) so a reviewer is told. Provenance is checked on what the model
+  actually wrote, and it is never weakened: text in a scene's own slots that the narration does not
+  support rejects the whole segment. Unsupported text confined to a scene's *illustration* (its
+  description, labels or diagram) no longer does - that is where false positives live - it falls
+  back (``domain.storyboard_provenance.resolve_provenance``): the visual is dropped, or the scene
+  becomes a text-only slide built from the narration. Either way the storyboard stays complete, no
+  provider call is repeated, the fallback is logged, counted in the job's result and flagged for the
+  reviewer.
 - ``get_storyboard_status`` - the read model the API's status route uses:
   per-segment scene sets, staleness, completeness, and both the worst-case
   estimate and (once a job has run) the actual provider calls it made.
@@ -65,7 +70,11 @@ from edutoon.core.errors import (
     ValidationError,
 )
 from edutoon.domain.llm_usage import UsageReport
-from edutoon.domain.storyboard_provenance import has_lexical_overlap, require_provenance
+from edutoon.domain.storyboard_provenance import (
+    FALLBACK_MARKER,
+    has_lexical_overlap,
+    resolve_provenance,
+)
 from edutoon.domain.storyboard_template import validate_scene_content
 from edutoon.domain.storyboard_timing import (
     SegmentTimingInput,
@@ -463,6 +472,7 @@ async def _generate_storyboard(
     failed_segment_ids: list[str] = []
     provider_calls = 0
     dropped_visuals = 0
+    provenance_fallbacks: dict[str, int] = {"visual_dropped": 0, "text_only": 0}
 
     for index, segment in enumerate(segments):
         await _report_progress(
@@ -511,27 +521,45 @@ async def _generate_storyboard(
                 )
                 provider_calls += 1
 
+                # Provenance is checked on what the model actually wrote - including the text of
+                # a visual about to be dropped. Unsupported text in a scene's own slots fails the
+                # segment; unsupported text in its illustration falls back (module docstring).
                 # An invalid visual is dropped (the scene stays); everything else about the
                 # scene must still meet its template's contract.
                 prepared: list[tuple[str, dict[str, object]]] = []
                 dropped_here = 0
                 for scene in draft.scenes:
-                    content, dropped = without_invalid_visual(scene.template, scene.content)
-                    if dropped:
-                        dropped_here += 1
+                    resolution = resolve_provenance(
+                        scene.template, scene.content, segment.narration_text
+                    )
+                    if resolution.fallback is not None:
+                        provenance_fallbacks[resolution.fallback] += 1
                         log.warning(
-                            "storyboard.visual_dropped",
+                            "storyboard.provenance_fallback",
                             job_id=str(job_id),
                             script_segment_id=str(segment.id),
                             template=scene.template,
-                            reason=visual_problem(scene.template, scene.content),
+                            fallback=resolution.fallback,
                         )
-                    validate_scene_content(scene.template, content)
-                    prepared.append((scene.template, content))
-                # Provenance is checked on what the model actually wrote - including the text of a
-                # visual just dropped - and stays a hard failure for the whole segment.
-                for scene in draft.scenes:
-                    require_provenance(scene.content, segment.narration_text)
+                    if resolution.fallback is None:
+                        # The model's scene as written: an invalid visual (and any visual_dropped
+                        # flag the model wrote itself) is dealt with here.
+                        content, dropped = without_invalid_visual(scene.template, scene.content)
+                        if dropped:
+                            log.warning(
+                                "storyboard.visual_dropped",
+                                job_id=str(job_id),
+                                script_segment_id=str(segment.id),
+                                template=scene.template,
+                                reason=visual_problem(scene.template, scene.content),
+                            )
+                    else:
+                        # Already rebuilt without the unsupported part, with our own mark on it.
+                        content = resolution.content
+                    if _content_visual_was_dropped(content):
+                        dropped_here += 1
+                    validate_scene_content(resolution.template, content)
+                    prepared.append((resolution.template, content))
 
                 durations = allocate_scene_durations(
                     audio.measured_duration_ms or 0, len(draft.scenes)
@@ -577,13 +605,23 @@ async def _generate_storyboard(
         "outcome": outcome,
         "provider_calls": provider_calls,
         "dropped_visual_count": dropped_visuals,
+        "provenance_visual_fallback_count": provenance_fallbacks["visual_dropped"],
+        "provenance_text_fallback_count": provenance_fallbacks["text_only"],
         "usage": report.as_dict(),
     }
 
 
-def _visual_was_dropped(scene: ScriptSegmentSceneRecord) -> bool:
-    illustration = scene.content.get("illustration")
+def _content_visual_was_dropped(content: dict[str, object]) -> bool:
+    illustration = content.get("illustration")
     return isinstance(illustration, dict) and illustration.get("visual_dropped") is True
+
+
+def _visual_was_dropped(scene: ScriptSegmentSceneRecord) -> bool:
+    return _content_visual_was_dropped(scene.content)
+
+
+def _was_provenance_fallback(scene: ScriptSegmentSceneRecord) -> bool:
+    return scene.content.get(FALLBACK_MARKER) is True
 
 
 def _is_fresh(
@@ -773,7 +811,10 @@ async def get_storyboard_status(
             SceneDetail(
                 scene=scene,
                 start_ms=timeline.scene_starts_ms[index][position],
-                reviewer_flag=not has_lexical_overlap(scene.content, segment.narration_text),
+                # A scene the provenance check replaced is always shown to a reviewer, as is one
+                # that shares nothing with the narration it is meant to illustrate.
+                reviewer_flag=_was_provenance_fallback(scene)
+                or not has_lexical_overlap(scene.content, segment.narration_text),
             )
             for position, scene in enumerate(scenes)
         )

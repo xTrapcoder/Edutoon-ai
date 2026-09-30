@@ -549,6 +549,20 @@ def visual_problem(template: str, content: Mapping[str, object]) -> str | None:
     return None
 
 
+def with_visual_dropped(content: Mapping[str, object]) -> dict[str, object] | None:
+    """``content`` with its visual removed and ``illustration.visual_dropped`` set, whether or not
+    the visual was valid - for a visual that must not be drawn for another reason (its text failed
+    the provenance check). ``None`` if the scene has no visual to drop."""
+    illustration = content.get("illustration")
+    if not isinstance(illustration, Mapping) or "visual" not in illustration:
+        return None
+    cleaned = {
+        key: value for key, value in illustration.items() if key not in ("visual", "visual_dropped")
+    }
+    cleaned["visual_dropped"] = True
+    return {**content, "illustration": cleaned}
+
+
 def without_invalid_visual(
     template: str, content: Mapping[str, object]
 ) -> tuple[dict[str, object], bool]:
