@@ -882,8 +882,8 @@ async def _drafted(db_session, monkeypatch):
         sections_by_topic={
             topic.id: [
                 [
-                    _on_target([], duration_ms=100_000),
-                    _on_target([str(claim.id)], duration_ms=200_000),
+                    _on_target([], duration_ms=20_000),  # a short hand-off, well under the cap
+                    _on_target([str(claim.id)], duration_ms=280_000),
                 ]
             ]
         },
@@ -1215,3 +1215,62 @@ async def test_a_failure_before_any_answer_records_no_usage_rather_than_a_guess(
     assert job.result["usage"]["total"]["calls"] == 0
     assert job.result["usage"]["total"]["input_tokens"] is None  # unavailable, not zero
     assert job.result["usage"]["by_call"] == {}
+
+
+# --- script grounding: a segment may not add a figure or a name the claims lack ---------------
+
+
+async def test_a_section_that_adds_a_place_the_claims_never_mention_fails_the_generation(
+    db_session, monkeypatch
+):
+    _owner, _project, topic, claim, enq = await _enqueued(
+        db_session, claim_text="Plants convert light to energy."
+    )
+    llm, _outline, _section = _simple_llm(
+        monkeypatch,
+        segments_by_topic={
+            topic.id: [
+                _segment(
+                    "Picture a farm near Mumbai, where plants convert light to energy.",
+                    [str(claim.id)],
+                )
+            ]
+        },
+    )
+
+    job = await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
+
+    assert job.status == "failed"
+    assert "'Mumbai'" in job.error and "nothing unsupported may reach the script" in job.error
+    script = await scripts_repo.get_by_id(db_session, enq.script.id)
+    assert script.status == "failed"
+    assert (
+        await scripts_repo.list_segments(
+            db_session, project_id=enq.script.project_id, script_id=enq.script.id
+        )
+        == []
+    )  # nothing was attached
+
+
+async def test_ordinary_teaching_language_is_not_mistaken_for_an_added_fact(
+    db_session, monkeypatch
+):
+    _owner, _project, topic, claim, enq = await _enqueued(
+        db_session, claim_text="Plants convert light to energy."
+    )
+    llm, _outline, _section = _simple_llm(
+        monkeypatch,
+        segments_by_topic={
+            topic.id: [
+                _segment(
+                    "First, imagine a leaf as a tiny kitchen. One thing to remember is that "
+                    "plants convert light to energy every day.",
+                    [str(claim.id)],
+                )
+            ]
+        },
+    )
+
+    job = await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
+
+    assert job.status == "succeeded"

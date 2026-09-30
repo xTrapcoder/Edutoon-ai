@@ -187,6 +187,14 @@ class Settings(BaseSettings):
     # (only structural/provenance failures reject a script).
     SCRIPT_DURATION_TOLERANCE: float = Field(default=0.15, gt=0, lt=1)
 
+    # The evidence-per-minute guard (``domain.evidence_sufficiency``): the most narration one
+    # *supported* claim is allowed to carry, in seconds. A script is refused, before any paid call,
+    # when the project's target is longer than its verified claims can honestly fill at this rate -
+    # the alternative is padding the script with repeated or invented facts. Conservative on
+    # purpose (about 75 words a claim); re-tune it against the first real-provider evaluation,
+    # never to make an unsupported target pass.
+    EVIDENCE_SECONDS_PER_CLAIM: int = Field(default=30, ge=1, le=3600)
+
     # How many bounded correction passes a generation may run when the
     # assembled script lands outside ``SCRIPT_DURATION_TOLERANCE`` - each pass
     # re-generates every section once with a rescaled word budget. ``0``

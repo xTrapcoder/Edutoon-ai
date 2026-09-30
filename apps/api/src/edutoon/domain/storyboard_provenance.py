@@ -84,7 +84,10 @@ from typing import Final
 from edutoon.domain.visual import ENUM_FIELDS, STRUCTURAL_INDEX_FIELDS
 
 _WORD_RE = re.compile(r"[A-Za-z][A-Za-z'-]*")
-_NUMBER_TOKEN_RE = re.compile(r"\d[\d,]*(?:\.\d+)?%?")
+# A digit run counts as a number unless a letter sits right before it: the 2 in CO2, the 12 in
+# C6H12O6 are part of a chemical formula, not figures. (The lookbehind also stops a match from
+# starting in the middle of a run.)
+_NUMBER_TOKEN_RE = re.compile(r"(?<![A-Za-z\d])\d[\d,]*(?:\.\d+)?%?")
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 
 NUMBER_WORDS: Final[frozenset[str]] = frozenset(
@@ -210,8 +213,15 @@ def _narration_numbers(narration_text: str) -> set[str]:
     return found | {_canonical_number(number) for number in found}
 
 
+def _strip_possessive(word: str) -> str:
+    """``earth's`` -> ``earth``: a possessive is the same name, and must not read as a new one."""
+    lowered = word.lower()
+    return lowered[:-2] if lowered.endswith("'s") else lowered
+
+
 def _narration_words(narration_text: str) -> set[str]:
-    return {word.lower() for word in _WORD_RE.findall(narration_text)}
+    words = {word.lower() for word in _WORD_RE.findall(narration_text)}
+    return words | {_strip_possessive(word) for word in words}
 
 
 def check_scene_text(
@@ -234,10 +244,27 @@ def check_scene_text(
         elif kind == "currency":
             allowed = token in narration_text
         else:  # number_word, date_word, unit, proper_noun
-            allowed = token.lower() in narration_words
+            allowed = (
+                token.lower() in narration_words or _strip_possessive(token) in narration_words
+            )
         if not allowed:
             violations.append(ProvenanceViolation(slot_path=slot_path, kind=kind, token=token))
     return violations
+
+
+def unsupported_tokens(
+    text: str, reference_text: str, *, kinds: frozenset[str]
+) -> list[tuple[str, str]]:
+    """``(kind, token)`` for every protected token in ``text`` of one of ``kinds`` that
+    ``reference_text`` does not contain - the same detection scene text is held to, exposed for
+    any other text that must not add facts (a script segment's narration is checked against the
+    claims it was written from). ``kinds`` are the violation kinds: ``number``, ``currency``,
+    ``number_word``, ``date_word``, ``unit``, ``proper_noun``."""
+    return [
+        (violation.kind, violation.token)
+        for violation in check_scene_text("", text, reference_text)
+        if violation.kind in kinds
+    ]
 
 
 def _walk_leaves(

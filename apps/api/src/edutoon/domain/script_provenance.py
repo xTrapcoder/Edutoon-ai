@@ -13,7 +13,19 @@ and returns an immutable :class:`ValidatedScriptDraft` in which:
 - no fact-bearing segment is left uncited. A segment that ends up with no
   citations and was not explicitly marked ``connective`` raises
   :class:`UnsourcedSegmentError` - unsourced narration must never reach a
-  persisted script (the core promise).
+  persisted script (the core promise). ``connective`` is the model's own claim about a
+  segment, so it is not taken on trust: a segment longer than
+  :data:`MAX_CONNECTIVE_WORDS` is too long to be "just a hand-off" and needs a citation like
+  any other.
+- no segment adds a fact the claims do not contain. With a :class:`GroundingReference`, every
+  number, currency amount, month name and proper noun in a segment's narration - connective or
+  not - must appear in the claims the writer was shown for that segment's topic, or in the
+  project's and topics' own titles; otherwise :class:`UngroundedSegmentError`. This is the same
+  token check scene text is held to (``storyboard_provenance``), and like it a safety guard and
+  not fact verification: it never judges whether a sentence is *true*, only that it does not
+  bring in a figure or a name from nowhere. It deliberately leaves explanatory wording alone -
+  ordinary words, number words ("first", "one", "two"), everyday time words ("day", "year") and
+  sentence-initial capitals are all free, because they are what teaching sounds like.
 - claim ids are de-duplicated per segment, first-seen order preserved.
 - each segment's ``estimated_duration_ms`` is re-derived here from its word
   count at ``words_per_minute`` - integer milliseconds (rule 5) - rather
@@ -22,10 +34,24 @@ and returns an immutable :class:`ValidatedScriptDraft` in which:
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from typing import Final
 from uuid import UUID
 
 from edutoon.domain.script import ScriptDraft
+from edutoon.domain.storyboard_provenance import unsupported_tokens
+
+MAX_CONNECTIVE_WORDS: Final = 80
+"""The longest a segment can be and still be accepted as purely connective (an introduction, a
+hand-off, a short recap): about 30 seconds of narration, several sentences. A longer segment must
+cite a supported claim."""
+
+GROUNDED_KINDS: Final[frozenset[str]] = frozenset(
+    {"number", "currency", "date_word", "proper_noun"}
+)
+"""What the grounding check protects: figures and names. Number words and unit words are not in
+it - "first", "one", "day" and "year" are part of ordinary explanation, not facts."""
 
 
 class UnsourcedSegmentError(Exception):
@@ -44,6 +70,43 @@ class UnsourcedSegmentError(Exception):
             "and is not marked connective."
         )
         self.segment_index = segment_index
+
+
+class UngroundedSegmentError(Exception):
+    """A script segment brings in a number, date or name that none of its verified claims (nor
+    the project's own titles) contain. Carries the offending ``segment_index`` and up to
+    :data:`MAX_REPORTED_TOKENS` of the ``(kind, token)`` pairs found. The message is written for
+    the project's owner."""
+
+    def __init__(self, segment_index: int, tokens: Sequence[tuple[str, str]]) -> None:
+        self.segment_index = segment_index
+        self.tokens = tuple(tokens)
+        shown = ", ".join(f"'{token}'" for _, token in self.tokens[:MAX_REPORTED_TOKENS])
+        super().__init__(
+            f"Script segment {segment_index + 1} mentions {shown}, which none of its verified "
+            "claims contain, so it was rejected: nothing unsupported may reach the script. "
+            "Generate the script again."
+        )
+
+
+MAX_REPORTED_TOKENS: Final = 5
+
+
+@dataclass(frozen=True, slots=True)
+class GroundingReference:
+    """What a segment's wording may draw on besides the claims it cites.
+
+    ``topic_texts`` maps a topic to its title plus the text of every claim the writer was shown
+    for it (not only the ones a segment cites: a fact the topic's verified claims contain is
+    supported wherever in the section it is used). ``frame_text`` is the project's title and every
+    accepted topic's title - the lesson's own framing, which a hand-off may name.
+    """
+
+    topic_texts: Mapping[UUID | None, str]
+    frame_text: str = ""
+
+    def for_topic(self, topic_id: UUID | None) -> str:
+        return f"{self.frame_text}\n{self.topic_texts.get(topic_id, '')}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,11 +146,18 @@ def filter_and_validate(
     draft: ScriptDraft,
     supported_claim_ids: set[UUID],
     words_per_minute: int,
+    *,
+    grounding: GroundingReference | None = None,
 ) -> ValidatedScriptDraft:
     """Narrow ``draft``'s citations to ``supported_claim_ids`` and prove
     every fact-bearing segment keeps at least one. Raises
     :class:`UnsourcedSegmentError` otherwise; raises ``ValueError`` for a
     non-positive ``words_per_minute``.
+
+    A segment marked ``connective`` is exempt from citing only while it is short
+    (:data:`MAX_CONNECTIVE_WORDS`). With ``grounding``, every segment's figures and names are
+    also checked against what its topic's claims contain (module docstring), raising
+    :class:`UngroundedSegmentError`. Without it only the citation rules apply.
     """
     if words_per_minute <= 0:
         raise ValueError("words_per_minute must be positive.")
@@ -101,8 +171,18 @@ def filter_and_validate(
                 kept.append(claim_id)
 
         claim_verification_ids = tuple(dict.fromkeys(kept))
-        if not claim_verification_ids and not segment.connective:
+        word_count = len(segment.narration_text.split())
+        connective = segment.connective and word_count <= MAX_CONNECTIVE_WORDS
+        if not claim_verification_ids and not connective:
             raise UnsourcedSegmentError(index)
+        if grounding is not None:
+            unsupported = unsupported_tokens(
+                segment.narration_text,
+                grounding.for_topic(segment.topic_id),
+                kinds=GROUNDED_KINDS,
+            )
+            if unsupported:
+                raise UngroundedSegmentError(index, unsupported)
 
         validated.append(
             ValidatedScriptSegment(
@@ -110,7 +190,7 @@ def filter_and_validate(
                 # draft (same discipline as the composition provider).
                 segment_index=index,
                 narration_text=segment.narration_text,
-                connective=segment.connective,
+                connective=connective,
                 claim_verification_ids=claim_verification_ids,
                 estimated_duration_ms=_segment_duration_ms(
                     segment.narration_text, words_per_minute

@@ -32,7 +32,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from edutoon.core.errors import AppError
 from edutoon.domain.llm_usage import ProviderCallLimitError
 from edutoon.domain.render import RenderPlanError
-from edutoon.domain.script_provenance import UnsourcedSegmentError
+from edutoon.domain.script_provenance import UngroundedSegmentError, UnsourcedSegmentError
 from edutoon.domain.storyboard_provenance import FabricatedContentError
 from edutoon.domain.storyboard_template import StoryboardContentError
 from edutoon.domain.topic_tree import TopicError
@@ -59,6 +59,7 @@ _OWN_MESSAGE = (
     AppError,
     TopicError,
     UnsourcedSegmentError,
+    UngroundedSegmentError,
     LLMResponseError,
     ProviderCallLimitError,
     StoryboardContentError,

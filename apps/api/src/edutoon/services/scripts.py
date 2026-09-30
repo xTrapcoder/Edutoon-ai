@@ -93,6 +93,11 @@ from edutoon.core.errors import (
     ValidationError,
 )
 from edutoon.core.pagination import DEFAULT_PAGE_SIZE, Page
+from edutoon.domain.evidence_sufficiency import (
+    EvidenceAssessment,
+    assess_evidence,
+    format_clock,
+)
 from edutoon.domain.generation_settings import MAX_TARGET_DURATION_MS
 from edutoon.domain.llm_usage import UsageReport
 from edutoon.domain.script import ScriptDraft, ScriptSegmentDraft
@@ -101,7 +106,7 @@ from edutoon.domain.script_duration import (
     max_provider_calls,
     split_topic_budget,
 )
-from edutoon.domain.script_provenance import filter_and_validate
+from edutoon.domain.script_provenance import GroundingReference, filter_and_validate
 from edutoon.domain.topic_tree import accepted_topics
 from edutoon.providers.llm import (
     LLM,
@@ -182,7 +187,8 @@ async def enqueue_script_generation(
     give every accepted topic the ``MIN_SECTION_DURATION_MS`` floor; or any
     accepted topic has zero *supported* claims of its own. A repeat call with
     the same ``idempotency_key`` returns the original result with
-    ``replayed=True``.
+    ``replayed=True``. It also raises ``ValidationError`` when the verified evidence cannot carry
+    the project's target duration (``domain.evidence_sufficiency``): a script is never padded.
 
     The job's payload freezes exactly which accepted topics this run covers
     (their ids, in reading order) - ``run_generate_script_job`` generates for
@@ -231,10 +237,12 @@ async def enqueue_script_generation(
         )
 
     missing_evidence: list[str] = []
+    supported_counts: list[int] = []
     for topic in eligible:
         supported = await claim_verifications_repo.list_supported_by_topic(
             session, project_id=project_id, topic_id=topic.id
         )
+        supported_counts.append(len(supported))
         if not supported:
             missing_evidence.append(topic.title)
     if missing_evidence:
@@ -243,6 +251,26 @@ async def enqueue_script_generation(
             f"These accepted topics have no verified evidence yet: {names}. Extract "
             "and verify claims for them, or reject them, before generating a script."
         )
+
+    # Enough evidence for the length asked for? Refused here, from counts alone, before a job or
+    # any paid call exists: a script stretched over too little evidence can only repeat itself or
+    # invent facts (domain.evidence_sufficiency).
+    assessment = assess_evidence(
+        supported_counts,
+        target_duration_ms=project.target_duration_ms,
+        max_claims_per_topic=settings.MAX_CLAIMS_PER_SECTION,
+        ms_per_claim=settings.EVIDENCE_SECONDS_PER_CLAIM * 1000,
+    )
+    if not assessment.is_sufficient:
+        log.info(
+            "scripts.evidence_insufficient",
+            project_id=str(project_id),
+            target_ms=assessment.target_duration_ms,
+            defensible_ms=assessment.defensible_duration_ms,
+            supported_claims=assessment.supported_claims,
+            topics=assessment.topic_count,
+        )
+        raise ValidationError(_insufficient_evidence_message(assessment, settings))
 
     await spend_guard.ensure_can_start_provider_job(session, project_id=project_id)
 
@@ -270,6 +298,31 @@ async def enqueue_script_generation(
         context={"job_id": str(job.id), "accepted_topic_count": len(eligible)},
     )
     return ScriptGenerationEnqueued(script=script, job=job, replayed=False)
+
+
+def _insufficient_evidence_message(assessment: EvidenceAssessment, settings: Settings) -> str:
+    """Why the evidence cannot carry the target, and what would fix it - written for the owner."""
+    target = format_clock(assessment.target_duration_ms)
+    defensible = format_clock(assessment.defensible_duration_ms)
+    claims = (
+        f"{assessment.supported_claims} supported claim"
+        f"{'' if assessment.supported_claims == 1 else 's'}"
+    )
+    topics = f"{assessment.topic_count} accepted topic{'' if assessment.topic_count == 1 else 's'}"
+    unused = assessment.supported_claims - assessment.usable_claims
+    cap_note = (
+        f" ({unused} more than the {settings.MAX_CLAIMS_PER_SECTION} a single topic can use "
+        "were not counted)"
+        if unused
+        else ""
+    )
+    return (
+        f"There is not enough verified evidence for a video of {target}. Your {claims} across "
+        f"{topics}{cap_note} can carry about {defensible} of narration; stretching them to "
+        f"{target} would mean repeating them or inventing facts, so nothing was generated. Add "
+        "more source material and verify more claims, accept more topics, or choose a target "
+        f"of {defensible} or shorter."
+    )
 
 
 async def _script_from_job(session: AsyncSession, job: JobRecord) -> ScriptRecord:
@@ -733,7 +786,18 @@ async def _generate_and_attach(
     draft = ScriptDraft(
         title=outline_draft.title, segments=reindexed, estimated_duration_ms=estimated_total
     )
-    validated = filter_and_validate(draft, supported_claim_ids, settings.SCRIPT_WORDS_PER_MINUTE)
+    # What the wording may draw on: for each topic, its title and every claim the writer was shown
+    # for it; for the lesson as a whole, the project's and the topics' own titles.
+    grounding = GroundingReference(
+        topic_texts={
+            unit.topic.id: " ".join([unit.topic.title, *(claim.text for claim in unit.claims)])
+            for unit in units
+        },
+        frame_text=" ".join([project.title, *(topic.title for topic in topics)]),
+    )
+    validated = filter_and_validate(
+        draft, supported_claim_ids, settings.SCRIPT_WORDS_PER_MINUTE, grounding=grounding
+    )
 
     await _report_progress(sessionmaker, job_id=job_id, base_payload=payload, stage="finalising")
 

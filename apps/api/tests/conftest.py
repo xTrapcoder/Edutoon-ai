@@ -27,6 +27,10 @@ _TEST_ENV = {
     # Settings/AsyncOpenAI's constructor, never actually authenticate.
     "OPENAI_API_KEY": "sk-test-not-a-real-key",
     "ANTHROPIC_API_KEY": "sk-ant-test-not-a-real-key",
+    # The evidence-per-minute guard has its own tests (test_evidence_sufficiency.py), which set
+    # the real default. The rest of the suite builds the smallest possible project - one claim, the
+    # default five-minute target - to test something else, so here a claim may carry an hour.
+    "EVIDENCE_SECONDS_PER_CLAIM": "3600",
 }
 
 for key, value in _TEST_ENV.items():
