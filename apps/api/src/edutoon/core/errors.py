@@ -123,6 +123,19 @@ class JobError(AppError):
     code = "job_failed"
 
 
+class JobAbandonedError(JobError):
+    """A worker found that the job it is running was taken away from it: it stopped reporting
+    progress for longer than the stale threshold, was marked failed by recovery, and the project
+    may already have a replacement. The worker stops here rather than carry on spending (a paid
+    provider call or a render) on work nobody is waiting for any more."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "This job stopped reporting progress for too long and was replaced, so it was "
+            "stopped. Nothing further was requested; start it again if you still need it."
+        )
+
+
 # Postgres unique-constraint names (from the migrations) mapped to a message
 # safe to return to a client. Anything not listed here still becomes a
 # ConflictError, just with a generic message - the raw DB error never reaches

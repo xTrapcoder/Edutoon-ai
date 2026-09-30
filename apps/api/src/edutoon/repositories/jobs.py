@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import DateTime, case, cast, func, select
 from sqlalchemy.engine import RowMapping
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,6 +20,10 @@ from edutoon.repositories import projects as projects_repo
 # owning project's status is recomputed (see ``projects.refresh_status``); moving to ``running``
 # is not, because it changes nothing the status looks at.
 TERMINAL_STATUSES: tuple[str, ...] = ("succeeded", "failed", "cancelled")
+
+# What a progress timestamp written by a handler looks like (``datetime.isoformat()``): only a
+# value of this shape is read as a heartbeat, so a malformed one can never break recovery.
+_ISO_TIMESTAMP = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -225,6 +229,20 @@ async def claim_next(session: AsyncSession) -> JobRecord | None:
     return _from_row(row) if row is not None else None
 
 
+async def record_progress(
+    session: AsyncSession, *, job_id: UUID, payload: dict[str, Any]
+) -> bool:
+    """Write a running job's progress (its ``payload``, which carries ``progress.updated_at``)
+    - but only while the job is still ``running``. ``False`` means it is not: recovery failed it
+    (it had gone silent) and the caller has been replaced, so it must stop
+    (:class:`~edutoon.core.errors.JobAbandonedError`) instead of carrying on. Every long-running
+    handler reports through this, which is both its heartbeat and its fence."""
+    result = await session.execute(
+        jobs.update().where(jobs.c.id == job_id, jobs.c.status == "running").values(payload=payload)
+    )
+    return bool(result.rowcount)  # type: ignore[attr-defined]
+
+
 async def list_by_project(
     session: AsyncSession, project_id: UUID, *, limit: int = 50, cursor: str | None = None
 ) -> Page[JobRecord]:
@@ -307,8 +325,13 @@ async def fail_stale_running(
 
     A job qualifies only if **both** hold:
 
-    - it has been ``running`` for longer than ``stale_after`` (measured from
-      ``started_at``, which the claim sets from the database clock), and
+    - it has shown no sign of life for longer than ``stale_after``: measured from the later of
+      ``started_at`` (which the claim sets from the database clock) and the last progress a worker
+      wrote (``payload.progress.updated_at`` - every long-running handler stamps it each time it
+      reports, see :func:`record_progress`). A job that is still making progress is therefore never
+      stale however long ago it started, and a job that goes silent is, ``stale_after`` after its
+      last word - which is what lets a long generation or render run for hours safely, and
+      still lets a dead one be reclaimed; and
     - nothing is holding its row. A live worker's handler marks the job
       ``running`` inside the transaction it keeps open until the job finishes, so
       the row stays locked for the whole run - however long a model call takes.
@@ -322,13 +345,19 @@ async def fail_stale_running(
     without one is given it in the same statement.
     """
     started = func.coalesce(jobs.c.started_at, jobs.c.created_at)
+    reported = jobs.c.payload["progress"]["updated_at"].astext
+    last_progress = case(
+        (reported.op("~")(_ISO_TIMESTAMP), cast(reported, DateTime(timezone=True))),
+        else_=None,
+    )
+    last_sign_of_life = func.greatest(started, last_progress)  # greatest() skips a NULL
     stale = (
         select(jobs.c.id)
         .where(
             jobs.c.project_id == project_id,
             jobs.c.kind == kind,
             jobs.c.status == "running",
-            started < func.now() - stale_after,
+            last_sign_of_life < func.now() - stale_after,
         )
         .with_for_update(skip_locked=True)
     )

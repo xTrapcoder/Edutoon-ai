@@ -20,16 +20,17 @@ persisted as "supported" without at least one citation; see the guard in
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from edutoon.core.errors import ConflictError, NotFoundError
+from edutoon.core.config import get_settings
+from edutoon.core.errors import ConflictError, JobAbandonedError, NotFoundError
 from edutoon.core.pagination import DEFAULT_PAGE_SIZE, Page
 from edutoon.domain.embedding_batches import EMBEDDING_DIMENSIONS, estimate_tokens, plan_batches
 from edutoon.domain.llm_usage import UsageReport
@@ -53,6 +54,11 @@ from edutoon.services.job_errors import describe_job_failure
 log = structlog.get_logger()
 
 BUILD_EVIDENCE_JOB_KIND = "build_evidence"
+
+STALE_INDEXING_ERROR = (
+    "The worker stopped before finishing indexing this source, so it was marked as failed. "
+    "Nothing already indexed is lost - retry to continue from where it stopped."
+)
 
 
 @dataclass(slots=True)
@@ -94,6 +100,7 @@ async def index_source(
     *,
     source_id: UUID,
     progress: IndexProgress | None = None,
+    on_batch: Callable[[int, int], Awaitable[None]] | None = None,
 ) -> int:
     """Embed every chunk of ``source_id`` that doesn't have one yet.
 
@@ -109,7 +116,9 @@ async def index_source(
     provider's own transient-failure retries - therefore costs only itself: every
     earlier batch stays indexed, nothing of the failed batch is written, and running
     the job again continues from the first chunk still missing a vector. ``progress``
-    (if given) is updated after each commit.
+    (if given) is updated after each commit. ``on_batch(embedded, total)`` (if given) is awaited
+    after each batch is stored and before it is committed - the job uses it to report progress,
+    which is its heartbeat, in the very transaction that makes the batch durable.
     """
     chunks = await source_chunks_repo.list_missing_embedding_by_source(session, source_id)
     if progress is not None:
@@ -128,11 +137,19 @@ async def index_source(
             raise ValueError(
                 f"The embedding model returned vectors that are not {EMBEDDING_DIMENSIONS} wide."
             )
-        for chunk, vector in zip(group, vectors, strict=True):
-            await source_chunks_repo.update_embedding(
-                session, chunk_id=chunk.id, embedding=vector, embedding_model=embeddings.model
-            )
-        await session.commit()  # this batch is durable whatever happens to the next
+        try:
+            for chunk, vector in zip(group, vectors, strict=True):
+                await source_chunks_repo.update_embedding(
+                    session, chunk_id=chunk.id, embedding=vector, embedding_model=embeddings.model
+                )
+            if on_batch is not None:
+                await on_batch(embedded + len(group), len(chunks))
+            await session.commit()  # this batch is durable whatever happens to the next
+        except Exception:
+            # Nothing of a batch that failed part-way is kept: not a half-stored batch, and not
+            # one a worker that had been replaced (JobAbandonedError) was still writing.
+            await session.rollback()
+            raise
         embedded += len(group)
         if progress is not None:
             progress.embedded = embedded
@@ -161,11 +178,33 @@ async def run_build_evidence_job(
         attempts=job.attempts + 1,
     )
     assert running is not None  # the job was just fetched by this same id
+    # Make "running" visible (and release the row's lock) before the long work: progress is
+    # reported, and a crashed worker recovered, through the row from here on.
+    await session.commit()
 
     progress = IndexProgress()
+
+    async def _report(embedded: int, total: int) -> None:
+        """Progress is the heartbeat (a live job is never reclaimed as stale) and the fence (a job
+        that was reclaimed anyway finds out here and stops)."""
+        stamp = {
+            "stage": "embedding",
+            "chunks_embedded": embedded,
+            "chunks_total": total,
+            "updated_at": datetime.now(UTC).isoformat(),
+        }
+        if not await jobs_repo.record_progress(
+            session, job_id=running.id, payload={**running.payload, "progress": stamp}
+        ):
+            raise JobAbandonedError
+
     try:
         chunks_embedded = await index_source(
-            session, embeddings, source_id=UUID(running.payload["source_id"]), progress=progress
+            session,
+            embeddings,
+            source_id=UUID(running.payload["source_id"]),
+            progress=progress,
+            on_batch=_report,
         )
     except Exception as exc:  # noqa: BLE001 - any failure marks the job failed, never raises
         error = describe_job_failure(exc, job_id=running.id, kind=BUILD_EVIDENCE_JOB_KIND)
@@ -233,6 +272,17 @@ async def retry_indexing_job(
     running, or has already succeeded - there is nothing to retry. The caller checks the source
     belongs to the project (rule 9) first.
     """
+    # An indexing job a crashed worker left "running" would otherwise block its own retry for
+    # ever: fail it first if it has shown no sign of life (its last batch's progress) for too long.
+    for stale in await jobs_repo.fail_stale_running(
+        session,
+        project_id=project_id,
+        kind=BUILD_EVIDENCE_JOB_KIND,
+        stale_after=timedelta(seconds=get_settings().INDEXING_STALE_AFTER_SECONDS),
+        error=STALE_INDEXING_ERROR,
+    ):
+        log.warning("evidence.stale_indexing_recovered", job_id=str(stale.id))
+
     job = await jobs_repo.get_by_idempotency_key(
         session,
         project_id=project_id,

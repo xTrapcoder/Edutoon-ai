@@ -52,7 +52,13 @@ import structlog
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from edutoon.core.config import Settings, get_settings
-from edutoon.core.errors import ConflictError, JobError, NotFoundError, ValidationError
+from edutoon.core.errors import (
+    ConflictError,
+    JobAbandonedError,
+    JobError,
+    NotFoundError,
+    ValidationError,
+)
 from edutoon.domain.script_audio import (
     chunk_narration_for_tts,
     compute_content_hash,
@@ -591,10 +597,12 @@ async def _report_progress(
         return
     progress = {"stage": stage, "updated_at": datetime.now(UTC).isoformat(), **extra}
     async with sessionmaker() as progress_session:
-        await jobs_repo.update(
+        alive = await jobs_repo.record_progress(
             progress_session, job_id=job_id, payload={**base_payload, "progress": progress}
         )
         await progress_session.commit()
+    if not alive:
+        raise JobAbandonedError
 
 
 async def _mark_job_succeeded(

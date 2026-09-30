@@ -54,6 +54,7 @@ from edutoon.core.config import get_settings
 from edutoon.core.errors import (
     ConflictError,
     InsufficientStorageError,
+    JobAbandonedError,
     JobError,
     NotFoundError,
     ValidationError,
@@ -1196,12 +1197,12 @@ class _Progress:
         if self._sessionmaker is None:
             return
         async with self._sessionmaker() as short:
-            await jobs_repo.update(
-                short,
-                job_id=self._job_id,
-                payload={**self._base, "progress": self.snapshot()},
+            alive = await jobs_repo.record_progress(
+                short, job_id=self._job_id, payload={**self._base, "progress": self.snapshot()}
             )
             await short.commit()
+        if not alive:
+            raise JobAbandonedError
 
 
 async def _mark_job_succeeded(

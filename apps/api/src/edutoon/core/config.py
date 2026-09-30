@@ -317,6 +317,11 @@ class Settings(BaseSettings):
     # worker and failed. Chunks it had already finished are kept and reused by the retry.
     RENDER_STALE_AFTER_SECONDS: int = Field(default=3600, ge=60)
 
+    # Mirrors the other STALE_AFTER_SECONDS settings, for a build_evidence (indexing) job. Every
+    # STALE_AFTER_SECONDS is measured from the job's last sign of life (its start, or the last
+    # progress it reported), so a job that keeps reporting is never reclaimed however long it runs.
+    INDEXING_STALE_AFTER_SECONDS: int = Field(default=3600, ge=60)
+
     @model_validator(mode="after")
     def _section_duration_bounds_are_consistent(self) -> Settings:
         if self.MAX_SECTION_DURATION_MS < self.MIN_SECTION_DURATION_MS:
