@@ -45,11 +45,14 @@ async def upload_source(
     unique index on ``(project_id, checksum_sha256)``), via
     ``raise_conflict_from_integrity_error`` in the repository.
 
-    A PDF that can't be read at all, or exceeds ``max_pages``, still
+    A PDF that can't be read at all, that exceeds ``max_pages`` (counted *before* any text
+    is extracted), or that has no extractable text (a scan, or nothing but page numbers), still
     produces a row - with ``status="failed"`` - rather than failing the
     whole request: the upload (storage + traceability record) succeeded
     even though parsing didn't, and a failed source can't feed anything
-    downstream.
+    downstream. A source with no text is never queued for indexing and never silently
+    "parsed": a project cannot proceed on zero evidence without being told
+    (``failure_reason`` in the API says why).
     """
     # Refuse before anything is stored: an upload that cannot be indexed is not accepted.
     await spend_guard.ensure_can_start_provider_job(session, project_id=project_id)
@@ -74,13 +77,23 @@ async def upload_source(
     )
 
     try:
-        pages = pdf.extract_pages(content)
+        pages = pdf.extract_pages(content, max_pages=max_pages)
+    except pdf.PdfTooManyPagesError as too_long:
+        return await update_uploaded_source(
+            session,
+            source_id=source.id,
+            project_id=project_id,
+            status="failed",
+            page_count=too_long.page_count,
+        )
     except pdf.PdfParseError:
         return await update_uploaded_source(
             session, source_id=source.id, project_id=project_id, status="failed"
         )
 
-    if len(pages) > max_pages:
+    if not any(character.isalpha() for text in pages for character in text):
+        # A scan, or a document that is only page numbers and symbols: there is nothing to
+        # build evidence from. Fail it, accurately, instead of "parsing" zero chunks.
         return await update_uploaded_source(
             session,
             source_id=source.id,

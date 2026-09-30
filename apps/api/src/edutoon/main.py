@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from edutoon import __version__
 from edutoon.api import v1_router
+from edutoon.api.middleware import MULTIPART_OVERHEAD_BYTES, BodySizeLimitMiddleware
 from edutoon.core.config import Settings, get_settings
 from edutoon.core.context import bind_request_id
 from edutoon.core.errors import register_exception_handlers
@@ -66,6 +67,12 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    # Innermost of the middlewares: an oversized body is refused before it is parsed, and the
+    # refusal still passes back out through CORS and the request-id layer.
+    app.add_middleware(
+        BodySizeLimitMiddleware,
+        max_bytes=settings.MAX_UPLOAD_BYTES + MULTIPART_OVERHEAD_BYTES,
+    )
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[settings.APP_BASE_URL],

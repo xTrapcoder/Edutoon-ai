@@ -34,6 +34,7 @@ from fpdf import FPDF
 from sqlalchemy import select
 
 from edutoon.api.dependencies import get_current_user
+from edutoon.api.middleware import MULTIPART_OVERHEAD_BYTES
 from edutoon.core.config import get_settings
 from edutoon.db.session import get_session
 from edutoon.domain.source_storage import source_storage_key
@@ -44,25 +45,13 @@ from edutoon.providers.storage import Storage, get_storage_client
 from edutoon.repositories import jobs as jobs_repo
 from edutoon.repositories import users as users_repo
 from tests.idempotency_helpers import INVALID_KEYS, idempotency_status
+from tests.pdf_helpers import make_pdf
 
 TEST_ISSUER = "https://test.clerk.accounts.dev"
 IDEMPOTENCY_HEADERS = {"Idempotency-Key": "test-key-1"}
 
 
-def _make_pdf(pages: list[str] | None = None) -> bytes:
-    """A real, pypdf-parseable PDF with one page per string in ``pages``
-    (default: a single page of sample text). An empty string produces a
-    genuinely blank page (no extractable text) - used to test that the
-    parsing pipeline skips blank pages when chunking.
-    """
-    texts = pages if pages is not None else ["Test content for parsing."]
-    doc = FPDF()
-    for text in texts:
-        doc.add_page()
-        if text:
-            doc.set_font("Helvetica", size=12)
-            doc.cell(text=text)
-    return bytes(doc.output())
+_make_pdf = make_pdf
 
 
 _DEFAULT_PDF = _make_pdf()
@@ -1086,3 +1075,139 @@ async def test_an_upload_over_the_projects_hourly_limit_is_refused_before_anythi
     assert second.json()["error"]["code"] == "too_many_requests"
     key = source_storage_key(UUID(project_id), hashlib.sha256(second_pdf).hexdigest())
     assert not await verifier.object_exists(bucket=settings.BUCKET_UPLOADS, key=key)
+
+
+# --- a document with no text, and the size guard, through the real app ---------------------
+
+
+async def test_the_real_app_refuses_an_oversized_declared_body_before_parsing_it(
+    client_factory, auth_headers
+) -> None:
+    headers = auth_headers()
+    settings = get_settings()
+    async with client_factory() as client:
+        project_id = await _create_project(client, headers)
+        response = await client.post(
+            f"/v1/projects/{project_id}/sources",
+            files=_pdf_file(),
+            headers={
+                **headers,
+                **IDEMPOTENCY_HEADERS,
+                "content-length": str(settings.MAX_UPLOAD_BYTES + MULTIPART_OVERHEAD_BYTES + 1),
+            },
+        )
+
+    assert response.status_code == 413
+    assert response.json()["error"]["code"] == "payload_too_large"
+
+
+
+
+def _scan(pages: int = 2) -> bytes:
+    """A PDF whose pages carry no text at all - what a scan looks like to a text extractor."""
+    doc = FPDF()
+    for _ in range(pages):
+        doc.add_page()
+    return bytes(doc.output())
+
+
+async def _upload(client, headers, project_id: str, content: bytes) -> httpx.Response:
+    return await client.post(
+        f"/v1/projects/{project_id}/sources",
+        files=_pdf_file(content),
+        headers={**headers, "Idempotency-Key": str(uuid4())},
+    )
+
+
+async def test_a_scanned_pdf_fails_clearly_and_is_never_queued_for_indexing(
+    client_factory, auth_headers, db_session
+) -> None:
+    headers = auth_headers()
+    async with client_factory() as client:
+        project_id = await _create_project(client, headers)
+        response = await _upload(client, headers, project_id, _scan(3))
+        source_id = response.json()["id"]
+        chunks = await client.get(
+            f"/v1/projects/{project_id}/sources/{source_id}/chunks", headers=headers
+        )
+
+    body = response.json()
+    assert response.status_code == 201
+    assert (body["status"], body["page_count"]) == ("failed", 3)
+    assert "No text could be read from this PDF" in body["failure_reason"]
+    assert "scan" in body["failure_reason"] and "OCR" in body["failure_reason"]
+    assert chunks.json()["items"] == []
+    job = await jobs_repo.get_by_idempotency_key(
+        db_session, project_id=UUID(project_id), kind="build_evidence", idempotency_key=source_id
+    )
+    assert job is None  # nothing to index, so nothing is queued
+
+
+async def test_a_pdf_of_nothing_but_page_numbers_is_also_no_text(
+    client_factory, auth_headers
+) -> None:
+    headers = auth_headers()
+    async with client_factory() as client:
+        project_id = await _create_project(client, headers)
+        response = await _upload(client, headers, project_id, _make_pdf(["1", "2", "3", "- 4 -"]))
+
+    assert response.json()["status"] == "failed"
+    assert "No text could be read" in response.json()["failure_reason"]
+
+
+async def test_a_pdf_with_some_text_and_some_blank_pages_is_still_parsed(
+    client_factory, auth_headers
+) -> None:
+    headers = auth_headers()
+    async with client_factory() as client:
+        project_id = await _create_project(client, headers)
+        response = await _upload(client, headers, project_id, _make_pdf(["", "Real words.", ""]))
+
+    assert response.json()["status"] == "parsed" and response.json()["failure_reason"] is None
+
+
+async def test_every_reason_a_source_can_fail_is_told_to_its_owner_accurately(
+    client_factory, auth_headers, monkeypatch
+) -> None:
+    headers = auth_headers()
+    monkeypatch.setenv("MAX_PDF_PAGES", "2")
+    get_settings.cache_clear()
+    try:
+        async with client_factory() as client:
+            project_id = await _create_project(client, headers)
+            unreadable = await _upload(client, headers, project_id, b"%PDF-1.4\n" + b"\x00garbage")
+            too_long = await _upload(client, headers, project_id, _make_pdf(["a", "b", "c"]))
+            listing = await client.get(f"/v1/projects/{project_id}/sources", headers=headers)
+    finally:
+        get_settings.cache_clear()
+
+    assert "could not be read" in unreadable.json()["failure_reason"]
+    assert unreadable.json()["page_count"] is None
+    assert "has 3 pages; the limit is 2" in too_long.json()["failure_reason"]
+    # The reason is the same on every read, not just at upload.
+    reasons = {item["id"]: item["failure_reason"] for item in listing.json()["items"]}
+    assert reasons[unreadable.json()["id"]] == unreadable.json()["failure_reason"]
+    assert reasons[too_long.json()["id"]] == too_long.json()["failure_reason"]
+
+
+async def test_a_source_that_did_not_fail_has_no_failure_reason(
+    client_factory, auth_headers
+) -> None:
+    headers = auth_headers()
+    async with client_factory() as client:
+        project_id = await _create_project(client, headers)
+        response = await _upload(client, headers, project_id, _make_pdf(["Some real text."]))
+
+    assert response.json()["failure_reason"] is None
+
+
+async def test_a_stored_file_of_a_failed_source_is_kept_for_traceability(
+    client_factory, auth_headers
+) -> None:
+    """A failed source still has its object and its row: the upload succeeded, parsing did not."""
+    headers = auth_headers()
+    async with client_factory() as client:
+        project_id = await _create_project(client, headers)
+        response = await _upload(client, headers, project_id, _scan())
+
+    assert response.status_code == 201 and response.json()["byte_size"] > 0

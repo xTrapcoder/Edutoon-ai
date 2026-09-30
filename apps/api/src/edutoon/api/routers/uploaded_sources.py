@@ -111,11 +111,16 @@ async def upload_source(
         _raise_validation_error("file", "A filename is required.", "missing")
 
     settings = get_settings()
-    content = await file.read()
+    # The body was already refused if it declared more than the limit (api.middleware); this is
+    # the per-file check, and it never reads more than one byte past the limit into memory.
+    too_large = PayloadTooLargeError(
+        f"File exceeds the maximum upload size of {settings.MAX_UPLOAD_BYTES} bytes."
+    )
+    if file.size is not None and file.size > settings.MAX_UPLOAD_BYTES:
+        raise too_large
+    content = await file.read(settings.MAX_UPLOAD_BYTES + 1)
     if len(content) > settings.MAX_UPLOAD_BYTES:
-        raise PayloadTooLargeError(
-            f"File exceeds the maximum upload size of {settings.MAX_UPLOAD_BYTES} bytes."
-        )
+        raise too_large
     if not content.startswith(_PDF_MAGIC_BYTES):
         _raise_validation_error("file", "File does not look like a PDF.", "value_error")
 
