@@ -65,6 +65,15 @@ class IdempotencyInProgressError(AppError):
     code = "idempotency_in_progress"
 
 
+class TooManyRequestsError(AppError):
+    """The caller has asked for more paid work than one project may start in a window (the
+    spend guard, ``services.spend_guard``). Nothing has been started, so the request can simply
+    be repeated later."""
+
+    status_code = status.HTTP_429_TOO_MANY_REQUESTS
+    code = "too_many_requests"
+
+
 class InsufficientStorageError(AppError):
     """The server does not have room to do the work asked of it (e.g. not enough free disk
     space for a render). Nothing has been started, so the request can simply be repeated once

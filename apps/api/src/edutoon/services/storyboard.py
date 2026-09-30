@@ -84,7 +84,7 @@ from edutoon.services import audit_logs as audit_logs_service
 from edutoon.services import projects as projects_service
 from edutoon.services import script_audio as script_audio_service
 from edutoon.services.job_errors import describe_job_failure, public_job_error
-from edutoon.services.llm_usage import record_call
+from edutoon.services.llm_usage import new_usage_report, record_call
 
 log = structlog.get_logger()
 
@@ -375,7 +375,7 @@ async def run_generate_storyboard_job(
     project_id = UUID(running.payload["project_id"])
     script_id = UUID(running.payload["script_id"])
 
-    report = UsageReport()
+    report = new_usage_report()
     try:
         result = await _generate_storyboard(
             session,

@@ -15,6 +15,7 @@ from edutoon.repositories.source_chunks import NewSourceChunk
 from edutoon.repositories.uploaded_sources import UploadedSourceRecord as UploadedSourceRecord
 from edutoon.services import evidence as evidence_service
 from edutoon.services import source_chunks as source_chunks_service
+from edutoon.services import spend_guard
 
 
 async def upload_source(
@@ -50,6 +51,9 @@ async def upload_source(
     even though parsing didn't, and a failed source can't feed anything
     downstream.
     """
+    # Refuse before anything is stored: an upload that cannot be indexed is not accepted.
+    await spend_guard.ensure_can_start_provider_job(session, project_id=project_id)
+
     checksum = hashlib.sha256(content).hexdigest()
     storage_key = source_storage_key(project_id, checksum)
 

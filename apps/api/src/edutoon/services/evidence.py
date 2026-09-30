@@ -47,6 +47,7 @@ from edutoon.repositories.claim_verifications import (
 from edutoon.repositories.claim_verifications import NewClaimCitation
 from edutoon.repositories.jobs import JobRecord
 from edutoon.repositories.source_chunks import DEFAULT_SIMILARITY_LIMIT
+from edutoon.services import spend_guard
 from edutoon.services.job_errors import describe_job_failure
 
 log = structlog.get_logger()
@@ -312,6 +313,8 @@ async def verify_claim(
         for chunk_id, (chunk, _similarity) in candidates_by_id.items()
     ]
 
+    if usage is not None:
+        usage.ensure_capacity()  # the job's call tripwire: stop before the paid call
     try:
         verdict = await llm.judge_claim(claim_text, passages)
     except LLMResponseError as exc:
@@ -346,6 +349,24 @@ async def verify_claim(
         rationale=verdict.rationale,
         topic_id=topic_id,
         citations=citations,
+    )
+
+
+async def verify_manual_claim(
+    session: AsyncSession,
+    embeddings: Embeddings,
+    llm: LLM,
+    *,
+    project_id: UUID,
+    claim_text: str,
+) -> ClaimVerificationRecord:
+    """A claim typed in by hand (``POST /claim-verifications``): :func:`verify_claim` behind the
+    spend guard. Each one is an embedding and a model call the caller can repeat as fast as they
+    like, so a project may have only ``MAX_MANUAL_CLAIM_VERIFICATIONS_PER_PROJECT_PER_HOUR`` of
+    them an hour (:mod:`edutoon.services.spend_guard`)."""
+    await spend_guard.ensure_can_verify_manual_claim(session, project_id=project_id)
+    return await verify_claim(
+        session, embeddings, llm, project_id=project_id, claim_text=claim_text
     )
 
 

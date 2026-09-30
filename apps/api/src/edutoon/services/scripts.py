@@ -116,8 +116,9 @@ from edutoon.repositories.project_topics import ProjectTopicRecord
 from edutoon.repositories.scripts import ScriptRecord, ScriptSegmentRecord
 from edutoon.services import audit_logs as audit_logs_service
 from edutoon.services import projects as projects_service
+from edutoon.services import spend_guard
 from edutoon.services.job_errors import describe_job_failure
-from edutoon.services.llm_usage import record_call
+from edutoon.services.llm_usage import new_usage_report, record_call
 
 log = structlog.get_logger()
 
@@ -236,6 +237,8 @@ async def enqueue_script_generation(
             f"These accepted topics have no verified evidence yet: {names}. Extract "
             "and verify claims for them, or reject them, before generating a script."
         )
+
+    await spend_guard.ensure_can_start_provider_job(session, project_id=project_id)
 
     model = llm_model or settings.SCRIPT_LLM_MODEL
 
@@ -371,7 +374,7 @@ async def run_generate_script_job(
     project_id = UUID(running.payload["project_id"])
     script_id = UUID(running.payload["script_id"])
 
-    report = UsageReport()
+    report = new_usage_report()
     try:
         result = await _generate_and_attach(
             session,

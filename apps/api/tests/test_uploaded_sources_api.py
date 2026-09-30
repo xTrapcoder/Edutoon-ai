@@ -1047,3 +1047,42 @@ async def test_retrying_without_an_idempotency_key_is_rejected(client_factory, a
         )
 
     assert response.status_code == 422
+
+
+# --- the hourly limit on paid work --------------------------------------------------------------
+
+
+async def test_an_upload_over_the_projects_hourly_limit_is_refused_before_anything_is_stored(
+    client_factory, auth_headers, monkeypatch
+):
+    monkeypatch.setenv("MAX_PROVIDER_JOBS_PER_PROJECT_PER_HOUR", "1")
+    get_settings.cache_clear()
+    settings = get_settings()
+    verifier = get_storage_client(
+        endpoint_url=settings.STORAGE_ENDPOINT_URL,
+        access_key_id=settings.STORAGE_ACCESS_KEY_ID,
+        secret_access_key=settings.STORAGE_SECRET_ACCESS_KEY,
+    )
+    headers = auth_headers()
+    second_pdf = _make_pdf(["A second, different document."])
+    try:
+        async with client_factory() as client:
+            project_id = await _create_project(client, headers)
+            first = await client.post(
+                f"/v1/projects/{project_id}/sources",
+                files=_pdf_file(),
+                headers={**headers, "Idempotency-Key": str(uuid4())},
+            )
+            second = await client.post(
+                f"/v1/projects/{project_id}/sources",
+                files=_pdf_file(second_pdf, "second.pdf"),
+                headers={**headers, "Idempotency-Key": str(uuid4())},
+            )
+    finally:
+        get_settings.cache_clear()
+
+    assert first.status_code == 201
+    assert second.status_code == 429
+    assert second.json()["error"]["code"] == "too_many_requests"
+    key = source_storage_key(UUID(project_id), hashlib.sha256(second_pdf).hexdigest())
+    assert not await verifier.object_exists(bucket=settings.BUCKET_UPLOADS, key=key)

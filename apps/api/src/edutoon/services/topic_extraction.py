@@ -79,8 +79,9 @@ from edutoon.repositories.project_topics import NewProjectTopic, ProjectTopicRec
 from edutoon.repositories.projects import ProjectRecord
 from edutoon.services import audit_logs as audit_logs_service
 from edutoon.services import projects as projects_service
+from edutoon.services import spend_guard
 from edutoon.services.job_errors import describe_job_failure
-from edutoon.services.llm_usage import record_call
+from edutoon.services.llm_usage import new_usage_report, record_call
 
 log = structlog.get_logger()
 
@@ -205,6 +206,7 @@ async def enqueue_topic_extraction(
         raise ValidationError(str(exc)) from exc
 
     await _check_replace_rules(session, project_id, topics=topics, replace=replace)
+    await spend_guard.ensure_can_start_provider_job(session, project_id=project_id)
 
     job = await jobs_repo.create(
         session,
@@ -348,7 +350,7 @@ async def run_extract_topics_job(
     )
     assert running is not None  # just fetched by this id
 
-    report = UsageReport()
+    report = new_usage_report()
     try:
         project_id, replace = _parse_payload(running.payload)
         result = await _extract_and_persist(

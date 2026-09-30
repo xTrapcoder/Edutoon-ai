@@ -78,7 +78,7 @@ async def create_claim_verification(
         await projects_service.get_project(
             session, project_id=project_id, owner_id=current_user.id
         )
-        verification = await evidence_service.verify_claim(
+        verification = await evidence_service.verify_manual_claim(
             session,
             embeddings,
             llm,

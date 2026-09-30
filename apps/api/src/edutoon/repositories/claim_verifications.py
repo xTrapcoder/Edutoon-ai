@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.engine import RowMapping
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -65,6 +65,20 @@ def _citation_from_row(row: RowMapping) -> ClaimCitationRecord:
         similarity=row["similarity"],
         created_at=row["created_at"],
     )
+
+
+async def count_manual_within(
+    session: AsyncSession, *, project_id: UUID, within: timedelta
+) -> int:
+    """How many claims typed in by hand (no topic) were verified for ``project_id`` in the last
+    ``within``, by the database's clock. Claims a job extracted carry a topic and are counted by
+    the job that made them."""
+    stmt = select(func.count()).where(
+        claim_verifications.c.project_id == project_id,
+        claim_verifications.c.topic_id.is_(None),
+        claim_verifications.c.created_at > func.now() - within,
+    )
+    return int((await session.execute(stmt)).scalar_one())
 
 
 async def create(

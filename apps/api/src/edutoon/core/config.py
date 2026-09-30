@@ -70,6 +70,20 @@ class Settings(BaseSettings):
     # bounds one attempt at a call.
     LLM_THINKING: Literal["disabled", "omit"] = "disabled"
     LLM_TIMEOUT_SECONDS: float = Field(default=300.0, ge=10)
+    #
+    # The in-process spend guard (``services.spend_guard``; the application has no billing, so
+    # the provider consoles' own spend limits are the real ceiling - set them before any real
+    # testing). MAX_PROVIDER_CALLS_PER_JOB is a tripwire against a runaway loop, not a budget: no
+    # legitimate job comes near it (the largest, a full-length script, is bounded by
+    # ``domain.script_duration.max_provider_calls``, 65 at the defaults), and a job that reaches it
+    # stops before making the next call. MAX_PROVIDER_JOBS_PER_PROJECT_PER_HOUR bounds how many
+    # paid jobs (indexing, topic and claim extraction, script and storyboard generation) one
+    # project may start in an hour, and MAX_MANUAL_CLAIM_VERIFICATIONS_PER_PROJECT_PER_HOUR how
+    # many claims typed in by hand (each one an embedding and a model call) - both refuse with a
+    # 429 before anything is started.
+    MAX_PROVIDER_CALLS_PER_JOB: int = Field(default=500, ge=1)
+    MAX_PROVIDER_JOBS_PER_PROJECT_PER_HOUR: int = Field(default=30, ge=1)
+    MAX_MANUAL_CLAIM_VERIFICATIONS_PER_PROJECT_PER_HOUR: int = Field(default=120, ge=1)
     PROVIDER_RETRY_ATTEMPTS: int = Field(default=3, ge=1, le=8)
     PROVIDER_RETRY_BASE_DELAY_SECONDS: float = Field(default=2.0, ge=0)
     PROVIDER_RETRY_MAX_DELAY_SECONDS: float = Field(default=30.0, ge=0)

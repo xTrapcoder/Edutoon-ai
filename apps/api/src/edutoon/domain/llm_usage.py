@@ -44,6 +44,18 @@ _METRICS: Final[tuple[str, ...]] = (
 )
 
 
+class ProviderCallLimitError(Exception):
+    """A job reached the most language-model calls one job may make (``MAX_PROVIDER_CALLS_PER_JOB``)
+    and was stopped before making another. The message is written for the project's owner."""
+
+    def __init__(self, limit: int) -> None:
+        super().__init__(
+            f"This job stopped after {limit} AI calls, the most a single job may make, and asked "
+            "for nothing more. If your material really needs more, contact support."
+        )
+        self.limit = limit
+
+
 class UsageLike(Protocol):
     """What a provider's usage object offers - :class:`edutoon.providers.llm.TokenUsage` and
     anything shaped like it."""
@@ -122,8 +134,15 @@ class UsageEntry:
 class UsageReport:
     """The usage of a job (or, merged, of a project), by kind of call."""
 
-    def __init__(self) -> None:
+    def __init__(self, max_calls: int | None = None) -> None:
         self._entries: dict[str, UsageEntry] = {}
+        self.max_calls = max_calls
+
+    def ensure_capacity(self) -> None:
+        """Raise :class:`ProviderCallLimitError` if the job has already made the most calls it
+        may. Called before each call, so the call that would exceed the limit is never made."""
+        if self.max_calls is not None and self.total.calls >= self.max_calls:
+            raise ProviderCallLimitError(self.max_calls)
 
     def add(self, kind: str, usage: UsageLike | None) -> None:
         """Record one answered call of ``kind``. Raises :class:`ValueError` for a kind that is not

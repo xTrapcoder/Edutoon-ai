@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
@@ -164,6 +165,19 @@ async def list_results_by_project(session: AsyncSession, project_id: UUID) -> li
     because the reader (a cost report) sums them. A project has a few dozen jobs at most."""
     stmt = select(jobs.c.result).where(jobs.c.project_id == project_id, jobs.c.result.is_not(None))
     return [row for row in (await session.execute(stmt)).scalars().all() if isinstance(row, dict)]
+
+
+async def count_created_within(
+    session: AsyncSession, *, project_id: UUID, kinds: Sequence[str], within: timedelta
+) -> int:
+    """How many jobs of ``kinds`` were created for ``project_id`` in the last ``within`` (by the
+    database's clock), whatever became of them - a job that failed was still paid for."""
+    stmt = select(func.count()).where(
+        jobs.c.project_id == project_id,
+        jobs.c.kind.in_(list(kinds)),
+        jobs.c.created_at > func.now() - within,
+    )
+    return int((await session.execute(stmt)).scalar_one())
 
 
 async def get_by_idempotency_key(

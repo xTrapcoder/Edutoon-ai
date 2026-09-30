@@ -97,8 +97,9 @@ from edutoon.repositories.project_topics import ProjectTopicRecord
 from edutoon.services import audit_logs as audit_logs_service
 from edutoon.services import evidence as evidence_service
 from edutoon.services import projects as projects_service
+from edutoon.services import spend_guard
 from edutoon.services.job_errors import describe_job_failure
-from edutoon.services.llm_usage import record_call
+from edutoon.services.llm_usage import new_usage_report, record_call
 
 log = structlog.get_logger()
 
@@ -181,6 +182,8 @@ async def enqueue_claim_extraction(
             "There are no accepted topics to extract claims from. Accept at least one "
             "topic first."
         )
+
+    await spend_guard.ensure_can_start_provider_job(session, project_id=project_id)
 
     job = await jobs_repo.create(
         session,
@@ -279,7 +282,7 @@ async def run_extract_claims_job(
     )
     assert running is not None  # just fetched by this id
 
-    report = UsageReport()
+    report = new_usage_report()
     try:
         project_id, replace = _parse_payload(running.payload)
         result = await _run(
