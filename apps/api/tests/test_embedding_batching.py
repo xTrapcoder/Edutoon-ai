@@ -24,6 +24,8 @@ from edutoon.providers import errors as provider_errors
 from edutoon.providers.embeddings import EmbeddingResponseError, Embeddings
 from edutoon.providers.retry import RetryPolicy, retry_transient
 
+pytestmark = pytest.mark.provider_mocked
+
 MODEL = "text-embedding-3-small"
 
 # --- the planner ---------------------------------------------------------------------------

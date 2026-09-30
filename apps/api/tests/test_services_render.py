@@ -74,6 +74,22 @@ def _with_settings(monkeypatch: Any, **overrides: Any) -> None:
     monkeypatch.setattr(render_service, "get_settings", lambda: settings)
 
 
+async def _age_job(session, job_id, *, by: timedelta = timedelta(hours=2)) -> None:
+    """Make a job look as though its worker died ``by`` ago and left it ``running``.
+
+    Recovery measures a job's silence from the later of its start and its last progress report, so
+    both move back; moving only the start would leave the last heartbeat fresh and the job - rightly
+    - alive."""
+    job = await jobs_repo.get_by_id(session, job_id)
+    assert job is not None
+    when = datetime.now(UTC) - by
+    payload = dict(job.payload)
+    payload["progress"] = {**(payload.get("progress") or {}), "updated_at": when.isoformat()}
+    await jobs_repo.update(
+        session, job_id=job_id, status="running", started_at=when, payload=payload
+    )
+
+
 @pytest.fixture
 def storage() -> Storage:
     settings = get_settings()
@@ -829,12 +845,7 @@ async def test_a_worker_killed_mid_render_loses_no_finished_chunk(
 
     # The dead worker's job is left 'running'; once it is old enough it is failed, not resumed
     # in place, and a fresh render picks up exactly where it stopped.
-    await jobs_repo.update(
-        db_session,
-        job_id=enqueued.job.id,
-        status="running",
-        started_at=datetime.now(UTC) - timedelta(hours=2),
-    )
+    await _age_job(db_session, enqueued.job.id)
     renderer.render_chunk = original  # type: ignore[method-assign]
     renderer.die_after = None
     renderer.chunks.clear()
@@ -893,12 +904,7 @@ async def test_a_worker_killed_during_assembly_loses_no_chunk_and_the_next_rende
     assert len(renderer.chunks) == TOTAL_SCENES  # every chunk was already committed
     assert (await _status(db_session, built)).output is None  # and nothing half-made is published
 
-    await jobs_repo.update(
-        db_session,
-        job_id=enqueued.job.id,
-        status="running",
-        started_at=datetime.now(UTC) - timedelta(hours=2),
-    )
+    await _age_job(db_session, enqueued.job.id)
     renderer.assemble = original  # type: ignore[method-assign]
     renderer.chunks.clear()
     _, job = await _render(db_session, storage, renderer, worker_sessionmaker, built)
@@ -942,21 +948,20 @@ async def test_progress_is_real_and_reported_through_the_job(
     db_session, storage, renderer, worker_sessionmaker, built
 ):
     seen: list[dict[str, Any]] = []
-    original = jobs_repo.update
+    original = jobs_repo.record_progress
 
-    async def _spy(session, *, job_id, **fields):
-        payload = fields.get("payload")
-        if isinstance(payload, dict) and "progress" in payload:
+    async def _spy(session, *, job_id, payload):
+        if "progress" in payload:
             seen.append(payload["progress"])
-        return await original(session, job_id=job_id, **fields)
+        return await original(session, job_id=job_id, payload=payload)
 
     import edutoon.services.render as module
 
-    module.jobs_repo.update = _spy  # type: ignore[assignment]
+    module.jobs_repo.record_progress = _spy  # type: ignore[assignment]
     try:
         await _render(db_session, storage, renderer, worker_sessionmaker, built)
     finally:
-        module.jobs_repo.update = original  # type: ignore[assignment]
+        module.jobs_repo.record_progress = original  # type: ignore[assignment]
 
     stages = [p["stage"] for p in seen]
     assert (

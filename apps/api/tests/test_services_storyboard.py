@@ -1266,9 +1266,7 @@ async def test_progress_is_reported_through_independent_sessions(db_session, mon
 # --- token usage --------------------------------------------------------------------------
 
 
-async def test_the_job_records_one_storyboard_call_per_segment_it_composed(
-    db_session, monkeypatch
-):
+async def test_the_job_records_one_storyboard_call_per_segment_it_composed(db_session, monkeypatch):
     _owner, project, script, _segments = await _project_with_ready_audio(
         db_session, durations_ms=[9_000, 6_000]
     )

@@ -29,6 +29,8 @@ from edutoon.services import scripts as scripts_service
 from edutoon.services import storyboard as storyboard_service
 from edutoon.services import topic_extraction as topic_extraction_service
 
+pytestmark = pytest.mark.provider_mocked
+
 HOUR = timedelta(hours=1)
 # ``now()`` is frozen at the start of the test's one transaction, so a job that reported a moment
 # ago is "in the future" of it; a negative threshold reclaims regardless (in production each request
