@@ -7,7 +7,8 @@ from uuid import UUID
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from edutoon.core.errors import NotFoundError
+from edutoon.core.config import get_settings
+from edutoon.core.errors import NotFoundError, ValidationError
 from edutoon.core.pagination import Page
 from edutoon.domain.generation_settings import (
     DEFAULT_LANGUAGE,
@@ -17,6 +18,7 @@ from edutoon.domain.generation_settings import (
     Orientation,
 )
 from edutoon.domain.source_storage import belongs_to_project
+from edutoon.domain.topic import KEYWORD_ONLY_UNSUPPORTED
 from edutoon.providers.storage import Storage
 from edutoon.repositories import projects as projects_repo
 from edutoon.repositories import render as render_repo
@@ -39,6 +41,8 @@ async def create_project(
     orientation: Orientation = DEFAULT_ORIENTATION,
     target_duration_ms: int = DEFAULT_TARGET_DURATION_MS,
 ) -> ProjectRecord:
+    if source_type == "topic" and not get_settings().KEYWORD_ONLY_PROJECTS_ENABLED:
+        raise ValidationError(KEYWORD_ONLY_UNSUPPORTED)
     return await projects_repo.create(
         session,
         owner_id=owner_id,

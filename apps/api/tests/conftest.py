@@ -31,6 +31,10 @@ _TEST_ENV = {
     # the real default. The rest of the suite builds the smallest possible project - one claim, the
     # default five-minute target - to test something else, so here a claim may carry an hour.
     "EVIDENCE_SECONDS_PER_CLAIM": "3600",
+    # Keyword-only projects are off in production (test_keyword_only_disabled.py holds that). Many
+    # older tests build a project the quickest way - source_type "topic" - to test something else,
+    # so they run with the mode on; the tests about the mode being off turn it off again.
+    "KEYWORD_ONLY_PROJECTS_ENABLED": "true",
 }
 
 for key, value in _TEST_ENV.items():

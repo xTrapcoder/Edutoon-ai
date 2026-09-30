@@ -47,6 +47,14 @@ class Settings(BaseSettings):
     APP_BASE_URL: str = "http://localhost:3000"
     API_BASE_URL: str = "http://localhost:8000"
     MAX_UPLOAD_BYTES: int = 104_857_600
+
+    # Keyword-only projects (``source_type: topic``, or a topic extraction with keywords and no
+    # parsed material) are switched off: with nothing to verify against, the evidence pipeline
+    # cannot produce a verified script from keywords alone, and the product's promise is that
+    # every video is. Off by default; the switch exists so the mode can be re-enabled deliberately
+    # (and, if it returns, as a separate mode that says its output is unverified) rather than by
+    # deleting code. PDF projects with keywords are unaffected.
+    KEYWORD_ONLY_PROJECTS_ENABLED: bool = False
     MAX_PDF_PAGES: int = 300
     EMBEDDING_MODEL: str = "text-embedding-3-small"
     LLM_MODEL: str = "claude-sonnet-5"

@@ -57,6 +57,15 @@ STATUS_PROPOSED: TopicStatus = "proposed"
 STATUS_ACCEPTED: TopicStatus = "accepted"
 STATUS_REJECTED: TopicStatus = "rejected"
 
+KEYWORD_ONLY_UNSUPPORTED = (
+    "Keyword-only projects are not supported yet. Every claim in a video must be checked "
+    "against your own source material, and keywords alone give nothing to check against. "
+    "Upload a PDF - you can add keywords to guide it."
+)
+"""What the owner is told when they ask for a keyword-only project (or a topic extraction with
+keywords and no parsed material). Temporary: an unverified, AI-knowledge mode may come later as a
+separate, clearly labelled mode, but it must never be presented as a verified one."""
+
 MODE_PDF: InputMode = "pdf"
 MODE_KEYWORDS: InputMode = "keywords"
 MODE_PDF_KEYWORDS: InputMode = "pdf_keywords"

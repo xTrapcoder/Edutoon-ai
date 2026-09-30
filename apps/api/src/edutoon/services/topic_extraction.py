@@ -54,6 +54,8 @@ from edutoon.core.config import Settings, get_settings
 from edutoon.core.errors import ConflictError, JobError, NotFoundError, ValidationError
 from edutoon.domain.llm_usage import UsageReport
 from edutoon.domain.topic import (
+    KEYWORD_ONLY_UNSUPPORTED,
+    MODE_KEYWORDS,
     PassageSelection,
     SourcePassage,
     TopicLimits,
@@ -204,6 +206,8 @@ async def enqueue_topic_extraction(
         )
     except NoTopicInputError as exc:
         raise ValidationError(str(exc)) from exc
+    if mode == MODE_KEYWORDS and not get_settings().KEYWORD_ONLY_PROJECTS_ENABLED:
+        raise ValidationError(KEYWORD_ONLY_UNSUPPORTED)
 
     await _check_replace_rules(session, project_id, topics=topics, replace=replace)
     await spend_guard.ensure_can_start_provider_job(session, project_id=project_id)
@@ -394,9 +398,12 @@ async def _extract_and_persist(
         for topic in seed_records
     ]
     try:
-        resolve_input_mode(has_passages=bool(chunks), has_seeds=bool(seeds))
+        mode = resolve_input_mode(has_passages=bool(chunks), has_seeds=bool(seeds))
     except NoTopicInputError as exc:
         raise ValidationError(str(exc)) from exc
+    if mode == MODE_KEYWORDS and not settings.KEYWORD_ONLY_PROJECTS_ENABLED:
+        # Defence in depth: enqueue refused this, but the project can change while a job waits.
+        raise ValidationError(KEYWORD_ONLY_UNSUPPORTED)
 
     selection = select_passages(
         [
