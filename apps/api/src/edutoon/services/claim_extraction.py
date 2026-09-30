@@ -81,6 +81,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from edutoon.core.config import Settings, get_settings
 from edutoon.core.errors import ConflictError, JobError, NotFoundError, ValidationError
 from edutoon.domain.claim_extraction import ClaimCandidateLimits, validate_candidates
+from edutoon.domain.llm_usage import UsageReport
 from edutoon.domain.topic import SourcePassage
 from edutoon.domain.topic_tree import accepted_topics, select_passages
 from edutoon.providers.embeddings import Embeddings
@@ -97,6 +98,7 @@ from edutoon.services import audit_logs as audit_logs_service
 from edutoon.services import evidence as evidence_service
 from edutoon.services import projects as projects_service
 from edutoon.services.job_errors import describe_job_failure
+from edutoon.services.llm_usage import record_call
 
 log = structlog.get_logger()
 
@@ -277,14 +279,23 @@ async def run_extract_claims_job(
     )
     assert running is not None  # just fetched by this id
 
+    report = UsageReport()
     try:
         project_id, replace = _parse_payload(running.payload)
         result = await _run(
-            session, embeddings, llm, project_id=project_id, replace=replace, job_id=running.id
+            session,
+            embeddings,
+            llm,
+            project_id=project_id,
+            replace=replace,
+            job_id=running.id,
+            report=report,
         )
     except Exception as exc:  # noqa: BLE001 - any failure fails the job, never raises
         error = describe_job_failure(exc, job_id=running.id, kind=EXTRACT_CLAIMS_JOB_KIND)
-        return await _mark_job_failed(session, job_id=running.id, error=error)
+        return await _mark_job_failed(
+            session, job_id=running.id, error=error, result={"usage": report.as_dict()}
+        )
 
     return await _mark_job_succeeded(session, job_id=running.id, result=result)
 
@@ -323,6 +334,7 @@ async def _run(
     project_id: UUID,
     replace: bool,
     job_id: UUID,
+    report: UsageReport,
 ) -> dict[str, object]:
     settings = get_settings()
     limits = claim_limits_from_settings(settings)
@@ -342,8 +354,6 @@ async def _run(
     processed: list[_TopicOutcome] = []
     skipped: list[UUID] = []
     failures: list[_TopicFailure] = []
-    input_tokens = 0
-    output_tokens = 0
 
     for topic in eligible:
         existing_texts = await claim_verifications_repo.list_claim_texts_by_topic(
@@ -366,9 +376,9 @@ async def _run(
                 summary=topic.summary,
                 keywords=tuple(topic.keywords),
             )
-            draft, usage = await llm.extract_claims(brief, passages, limits=limits)
-            input_tokens += usage.input_tokens
-            output_tokens += usage.output_tokens
+            draft = await record_call(
+                report, "claim_extraction", llm.extract_claims(brief, passages, limits=limits)
+            )
 
             candidate_texts = validate_candidates(
                 draft, limits=limits, existing_claim_texts=existing_texts
@@ -384,6 +394,7 @@ async def _run(
                         project_id=project_id,
                         claim_text=text,
                         topic_id=topic.id,
+                        usage=report,
                     )
                     statuses.append(verification.status)
         except Exception as exc:  # noqa: BLE001 - one topic's failure must not sink the job
@@ -416,8 +427,7 @@ async def _run(
         skipped=skipped,
         failures=failures,
         replace=replace,
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
+        report=report,
         embeddings_model=embeddings.model,
         llm_model=llm.model,
     )
@@ -467,8 +477,7 @@ def _result(
     skipped: list[UUID],
     failures: list[_TopicFailure],
     replace: bool,
-    input_tokens: int,
-    output_tokens: int,
+    report: UsageReport,
     embeddings_model: str,
     llm_model: str,
 ) -> dict[str, object]:
@@ -495,8 +504,9 @@ def _result(
             for f in failures
         ],
         "replace": replace,
-        "input_tokens": input_tokens,
-        "output_tokens": output_tokens,
+        "input_tokens": report.total.input_tokens or 0,
+        "output_tokens": report.total.output_tokens or 0,
+        "usage": report.as_dict(),
         "embedding_model": embeddings_model,
         "llm_model": llm_model,
     }
@@ -512,9 +522,16 @@ async def _mark_job_succeeded(
     return updated
 
 
-async def _mark_job_failed(session: AsyncSession, *, job_id: UUID, error: str) -> JobRecord:
+async def _mark_job_failed(
+    session: AsyncSession, *, job_id: UUID, error: str, result: dict[str, object] | None = None
+) -> JobRecord:
     updated = await jobs_repo.update(
-        session, job_id=job_id, status="failed", finished_at=datetime.now(UTC), error=error
+        session,
+        job_id=job_id,
+        status="failed",
+        finished_at=datetime.now(UTC),
+        error=error,
+        **({"result": result} if result is not None else {}),
     )
     assert updated is not None
     return updated

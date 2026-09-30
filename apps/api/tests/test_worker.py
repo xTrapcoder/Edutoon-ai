@@ -68,6 +68,7 @@ from edutoon.services import topic_extraction as topic_extraction_service
 from edutoon.worker.dispatch import JOB_HANDLERS, WorkerProviders
 from edutoon.worker.runner import process_one_job
 from tests.leaky_errors import assert_clean, leaky_anthropic, leaky_db_error
+from tests.usage_helpers import usage_of
 
 # Stands in for an external provider (OpenAI / Anthropic): these tests prove how our code
 # handles a response, never how a real provider behaves. See "Provider-mocked tests"
@@ -808,6 +809,7 @@ async def test_process_one_job_runs_the_extract_topics_handler(
         "replaced": False,
         "input_tokens": 11,
         "output_tokens": 22,
+        "usage": usage_of("topic_extraction", 11, 22),
         "llm_model": LLM_MODEL,
     }
     stored = await project_topics_repo.list_all_by_project(db_session, project.id)
@@ -913,6 +915,7 @@ async def test_process_one_job_runs_the_extract_claims_handler(
         "replace": False,
         "input_tokens": 5,
         "output_tokens": 7,
+        "usage": usage_of("claim_extraction", 5, 7),
         "embedding_model": EMBEDDING_MODEL,
         "llm_model": LLM_MODEL,
     }

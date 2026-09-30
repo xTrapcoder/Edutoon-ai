@@ -22,7 +22,7 @@ from edutoon.core.logging import configure_logging
 from edutoon.db import dispose_engine, get_engine
 from edutoon.providers.cache import Redis, get_redis_client
 from edutoon.providers.embeddings import Embeddings, embeddings_from_settings
-from edutoon.providers.llm import LLM, get_llm_client
+from edutoon.providers.llm import LLM, llm_from_settings
 from edutoon.providers.storage import Storage, get_storage_client
 
 REQUEST_ID_HEADER = "X-Request-Id"
@@ -38,14 +38,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         secret_access_key=settings.STORAGE_SECRET_ACCESS_KEY,
     )
     embeddings_client: Embeddings = embeddings_from_settings(settings)
-    llm_client: LLM = get_llm_client(
-        api_key=settings.ANTHROPIC_API_KEY, model=settings.LLM_MODEL
-    )
+    llm_client: LLM = llm_from_settings(settings, model=settings.LLM_MODEL)
     # A second client bound to SCRIPT_LLM_MODEL. Claim judging keeps `llm`; a script is
     # queued for this one's model (and the worker builds its own to write it).
-    script_llm_client: LLM = get_llm_client(
-        api_key=settings.ANTHROPIC_API_KEY, model=settings.SCRIPT_LLM_MODEL
-    )
+    script_llm_client: LLM = llm_from_settings(settings, model=settings.SCRIPT_LLM_MODEL)
     app.state.engine = get_engine()
     app.state.redis = redis_client
     app.state.storage = storage_client

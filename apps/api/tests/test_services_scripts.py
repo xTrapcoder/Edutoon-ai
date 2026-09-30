@@ -1132,3 +1132,86 @@ async def test_progress_is_visible_mid_run_without_blocking_or_partial_script_da
             await cleanup_conn.execute(users_table.delete().where(users_table.c.id == owner.id))
         await dispose_engine()
         session_module._sessionmaker = None
+
+
+# --- token usage is recorded by kind of call, including on failure --------------------
+
+
+async def test_a_generation_records_its_usage_by_kind_with_the_correction_pass_apart(
+    db_session, monkeypatch
+):
+    monkeypatch.setenv("MAX_SCRIPT_CORRECTION_ATTEMPTS", "1")
+    get_settings.cache_clear()
+    try:
+        _owner, _project, topic, claim, enq = await _enqueued(db_session)
+        llm, _outline, _section = _mock_llm(
+            monkeypatch,
+            sections_by_topic={
+                topic.id: [
+                    [_on_target([str(claim.id)], duration_ms=10_000)],  # far off target
+                    [_on_target([str(claim.id)], duration_ms=300_000)],  # the correction
+                ]
+            },
+        )
+
+        job = await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
+
+        usage = job.result["usage"]
+        assert job.status == "succeeded" and job.result["correction_applied"] is True
+        assert sorted(usage["by_call"]) == ["script_correction", "script_outline", "script_section"]
+        for kind in usage["by_call"]:
+            assert usage["by_call"][kind]["calls"] == 1
+            assert (
+                usage["by_call"][kind]["input_tokens"],
+                usage["by_call"][kind]["output_tokens"],
+            ) == (10, 10)
+        assert usage["total"]["calls"] == 3 and usage["total"]["input_tokens"] == 30
+        # The flat totals the result always had are the same numbers.
+        assert (job.result["input_tokens"], job.result["output_tokens"]) == (30, 30)
+    finally:
+        get_settings.cache_clear()
+
+
+async def test_a_failed_generation_still_records_what_its_calls_cost(db_session, monkeypatch):
+    """A response that was received, paid for and then rejected is counted, and so are the calls
+    that succeeded before it: a run that fails on its second call still cost two."""
+    _owner, _project, topic, claim, enq = await _enqueued(db_session)
+    llm, _outline, _section = _simple_llm(
+        monkeypatch, segments_by_topic={topic.id: [_on_target([str(claim.id)])]}
+    )
+    monkeypatch.setattr(
+        llm,
+        "compose_script_section",
+        AsyncMock(
+            side_effect=LLMResponseError(
+                "The section was cut off at the output limit.",
+                usage=TokenUsage(input_tokens=7, output_tokens=3),
+            )
+        ),
+    )
+
+    job = await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
+
+    assert job.status == "failed"
+    usage = job.result["usage"]
+    assert usage["by_call"]["script_outline"]["input_tokens"] == 10
+    assert usage["by_call"]["script_section"]["calls"] == 1
+    assert (
+        usage["by_call"]["script_section"]["input_tokens"],
+        usage["by_call"]["script_section"]["output_tokens"],
+    ) == (7, 3)
+    assert usage["total"]["input_tokens"] == 17
+
+
+async def test_a_failure_before_any_answer_records_no_usage_rather_than_a_guess(
+    db_session, monkeypatch
+):
+    _owner, _project, _topic, _claim, enq = await _enqueued(db_session)
+    llm = _llm_raising_on_outline(monkeypatch, leaky_anthropic(500))
+
+    job = await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
+
+    assert job.status == "failed"
+    assert job.result["usage"]["total"]["calls"] == 0
+    assert job.result["usage"]["total"]["input_tokens"] is None  # unavailable, not zero
+    assert job.result["usage"]["by_call"] == {}

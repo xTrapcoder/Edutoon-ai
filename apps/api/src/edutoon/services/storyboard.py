@@ -58,6 +58,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from edutoon.core.config import get_settings
 from edutoon.core.errors import ConflictError, JobError, NotFoundError, ValidationError
+from edutoon.domain.llm_usage import UsageReport
 from edutoon.domain.storyboard_provenance import has_lexical_overlap, require_provenance
 from edutoon.domain.storyboard_template import validate_scene_content
 from edutoon.domain.storyboard_timing import (
@@ -83,6 +84,7 @@ from edutoon.services import audit_logs as audit_logs_service
 from edutoon.services import projects as projects_service
 from edutoon.services import script_audio as script_audio_service
 from edutoon.services.job_errors import describe_job_failure, public_job_error
+from edutoon.services.llm_usage import record_call
 
 log = structlog.get_logger()
 
@@ -373,6 +375,7 @@ async def run_generate_storyboard_job(
     project_id = UUID(running.payload["project_id"])
     script_id = UUID(running.payload["script_id"])
 
+    report = UsageReport()
     try:
         result = await _generate_storyboard(
             session,
@@ -382,10 +385,13 @@ async def run_generate_storyboard_job(
             job_id=running.id,
             payload=running.payload,
             sessionmaker=sessionmaker,
+            report=report,
         )
     except Exception as exc:  # noqa: BLE001 - any setup failure fails the job, never raises
         error = describe_job_failure(exc, job_id=running.id, kind=GENERATE_STORYBOARD_JOB_KIND)
-        return await _mark_job_failed(session, job_id=running.id, error=error)
+        return await _mark_job_failed(
+            session, job_id=running.id, error=error, result={"usage": report.as_dict()}
+        )
 
     if result["ready_segment_count"] == 0:
         return await _mark_job_failed(
@@ -406,6 +412,7 @@ async def _generate_storyboard(
     job_id: UUID,
     payload: dict[str, Any],
     sessionmaker: async_sessionmaker[AsyncSession] | None,
+    report: UsageReport,
 ) -> dict[str, object]:
     settings = get_settings()
 
@@ -483,14 +490,18 @@ async def _generate_storyboard(
                     sessionmaker, session, script_segment_id=segment.id, scenes=[]
                 )
             else:
-                draft, _usage = await llm.compose_storyboard_scenes(
-                    StoryboardSegmentBrief(
-                        segment_index=segment.segment_index,
-                        narration_text=segment.narration_text,
-                        orientation=project.orientation,
-                        lesson_title=project.title,
+                draft = await record_call(
+                    report,
+                    "storyboard",
+                    llm.compose_storyboard_scenes(
+                        StoryboardSegmentBrief(
+                            segment_index=segment.segment_index,
+                            narration_text=segment.narration_text,
+                            orientation=project.orientation,
+                            lesson_title=project.title,
+                        ),
+                        max_scenes=expected_count,
                     ),
-                    max_scenes=expected_count,
                 )
                 provider_calls += 1
 
@@ -560,6 +571,7 @@ async def _generate_storyboard(
         "outcome": outcome,
         "provider_calls": provider_calls,
         "dropped_visual_count": dropped_visuals,
+        "usage": report.as_dict(),
     }
 
 

@@ -62,6 +62,14 @@ class Settings(BaseSettings):
     # EMBEDDING_MAX_* are the size of one embeddings request. The defaults are the provider's own
     # hard ceilings for ``text-embedding-3-small`` (2048 inputs, 300 000 tokens); lower them to make
     # each request smaller, never higher. ``domain.embedding_batches`` explains the token estimate.
+    #
+    # LLM_THINKING is how extended thinking is configured on every Anthropic request: ``disabled``
+    # sends ``thinking: {"type": "disabled"}`` (required, because a forced tool call cannot be
+    # combined with thinking and the current model thinks adaptively when it is omitted); ``omit``
+    # leaves the parameter out, for a model that rejects a disabled value. LLM_TIMEOUT_SECONDS
+    # bounds one attempt at a call.
+    LLM_THINKING: Literal["disabled", "omit"] = "disabled"
+    LLM_TIMEOUT_SECONDS: float = Field(default=300.0, ge=10)
     PROVIDER_RETRY_ATTEMPTS: int = Field(default=3, ge=1, le=8)
     PROVIDER_RETRY_BASE_DELAY_SECONDS: float = Field(default=2.0, ge=0)
     PROVIDER_RETRY_MAX_DELAY_SECONDS: float = Field(default=30.0, ge=0)

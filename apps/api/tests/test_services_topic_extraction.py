@@ -49,6 +49,7 @@ from edutoon.services import job_errors
 from edutoon.services import topic_extraction as service
 from edutoon.services import uploaded_sources as uploaded_sources_service
 from tests.leaky_errors import assert_clean, leaky_anthropic, leaky_db_error
+from tests.usage_helpers import NO_USAGE, usage_of
 
 # Stands in for an external provider (OpenAI / Anthropic): these tests prove how our code
 # handles a response, never how a real provider behaves. See "Provider-mocked tests"
@@ -320,6 +321,7 @@ async def test_pdf_only_persists_source_topics_with_their_citations(db_session, 
         "replaced": False,
         "input_tokens": 321,
         "output_tokens": 123,
+        "usage": usage_of("topic_extraction", 321, 123),
         "llm_model": MODEL,
     }
 
@@ -961,7 +963,8 @@ async def test_a_failed_job_records_the_error_and_never_raises(db_session, monke
 
     assert (job.status, job.attempts, job.error) == ("failed", 1, job_errors.GENERIC_ERROR)
     assert "exploded" not in job.error
-    assert job.result is None
+    # The call never got an answer, so nothing was spent - and the job says so.
+    assert job.result == {"usage": NO_USAGE}
     assert job.started_at is not None and job.finished_at is not None
 
 

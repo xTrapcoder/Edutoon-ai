@@ -1199,3 +1199,30 @@ async def test_progress_is_reported_through_independent_sessions(db_session, mon
 
     assert job.status == "succeeded"
     assert job.payload["progress"]["stage"] == "finalising"
+
+
+# --- token usage --------------------------------------------------------------------------
+
+
+async def test_the_job_records_one_storyboard_call_per_segment_it_composed(
+    db_session, monkeypatch
+):
+    _owner, project, script, _segments = await _project_with_ready_audio(
+        db_session, durations_ms=[9_000, 6_000]
+    )
+    llm, _mock, _calls = _llm_with(monkeypatch, {0: _title_scene("A"), 1: _title_scene("B")})
+    enq = await service.enqueue_storyboard_generation(
+        db_session,
+        project_id=project.id,
+        owner_id=project.owner_id,
+        script_id=script.id,
+        idempotency_key="k",
+    )
+
+    job = await service.run_generate_storyboard_job(db_session, llm, job_id=enq.job.id)
+
+    usage = job.result["usage"]
+    assert sorted(usage["by_call"]) == ["storyboard"]
+    assert usage["by_call"]["storyboard"]["calls"] == 2
+    assert usage["total"]["input_tokens"] == 10 and usage["total"]["output_tokens"] == 10
+    assert job.result["provider_calls"] == 2

@@ -44,19 +44,43 @@ is a single typed question with a single typed answer:
 Every one of these forces the model to answer through a tool call and raises
 :class:`LLMResponseError` - never a plausible-looking fabrication - when the
 response does not match the expected shape.
+
+**One check for every response** (:func:`_tool_input`). Before any of a response's content is
+read, it is checked as a whole: a ``refusal`` (the provider declined - :class:`LLMRefusalError`),
+a ``max_tokens`` stop (the answer was cut off, so a tool call that still parses is not to be
+trusted), a ``model_context_window_exceeded`` stop, any other stop reason that means the answer is
+incomplete (``pause_turn``, ``stop_sequence``, an unknown one), a missing or wrongly named tool
+call and a tool input that is not an object all fail the call, clearly, instead of being parsed
+into something that looks like content. Every such error carries the tokens the failed call used
+(:attr:`LLMResponseError.usage`), because a rejected response was still paid for.
+
+**Thinking is explicit.** A forced ``tool_choice`` cannot be combined with extended thinking, and
+the current model runs adaptive thinking when the parameter is omitted, so requests send
+``thinking: {"type": "disabled"}`` (``LLM_THINKING``; ``omit`` leaves it out for a model that
+rejects a disabled value). With thinking off no hidden reasoning tokens compete with the answer for
+``max_tokens``, so the ceilings below are all answer tokens.
+
+**Transient failures are retried** by the one policy in :mod:`edutoon.providers.retry` (the SDK's
+own retries are off, so a failing call is not repeated several times over), and each attempt has a
+timeout (``LLM_TIMEOUT_SECONDS``). Every call is logged with its stop reason and token usage.
 """
 
 from __future__ import annotations
 
+import asyncio
 import math
-from collections.abc import Sequence
+import time
+from collections.abc import Awaitable, Callable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Literal, cast
+from typing import Any, Literal, cast
 from uuid import UUID
 
+import structlog
 from anthropic import AsyncAnthropic
-from anthropic.types import MessageParam, ToolChoiceToolParam, ToolParam, ToolUseBlock
+from anthropic.types import Message, MessageParam, ToolChoiceToolParam, ToolParam, ToolUseBlock
 
+from edutoon.core.config import Settings
 from edutoon.domain.claim_extraction import (
     ClaimCandidateDraft,
     ClaimCandidateLimits,
@@ -94,6 +118,9 @@ from edutoon.domain.topic import (
 )
 from edutoon.domain.topic_tree import resolve_input_mode
 from edutoon.domain.visual_schema import build_visual_json_schema
+from edutoon.providers.retry import RetryPolicy, retry_policy_from_settings, retry_transient
+
+log = structlog.get_logger()
 
 VerdictStatus = Literal["supported", "partially_supported", "unsupported", "contradicted"]
 
@@ -102,6 +129,10 @@ _VALID_STATUSES: frozenset[str] = frozenset(
 )
 
 _VERDICT_TOOL_NAME = "submit_verdict"
+
+# A verdict is a status, a rationale and a few ids; this is answer tokens only (thinking is off),
+# with room for a long rationale so one is never the reason a verdict is cut off.
+_JUDGE_MAX_OUTPUT_TOKENS = 2048
 
 _SYSTEM_PROMPT = (
     "You verify a single factual claim against numbered source passages. "
@@ -138,7 +169,21 @@ _VERDICT_TOOL: ToolParam = {
 
 
 class LLMResponseError(Exception):
-    """The model's response didn't match the expected verdict shape."""
+    """The model's response couldn't be used: it didn't match the expected shape, was cut off,
+    or was refused. The message is written for the project's owner and is shown to them.
+
+    ``usage`` is what the call cost (``None`` if it was never made, or the response carried no
+    usage) - set here for a response that was received and then rejected, so a failed call is
+    still counted."""
+
+    def __init__(self, message: str, *, usage: TokenUsage | None = None) -> None:
+        super().__init__(message)
+        self.usage = usage
+
+
+class LLMRefusalError(LLMResponseError):
+    """The provider declined to answer (``stop_reason == "refusal"``). Nothing in the response is
+    used, and the same request is not repeated: a refusal is not transient."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,6 +197,7 @@ class Verdict:
     status: VerdictStatus
     rationale: str
     cited_passage_ids: list[str]
+    usage: TokenUsage | None = None
 
 
 def _format_passages(passages: list[Passage]) -> str:
@@ -402,8 +448,87 @@ class SectionContinuity:
 
 @dataclass(frozen=True, slots=True)
 class TokenUsage:
+    """What one provider call reported using. ``input_tokens`` / ``output_tokens`` are the
+    provider's own counts. The two cache figures are ``None`` when the provider did not report them
+    - unavailable, never guessed as zero."""
+
     input_tokens: int
     output_tokens: int
+    cache_creation_input_tokens: int | None = None
+    cache_read_input_tokens: int | None = None
+
+
+def _usage_of(response: Message) -> TokenUsage:
+    usage = response.usage
+    return TokenUsage(
+        input_tokens=usage.input_tokens,
+        output_tokens=usage.output_tokens,
+        cache_creation_input_tokens=getattr(usage, "cache_creation_input_tokens", None),
+        cache_read_input_tokens=getattr(usage, "cache_read_input_tokens", None),
+    )
+
+
+# A forced tool call ends with ``tool_use``; ``end_turn`` (and an unset reason) are accepted only
+# because they can accompany a complete tool call - the tool call itself is still required.
+_COMPLETE_STOP_REASONS: frozenset[str | None] = frozenset({None, "tool_use", "end_turn"})
+
+REFUSED_MESSAGE = (
+    "The AI provider declined to process this material, so nothing was generated from it. "
+    "Try again with different wording or material."
+)
+CONTEXT_WINDOW_MESSAGE = "The material was too large for the AI model to process in one go."
+
+
+def _tool_input(
+    response: Message, *, tool_name: str, truncated: str, missing: str
+) -> tuple[dict[str, object], TokenUsage]:
+    """The forced tool's input, and what the call cost - or a clear :class:`LLMResponseError`.
+
+    The response is judged as a whole first (module docstring, "One check for every response"):
+    a refusal, a cut-off or otherwise incomplete answer is never parsed, however plausible the
+    part that arrived looks. ``truncated`` and ``missing`` are the messages for those two cases, so
+    each capability keeps saying what it was asked for.
+    """
+    usage = _usage_of(response)
+    stop = response.stop_reason
+    if stop == "refusal":
+        category = getattr(getattr(response, "stop_details", None), "category", None)
+        log.warning("llm.refused", category=category)
+        raise LLMRefusalError(REFUSED_MESSAGE, usage=usage)
+    if stop == "max_tokens":
+        raise LLMResponseError(truncated, usage=usage)
+    if stop == "model_context_window_exceeded":
+        raise LLMResponseError(CONTEXT_WINDOW_MESSAGE, usage=usage)
+    if stop not in _COMPLETE_STOP_REASONS:
+        raise LLMResponseError(
+            f"The AI model stopped before finishing its answer ({stop}).", usage=usage
+        )
+
+    tool_use = next(
+        (
+            block
+            for block in response.content
+            if isinstance(block, ToolUseBlock) and block.name == tool_name
+        ),
+        None,
+    )
+    if tool_use is None:
+        raise LLMResponseError(missing, usage=usage)
+    if not isinstance(tool_use.input, dict):
+        raise LLMResponseError("The model's answer was not in the expected format.", usage=usage)
+    return tool_use.input, usage
+
+
+@contextmanager
+def _usage_on_error(usage: TokenUsage) -> Iterator[None]:
+    """Attach ``usage`` to any :class:`LLMResponseError` raised inside the block, so a response
+    that was received, paid for and then rejected while being parsed still reports its cost."""
+    try:
+        yield
+    except LLMResponseError as exc:
+        if exc.usage is None:
+            exc.usage = usage
+        raise
 
 
 def _coerce_uuid(value: str) -> UUID | None:
@@ -914,16 +1039,64 @@ def _parse_topic_draft(
     return TopicDraft(nodes=tuple(nodes))
 
 
-class LLM:
-    """Thin async wrapper over an Anthropic client bound to one model."""
+ThinkingMode = Literal["disabled", "omit"]
 
-    def __init__(self, client: AsyncAnthropic, *, model: str) -> None:
+
+class LLM:
+    """Thin async wrapper over an Anthropic client bound to one model.
+
+    ``thinking`` is how extended thinking is configured on every request (module docstring,
+    "Thinking is explicit"). ``retry`` is the policy for transient failures; a client built
+    directly makes one attempt, and ``llm_from_settings`` applies the configured policy.
+    """
+
+    def __init__(
+        self,
+        client: AsyncAnthropic,
+        *,
+        model: str,
+        thinking: ThinkingMode = "disabled",
+        retry: RetryPolicy | None = None,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    ) -> None:
         self._client = client
         self._model = model
+        self._thinking = thinking
+        self._retry = retry or RetryPolicy(max_attempts=1)
+        self._sleep = sleep
 
     @property
     def model(self) -> str:
         return self._model
+
+    async def _create(self, kind: str, **request: Any) -> Message:
+        """The one place a request is made: thinking configured, transient failures retried, and
+        the call logged with its stop reason and token usage (never its content)."""
+        if self._thinking == "disabled":
+            request["thinking"] = {"type": "disabled"}
+
+        async def _call() -> Message:
+            message: Message = await self._client.messages.create(model=self._model, **request)
+            return message
+
+        started = time.perf_counter()
+        response = await retry_transient(
+            _call, policy=self._retry, what=f"llm.{kind}", sleep=self._sleep
+        )
+        usage = _usage_of(response)
+        log.info(
+            "llm.call",
+            kind=kind,
+            model=self._model,
+            stop_reason=response.stop_reason,
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            cache_creation_input_tokens=usage.cache_creation_input_tokens,
+            cache_read_input_tokens=usage.cache_read_input_tokens,
+            seconds=round(time.perf_counter() - started, 2),
+            request_id=getattr(response, "_request_id", None),
+        )
+        return response
 
     async def judge_claim(self, claim: str, passages: list[Passage]) -> Verdict:
         """Judge ``claim`` against exactly ``passages`` - no other source
@@ -941,34 +1114,33 @@ class LLM:
         ]
         tool_choice: ToolChoiceToolParam = {"type": "tool", "name": _VERDICT_TOOL_NAME}
 
-        response = await self._client.messages.create(
-            model=self._model,
-            max_tokens=1024,
+        response = await self._create(
+            "claim_judge",
+            max_tokens=_JUDGE_MAX_OUTPUT_TOKENS,
             system=_SYSTEM_PROMPT,
             messages=messages,
             tools=[_VERDICT_TOOL],
             tool_choice=tool_choice,
         )
-
-        tool_use = next(
-            (block for block in response.content if isinstance(block, ToolUseBlock)), None
+        raw, usage = _tool_input(
+            response,
+            tool_name=_VERDICT_TOOL_NAME,
+            truncated="The verdict was cut off at the output limit.",
+            missing="The model did not return a verdict tool call.",
         )
-        if tool_use is None:
-            raise LLMResponseError("The model did not return a verdict tool call.")
 
-        raw = tool_use.input
+        with _usage_on_error(usage):
+            status = raw.get("status")
+            if status not in _VALID_STATUSES:
+                raise LLMResponseError(f"Unexpected verdict status: {status!r}")
 
-        status = raw.get("status")
-        if status not in _VALID_STATUSES:
-            raise LLMResponseError(f"Unexpected verdict status: {status!r}")
+            rationale = raw.get("rationale")
+            if not isinstance(rationale, str):
+                raise LLMResponseError("Verdict rationale must be a string.")
 
-        rationale = raw.get("rationale")
-        if not isinstance(rationale, str):
-            raise LLMResponseError("Verdict rationale must be a string.")
-
-        raw_cited = raw.get("cited_passage_ids")
-        if not isinstance(raw_cited, list) or not all(isinstance(p, str) for p in raw_cited):
-            raise LLMResponseError("Verdict cited_passage_ids must be a list of strings.")
+            raw_cited = raw.get("cited_passage_ids")
+            if not isinstance(raw_cited, list) or not all(isinstance(p, str) for p in raw_cited):
+                raise LLMResponseError("Verdict cited_passage_ids must be a list of strings.")
 
         # Never trust a cited id the model invented outside what it was
         # actually shown - filtered here, at the provider boundary, not
@@ -976,7 +1148,10 @@ class LLM:
         cited = [pid for pid in raw_cited if pid in known_ids]
 
         return Verdict(
-            status=cast(VerdictStatus, status), rationale=rationale, cited_passage_ids=cited
+            status=cast(VerdictStatus, status),
+            rationale=rationale,
+            cited_passage_ids=cited,
+            usage=usage,
         )
 
     async def compose_script_outline(
@@ -1008,29 +1183,22 @@ class LLM:
         ]
         tool_choice: ToolChoiceToolParam = {"type": "tool", "name": _OUTLINE_TOOL_NAME}
 
-        response = await self._client.messages.create(
-            model=self._model,
+        response = await self._create(
+            "script_outline",
             max_tokens=_outline_max_tokens(len(topics)),
             system=_OUTLINE_SYSTEM_PROMPT,
             messages=messages,
             tools=[_OUTLINE_TOOL],
             tool_choice=tool_choice,
         )
-
-        if response.stop_reason == "max_tokens":
-            raise LLMResponseError("The lesson outline was cut off at the output limit.")
-
-        tool_use = next(
-            (block for block in response.content if isinstance(block, ToolUseBlock)), None
+        raw, usage = _tool_input(
+            response,
+            tool_name=_OUTLINE_TOOL_NAME,
+            truncated="The lesson outline was cut off at the output limit.",
+            missing="The model did not return an outline tool call.",
         )
-        if tool_use is None:
-            raise LLMResponseError("The model did not return an outline tool call.")
-
-        draft = _parse_outline_draft(tool_use.input, known_topic_ids=frozenset(topic_ids))
-        usage = TokenUsage(
-            input_tokens=response.usage.input_tokens,
-            output_tokens=response.usage.output_tokens,
-        )
+        with _usage_on_error(usage):
+            draft = _parse_outline_draft(raw, known_topic_ids=frozenset(topic_ids))
         return draft, usage
 
     async def compose_script_section(
@@ -1093,34 +1261,27 @@ class LLM:
         ]
         tool_choice: ToolChoiceToolParam = {"type": "tool", "name": _SECTION_TOOL_NAME}
 
-        response = await self._client.messages.create(
-            model=self._model,
+        response = await self._create(
+            "script_section",
             max_tokens=_section_max_tokens(duration_ms, words_per_minute),
             system=_SECTION_SYSTEM_PROMPT,
             messages=messages,
             tools=[_SECTION_TOOL],
             tool_choice=tool_choice,
         )
-
-        if response.stop_reason == "max_tokens":
-            raise LLMResponseError("The section was cut off at the output limit.")
-
-        tool_use = next(
-            (block for block in response.content if isinstance(block, ToolUseBlock)), None
+        raw, usage = _tool_input(
+            response,
+            tool_name=_SECTION_TOOL_NAME,
+            truncated="The section was cut off at the output limit.",
+            missing="The model did not return a section tool call.",
         )
-        if tool_use is None:
-            raise LLMResponseError("The model did not return a section tool call.")
-
-        segments = _parse_section_draft(
-            tool_use.input,
-            known_claim_ids=known_claim_ids,
-            max_segments=max_segments,
-            words_per_minute=words_per_minute,
-        )
-        usage = TokenUsage(
-            input_tokens=response.usage.input_tokens,
-            output_tokens=response.usage.output_tokens,
-        )
+        with _usage_on_error(usage):
+            segments = _parse_section_draft(
+                raw,
+                known_claim_ids=known_claim_ids,
+                max_segments=max_segments,
+                words_per_minute=words_per_minute,
+            )
         return segments, usage
 
     async def extract_topics(
@@ -1174,36 +1335,29 @@ class LLM:
         ]
         tool_choice: ToolChoiceToolParam = {"type": "tool", "name": _TOPICS_TOOL_NAME}
 
-        response = await self._client.messages.create(
-            model=self._model,
+        response = await self._create(
+            "topic_extraction",
             max_tokens=_topics_max_tokens(limits),
             system=_TOPIC_SYSTEM_PROMPT,
             messages=messages,
             tools=[_topics_tool(limits)],
             tool_choice=tool_choice,
         )
-
-        if response.stop_reason == "max_tokens":
-            # A tool call cut off mid-JSON can still parse into a plausible but
-            # incomplete outline; never accept one.
-            raise LLMResponseError("The topic outline was cut off at the output limit.")
-
-        tool_use = next(
-            (block for block in response.content if isinstance(block, ToolUseBlock)), None
+        # A tool call cut off mid-JSON can still parse into a plausible but incomplete outline;
+        # ``_tool_input`` never lets one through.
+        raw, usage = _tool_input(
+            response,
+            tool_name=_TOPICS_TOOL_NAME,
+            truncated="The topic outline was cut off at the output limit.",
+            missing="The model did not return a topics tool call.",
         )
-        if tool_use is None:
-            raise LLMResponseError("The model did not return a topics tool call.")
-
-        draft = _parse_topic_draft(
-            tool_use.input,
-            known_chunk_ids=frozenset(passage_ids),
-            known_seed_refs=frozenset(seed_refs),
-            max_topics=limits.max_topics,
-        )
-        usage = TokenUsage(
-            input_tokens=response.usage.input_tokens,
-            output_tokens=response.usage.output_tokens,
-        )
+        with _usage_on_error(usage):
+            draft = _parse_topic_draft(
+                raw,
+                known_chunk_ids=frozenset(passage_ids),
+                known_seed_refs=frozenset(seed_refs),
+                max_topics=limits.max_topics,
+            )
         return draft, usage
 
     async def extract_claims(
@@ -1242,31 +1396,24 @@ class LLM:
         ]
         tool_choice: ToolChoiceToolParam = {"type": "tool", "name": _CLAIMS_TOOL_NAME}
 
-        response = await self._client.messages.create(
-            model=self._model,
+        response = await self._create(
+            "claim_extraction",
             max_tokens=_claims_max_tokens(limits),
             system=_CLAIM_SYSTEM_PROMPT,
             messages=messages,
             tools=[_claims_tool(limits)],
             tool_choice=tool_choice,
         )
-
-        if response.stop_reason == "max_tokens":
-            # A tool call cut off mid-JSON can still parse into a plausible but
-            # incomplete list; never accept one.
-            raise LLMResponseError("The candidate claims were cut off at the output limit.")
-
-        tool_use = next(
-            (block for block in response.content if isinstance(block, ToolUseBlock)), None
+        # A tool call cut off mid-JSON can still parse into a plausible but incomplete list;
+        # ``_tool_input`` never lets one through.
+        raw, usage = _tool_input(
+            response,
+            tool_name=_CLAIMS_TOOL_NAME,
+            truncated="The candidate claims were cut off at the output limit.",
+            missing="The model did not return a claims tool call.",
         )
-        if tool_use is None:
-            raise LLMResponseError("The model did not return a claims tool call.")
-
-        draft = _parse_claim_draft(tool_use.input, max_claims=limits.max_claims_per_topic)
-        usage = TokenUsage(
-            input_tokens=response.usage.input_tokens,
-            output_tokens=response.usage.output_tokens,
-        )
+        with _usage_on_error(usage):
+            draft = _parse_claim_draft(raw, max_claims=limits.max_claims_per_topic)
         return draft, usage
 
     async def compose_storyboard_scenes(
@@ -1305,34 +1452,53 @@ class LLM:
         ]
         tool_choice: ToolChoiceToolParam = {"type": "tool", "name": _STORYBOARD_TOOL_NAME}
 
-        response = await self._client.messages.create(
-            model=self._model,
+        response = await self._create(
+            "storyboard",
             max_tokens=_storyboard_max_tokens(max_scenes),
             system=_STORYBOARD_SYSTEM_PROMPT,
             messages=messages,
             tools=[_storyboard_tool(max_scenes)],
             tool_choice=tool_choice,
         )
-
-        if response.stop_reason == "max_tokens":
-            raise LLMResponseError("The scene set was cut off at the output limit.")
-
-        tool_use = next(
-            (block for block in response.content if isinstance(block, ToolUseBlock)), None
+        raw, usage = _tool_input(
+            response,
+            tool_name=_STORYBOARD_TOOL_NAME,
+            truncated="The scene set was cut off at the output limit.",
+            missing="The model did not return a scenes tool call.",
         )
-        if tool_use is None:
-            raise LLMResponseError("The model did not return a scenes tool call.")
-
-        draft = _parse_storyboard_draft(tool_use.input, max_scenes=max_scenes)
-        usage = TokenUsage(
-            input_tokens=response.usage.input_tokens,
-            output_tokens=response.usage.output_tokens,
-        )
+        with _usage_on_error(usage):
+            draft = _parse_storyboard_draft(raw, max_scenes=max_scenes)
         return draft, usage
 
 
-def get_llm_client(*, api_key: str, model: str) -> LLM:
-    return LLM(AsyncAnthropic(api_key=api_key), model=model)
+def get_llm_client(
+    *,
+    api_key: str,
+    model: str,
+    thinking: ThinkingMode = "disabled",
+    timeout_seconds: float = 300.0,
+    retry: RetryPolicy | None = None,
+) -> LLM:
+    # The SDK's own retries are off: ``retry`` (providers.retry) is the only policy, so a failing
+    # call is not repeated (2 + 1) x (attempts) times. ``timeout_seconds`` bounds one attempt.
+    return LLM(
+        AsyncAnthropic(api_key=api_key, max_retries=0, timeout=timeout_seconds),
+        model=model,
+        thinking=thinking,
+        retry=retry,
+    )
+
+
+def llm_from_settings(settings: Settings, *, model: str) -> LLM:
+    """An LLM client bound to ``model``, built from configuration - the one place the API and the
+    worker both get theirs from."""
+    return get_llm_client(
+        api_key=settings.ANTHROPIC_API_KEY,
+        model=model,
+        thinking=settings.LLM_THINKING,
+        timeout_seconds=settings.LLM_TIMEOUT_SECONDS,
+        retry=retry_policy_from_settings(settings),
+    )
 
 
 # --- Candidate claim extraction (Phase 6) ---------------------------------------

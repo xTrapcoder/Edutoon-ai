@@ -15,6 +15,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 
+from edutoon.domain.llm_usage import LLM_CALL_KINDS, UsageEntry, UsageReport
 from edutoon.repositories.jobs import JobRecord
 
 JobKind = Literal[
@@ -52,6 +53,44 @@ class JobResponse(BaseModel):
     @classmethod
     def from_record(cls, record: JobRecord) -> JobResponse:
         return cls.model_validate(record)
+
+
+class UsageEntryResponse(BaseModel):
+    """Language-model usage for one kind of call, or in total. A token figure is ``null`` when the
+    provider reported none - unavailable, never guessed as zero; ``calls_with_usage`` below
+    ``calls`` means the sums are a lower bound."""
+
+    calls: int
+    calls_with_usage: int
+    input_tokens: int | None
+    output_tokens: int | None
+    cache_creation_input_tokens: int | None
+    cache_read_input_tokens: int | None
+
+    @classmethod
+    def from_entry(cls, entry: UsageEntry) -> UsageEntryResponse:
+        return cls(**entry.as_dict())  # type: ignore[arg-type]
+
+
+class ProjectUsageResponse(BaseModel):
+    """What the language model has cost a project, by kind of call. ``by_call`` holds only the
+    kinds that were used; the keys are ``topic_extraction``, ``claim_extraction``,
+    ``claim_judge``, ``script_outline``, ``script_section``, ``script_correction`` and
+    ``storyboard``."""
+
+    total: UsageEntryResponse
+    by_call: dict[str, UsageEntryResponse]
+
+    @classmethod
+    def from_report(cls, report: UsageReport) -> ProjectUsageResponse:
+        return cls(
+            total=UsageEntryResponse.from_entry(report.total),
+            by_call={
+                kind: UsageEntryResponse.from_entry(report.entry(kind))
+                for kind in LLM_CALL_KINDS
+                if report.entry(kind).calls
+            },
+        )
 
 
 class JobListResponse(BaseModel):

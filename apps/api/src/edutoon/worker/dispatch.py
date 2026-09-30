@@ -35,7 +35,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from edutoon.core.config import Settings
 from edutoon.providers.embeddings import Embeddings, embeddings_from_settings
-from edutoon.providers.llm import LLM, get_llm_client
+from edutoon.providers.llm import LLM, llm_from_settings
 from edutoon.providers.renderer import Renderer, get_renderer
 from edutoon.providers.storage import Storage, get_storage_client
 from edutoon.repositories.jobs import JobRecord
@@ -88,10 +88,8 @@ def build_worker_providers(settings: Settings) -> WorkerProviders:
     """
     return WorkerProviders(
         embeddings=embeddings_from_settings(settings),
-        llm=get_llm_client(api_key=settings.ANTHROPIC_API_KEY, model=settings.LLM_MODEL),
-        script_llm=get_llm_client(
-            api_key=settings.ANTHROPIC_API_KEY, model=settings.SCRIPT_LLM_MODEL
-        ),
+        llm=llm_from_settings(settings, model=settings.LLM_MODEL),
+        script_llm=llm_from_settings(settings, model=settings.SCRIPT_LLM_MODEL),
         storage=get_storage_client(
             endpoint_url=settings.STORAGE_ENDPOINT_URL,
             access_key_id=settings.STORAGE_ACCESS_KEY_ID,

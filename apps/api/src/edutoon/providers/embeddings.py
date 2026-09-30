@@ -55,7 +55,9 @@ class Embeddings:
         self._client = client
         self._model = model
         self._limits = limits or BatchLimits()
-        self._retry = retry or RetryPolicy()
+        # A client built directly makes one attempt; the factories (``embeddings_from_settings``)
+        # apply the configured policy, so a retry is always a deliberate, configured thing.
+        self._retry = retry or RetryPolicy(max_attempts=1)
         self._sleep = sleep
 
     @property

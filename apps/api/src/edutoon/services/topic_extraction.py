@@ -52,6 +52,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from edutoon.core.config import Settings, get_settings
 from edutoon.core.errors import ConflictError, JobError, NotFoundError, ValidationError
+from edutoon.domain.llm_usage import UsageReport
 from edutoon.domain.topic import (
     PassageSelection,
     SourcePassage,
@@ -67,7 +68,7 @@ from edutoon.domain.topic_tree import (
     select_passages,
     validate_and_build,
 )
-from edutoon.providers.llm import LLM, TokenUsage, TopicBrief
+from edutoon.providers.llm import LLM, TopicBrief
 from edutoon.repositories import jobs as jobs_repo
 from edutoon.repositories import project_topics as project_topics_repo
 from edutoon.repositories import projects as projects_repo
@@ -79,6 +80,7 @@ from edutoon.repositories.projects import ProjectRecord
 from edutoon.services import audit_logs as audit_logs_service
 from edutoon.services import projects as projects_service
 from edutoon.services.job_errors import describe_job_failure
+from edutoon.services.llm_usage import record_call
 
 log = structlog.get_logger()
 
@@ -346,12 +348,17 @@ async def run_extract_topics_job(
     )
     assert running is not None  # just fetched by this id
 
+    report = UsageReport()
     try:
         project_id, replace = _parse_payload(running.payload)
-        result = await _extract_and_persist(session, llm, project_id=project_id, replace=replace)
+        result = await _extract_and_persist(
+            session, llm, project_id=project_id, replace=replace, report=report
+        )
     except Exception as exc:  # noqa: BLE001 - any failure fails the job, never raises
         error = describe_job_failure(exc, job_id=running.id, kind=EXTRACT_TOPICS_JOB_KIND)
-        return await _mark_job_failed(session, job_id=running.id, error=error)
+        return await _mark_job_failed(
+            session, job_id=running.id, error=error, result={"usage": report.as_dict()}
+        )
 
     return await _mark_job_succeeded(session, job_id=running.id, result=result)
 
@@ -365,7 +372,7 @@ def _parse_payload(payload: Mapping[str, Any]) -> tuple[UUID, bool]:
 
 
 async def _extract_and_persist(
-    session: AsyncSession, llm: LLM, *, project_id: UUID, replace: bool
+    session: AsyncSession, llm: LLM, *, project_id: UUID, replace: bool, report: UsageReport
 ) -> dict[str, object]:
     settings = get_settings()
     limits = topic_limits_from_settings(settings)
@@ -402,11 +409,10 @@ async def _extract_and_persist(
         budget_chars=settings.TOPIC_INPUT_BUDGET_CHARS,
     )
 
-    draft, usage = await llm.extract_topics(
-        _brief_for(project),
-        selection.passages,
-        seeds,
-        limits=limits,
+    draft = await record_call(
+        report,
+        "topic_extraction",
+        llm.extract_topics(_brief_for(project), selection.passages, seeds, limits=limits),
     )
 
     # Only the passages the model was actually shown may be cited - not every
@@ -436,7 +442,7 @@ async def _extract_and_persist(
         seed_records={topic.id: topic for topic in seed_records},
     )
 
-    return _result(tree=tree, selection=selection, replace=replace, usage=usage, model=llm.model)
+    return _result(tree=tree, selection=selection, replace=replace, report=report, model=llm.model)
 
 
 def _clip(text: str, max_chars: int) -> str:
@@ -582,7 +588,7 @@ def _result(
     tree: ValidatedTopicTree,
     selection: PassageSelection,
     replace: bool,
-    usage: TokenUsage,
+    report: UsageReport,
     model: str,
 ) -> dict[str, object]:
     """The structured job result. ``truncated`` says the model saw only part of
@@ -597,8 +603,9 @@ def _result(
         "truncated": selection.truncated,
         "dropped_uncited": tree.dropped_uncited,
         "replaced": replace,
-        "input_tokens": usage.input_tokens,
-        "output_tokens": usage.output_tokens,
+        "input_tokens": report.total.input_tokens or 0,
+        "output_tokens": report.total.output_tokens or 0,
+        "usage": report.as_dict(),
         "llm_model": model,
     }
 
@@ -617,13 +624,16 @@ async def _mark_job_succeeded(
     return updated
 
 
-async def _mark_job_failed(session: AsyncSession, *, job_id: UUID, error: str) -> JobRecord:
+async def _mark_job_failed(
+    session: AsyncSession, *, job_id: UUID, error: str, result: dict[str, object] | None = None
+) -> JobRecord:
     updated = await jobs_repo.update(
         session,
         job_id=job_id,
         status="failed",
         finished_at=datetime.now(UTC),
         error=error,
+        **({"result": result} if result is not None else {}),
     )
     assert updated is not None
     return updated

@@ -32,8 +32,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from edutoon.core.errors import ConflictError, NotFoundError
 from edutoon.core.pagination import DEFAULT_PAGE_SIZE, Page
 from edutoon.domain.embedding_batches import EMBEDDING_DIMENSIONS, estimate_tokens, plan_batches
+from edutoon.domain.llm_usage import UsageReport
 from edutoon.providers.embeddings import Embeddings
-from edutoon.providers.llm import LLM, Passage
+from edutoon.providers.llm import LLM, LLMResponseError, Passage
 from edutoon.repositories import claim_verifications as claim_verifications_repo
 from edutoon.repositories import jobs as jobs_repo
 from edutoon.repositories import source_chunks as source_chunks_repo
@@ -258,6 +259,7 @@ async def verify_claim(
     claim_text: str,
     topic_id: UUID | None = None,
     limit: int = DEFAULT_SIMILARITY_LIMIT,
+    usage: UsageReport | None = None,
 ) -> ClaimVerificationRecord:
     """Verify ``claim_text`` against ``project_id``'s indexed source material.
 
@@ -282,6 +284,10 @@ async def verify_claim(
     keyword-only topic with nothing indexed genuinely has no material to
     verify against, and this is exactly the "no candidates" branch below, not
     a bypass of it.
+
+    ``usage`` (if given) receives the judge call's token usage as ``claim_judge`` - a job that
+    verifies many claims passes its report so the cost of judging is part of its result. A claim
+    typed in by hand has no job; its usage is in the ``llm.call`` log line only.
     """
     [claim_vector] = await embeddings.embed([claim_text])
     candidates = await source_chunks_repo.search_by_similarity(
@@ -306,7 +312,14 @@ async def verify_claim(
         for chunk_id, (chunk, _similarity) in candidates_by_id.items()
     ]
 
-    verdict = await llm.judge_claim(claim_text, passages)
+    try:
+        verdict = await llm.judge_claim(claim_text, passages)
+    except LLMResponseError as exc:
+        if usage is not None:
+            usage.add("claim_judge", exc.usage)  # an answer that was paid for and rejected
+        raise
+    if usage is not None:
+        usage.add("claim_judge", verdict.usage)
 
     # Defense in depth: providers.llm.LLM already filters cited ids against
     # what it was shown, but this is the actual persistence boundary, so it

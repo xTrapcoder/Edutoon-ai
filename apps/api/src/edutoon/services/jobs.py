@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from edutoon.core.errors import NotFoundError
 from edutoon.core.pagination import Page
+from edutoon.domain.llm_usage import UsageReport
 from edutoon.repositories import jobs as jobs_repo
 from edutoon.repositories.jobs import JobRecord
 
@@ -51,6 +52,17 @@ async def list_jobs_for_project(
     session: AsyncSession, project_id: UUID, *, limit: int = 50, cursor: str | None = None
 ) -> Page[JobRecord]:
     return await jobs_repo.list_by_project(session, project_id, limit=limit, cursor=cursor)
+
+
+async def usage_for_project(session: AsyncSession, project_id: UUID) -> UsageReport:
+    """What the language model has cost a project so far: the ``usage`` every job recorded on its
+    result (``domain.llm_usage``), summed by kind of call - failed jobs included, since they were
+    paid for. A claim typed in by hand has no job and is not in it (it is in the ``llm.call``
+    log line only). Ownership is the caller's to check (rule 9)."""
+    report = UsageReport()
+    for result in await jobs_repo.list_results_by_project(session, project_id):
+        report.merge(UsageReport.from_dict(result.get("usage")))
+    return report
 
 
 async def claim_next_job(session: AsyncSession) -> JobRecord | None:

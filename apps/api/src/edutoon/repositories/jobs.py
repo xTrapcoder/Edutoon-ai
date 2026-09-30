@@ -159,6 +159,13 @@ async def get_by_id(session: AsyncSession, job_id: UUID) -> JobRecord | None:
     return _from_row(row) if row is not None else None
 
 
+async def list_results_by_project(session: AsyncSession, project_id: UUID) -> list[dict[str, Any]]:
+    """The ``result`` of every job of ``project_id`` that has one - all of them, unpaginated,
+    because the reader (a cost report) sums them. A project has a few dozen jobs at most."""
+    stmt = select(jobs.c.result).where(jobs.c.project_id == project_id, jobs.c.result.is_not(None))
+    return [row for row in (await session.execute(stmt)).scalars().all() if isinstance(row, dict)]
+
+
 async def get_by_idempotency_key(
     session: AsyncSession, *, project_id: UUID, kind: str, idempotency_key: str
 ) -> JobRecord | None:

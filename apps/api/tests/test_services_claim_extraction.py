@@ -631,3 +631,47 @@ async def test_injected_instruction_text_in_a_candidate_is_stored_as_ordinary_un
     # never auto-marked "supported" by anything it said about itself.
     assert claim.claim_text == injected
     assert claim.status == "unsupported"
+
+
+# --- token usage: extraction and judging are recorded apart ---------------------------------
+
+
+async def test_the_job_records_the_judge_calls_apart_from_the_extraction_call(
+    db_session, monkeypatch
+):
+    owner, project = await _project(db_session)
+    topic, chunk = await _accepted_source_topic(db_session, project)
+    await _index(db_session, chunk)
+    vector = [1.0] + [0.0] * 1535
+    llm, _ = _claims_llm(
+        monkeypatch,
+        [["Water splits into oxygen and hydrogen ions."]],
+        verdict={
+            "status": "supported",
+            "rationale": "Directly stated.",
+            "cited_passage_ids": [str(chunk.id)],
+        },
+    )
+    embeddings = _fake_embeddings(
+        monkeypatch, {"Water splits into oxygen and hydrogen ions.": vector}
+    )
+
+    finished = await _run(db_session, llm, embeddings, project_id=project.id)
+
+    by_call = finished.result["usage"]["by_call"]
+    assert sorted(by_call) == ["claim_extraction", "claim_judge"]  # (jsonb reorders keys)
+    assert by_call["claim_extraction"]["calls"] == 1
+    assert by_call["claim_judge"]["calls"] == 1
+    assert finished.result["usage"]["total"]["calls"] == 2
+    assert finished.result["input_tokens"] == 10  # 5 + 5, the job's whole cost
+
+
+async def test_a_topic_with_nothing_indexed_costs_no_judge_call(db_session, monkeypatch):
+    owner, project = await _project(db_session)
+    await _accepted_keyword_topic(db_session, project)
+    llm, _ = _claims_llm(monkeypatch, [["A claim."]])
+    embeddings = _fake_embeddings(monkeypatch)
+
+    finished = await _run(db_session, llm, embeddings, project_id=project.id)
+
+    assert sorted(finished.result["usage"]["by_call"]) == ["claim_extraction"]

@@ -88,6 +88,7 @@ from edutoon.core.config import Settings, get_settings
 from edutoon.core.errors import ConflictError, JobError, NotFoundError, ValidationError
 from edutoon.core.pagination import DEFAULT_PAGE_SIZE, Page
 from edutoon.domain.generation_settings import MAX_TARGET_DURATION_MS
+from edutoon.domain.llm_usage import UsageReport
 from edutoon.domain.script import ScriptDraft, ScriptSegmentDraft
 from edutoon.domain.script_duration import (
     allocate_topic_budgets,
@@ -103,7 +104,6 @@ from edutoon.providers.llm import (
     ScriptBrief,
     SectionContinuity,
     SectionTopicBrief,
-    TokenUsage,
 )
 from edutoon.repositories import claim_verifications as claim_verifications_repo
 from edutoon.repositories import jobs as jobs_repo
@@ -117,6 +117,7 @@ from edutoon.repositories.scripts import ScriptRecord, ScriptSegmentRecord
 from edutoon.services import audit_logs as audit_logs_service
 from edutoon.services import projects as projects_service
 from edutoon.services.job_errors import describe_job_failure
+from edutoon.services.llm_usage import record_call
 
 log = structlog.get_logger()
 
@@ -370,6 +371,7 @@ async def run_generate_script_job(
     project_id = UUID(running.payload["project_id"])
     script_id = UUID(running.payload["script_id"])
 
+    report = UsageReport()
     try:
         result = await _generate_and_attach(
             session,
@@ -379,6 +381,7 @@ async def run_generate_script_job(
             job_id=running.id,
             payload=running.payload,
             sessionmaker=sessionmaker,
+            report=report,
         )
     except Exception as exc:  # noqa: BLE001 - any failure fails job + script, never raises
         await scripts_repo.set_status(
@@ -389,7 +392,10 @@ async def run_generate_script_job(
             llm_model=llm.model,
         )
         error = describe_job_failure(exc, job_id=running.id, kind=GENERATE_SCRIPT_JOB_KIND)
-        return await _mark_job_failed(session, job_id=running.id, error=error)
+        # A failed generation still paid for the calls it made: keep their usage.
+        return await _mark_job_failed(
+            session, job_id=running.id, error=error, result={"usage": report.as_dict()}
+        )
 
     return await _mark_job_succeeded(session, job_id=running.id, result=result)
 
@@ -507,12 +513,16 @@ async def _generate_units(
     sessionmaker: async_sessionmaker[AsyncSession] | None,
     job_id: UUID,
     payload: dict[str, Any],
-) -> tuple[list[ScriptSegmentDraft], TokenUsage]:
+    report: UsageReport,
+    kind: str,
+) -> list[ScriptSegmentDraft]:
     """Generate every unit's section in order, stamping each returned segment
     with its unit's ``topic_id`` (never taken from the model) and carrying
     bounded continuity forward from one unit to the next. Returns the
     segments in generation order (local per-call indices; the caller
-    re-indexes across the whole assembled script) and the summed token usage.
+    re-indexes across the whole assembled script). Every call's token usage is
+    recorded in ``report`` under ``kind`` (``script_section`` for the first pass,
+    ``script_correction`` for the bounded correction pass).
     """
     topic_order = list(dict.fromkeys(unit.topic.id for unit in units))
     topic_index_of = {topic_id: index for index, topic_id in enumerate(topic_order)}
@@ -520,8 +530,6 @@ async def _generate_units(
     all_segments: list[ScriptSegmentDraft] = []
     previous_topic_title: str | None = None
     previous_tail: str | None = None
-    input_tokens = 0
-    output_tokens = 0
 
     for index, unit in enumerate(units):
         await _report_progress(
@@ -552,20 +560,22 @@ async def _generate_units(
             next_topic_title=_next_topic_title(units, index),
         )
 
-        segments, usage = await llm.compose_script_section(
-            brief,
-            topic_brief,
-            list(unit.claims),
-            continuity,
-            duration_ms=unit.duration_ms,
-            unit_index=unit.unit_index,
-            unit_count=unit.unit_count,
-            max_segments=settings.MAX_SCRIPT_SEGMENTS,
-            max_claims=settings.MAX_CLAIMS_PER_SECTION,
-            words_per_minute=settings.SCRIPT_WORDS_PER_MINUTE,
+        segments = await record_call(
+            report,
+            kind,
+            llm.compose_script_section(
+                brief,
+                topic_brief,
+                list(unit.claims),
+                continuity,
+                duration_ms=unit.duration_ms,
+                unit_index=unit.unit_index,
+                unit_count=unit.unit_count,
+                max_segments=settings.MAX_SCRIPT_SEGMENTS,
+                max_claims=settings.MAX_CLAIMS_PER_SECTION,
+                words_per_minute=settings.SCRIPT_WORDS_PER_MINUTE,
+            ),
         )
-        input_tokens += usage.input_tokens
-        output_tokens += usage.output_tokens
 
         stamped = [replace(segment, topic_id=unit.topic.id) for segment in segments]
         all_segments.extend(stamped)
@@ -573,7 +583,7 @@ async def _generate_units(
             previous_topic_title = unit.topic.title
         previous_tail = _tail(stamped[-1].narration_text, settings.CONTINUITY_CONTEXT_CHARS)
 
-    return all_segments, TokenUsage(input_tokens=input_tokens, output_tokens=output_tokens)
+    return all_segments
 
 
 async def _generate_and_attach(
@@ -585,6 +595,7 @@ async def _generate_and_attach(
     job_id: UUID,
     payload: dict[str, Any],
     sessionmaker: async_sessionmaker[AsyncSession] | None,
+    report: UsageReport,
 ) -> dict[str, object]:
     settings = get_settings()
 
@@ -652,13 +663,12 @@ async def _generate_and_attach(
         )
         for topic in topics
     ]
-    outline_draft, outline_usage = await llm.compose_script_outline(brief, outline_topics)
+    outline_draft = await record_call(
+        report, "script_outline", llm.compose_script_outline(brief, outline_topics)
+    )
     outline_by_topic = {topic.topic_id: topic for topic in outline_draft.topics}
 
-    input_tokens = outline_usage.input_tokens
-    output_tokens = outline_usage.output_tokens
-
-    segments, usage = await _generate_units(
+    segments = await _generate_units(
         llm,
         brief,
         outline_draft.title,
@@ -668,9 +678,9 @@ async def _generate_and_attach(
         sessionmaker=sessionmaker,
         job_id=job_id,
         payload=payload,
+        report=report,
+        kind="script_section",
     )
-    input_tokens += usage.input_tokens
-    output_tokens += usage.output_tokens
 
     estimated_total = sum(segment.estimated_duration_ms for segment in segments)
     correction_applied = False
@@ -684,7 +694,7 @@ async def _generate_and_attach(
         rescaled_units = [
             replace(unit, duration_ms=max(1, round(unit.duration_ms * factor))) for unit in units
         ]
-        segments, correction_usage = await _generate_units(
+        segments = await _generate_units(
             llm,
             brief,
             outline_draft.title,
@@ -694,9 +704,9 @@ async def _generate_and_attach(
             sessionmaker=sessionmaker,
             job_id=job_id,
             payload=payload,
+            report=report,
+            kind="script_correction",
         )
-        input_tokens += correction_usage.input_tokens
-        output_tokens += correction_usage.output_tokens
         estimated_total = sum(segment.estimated_duration_ms for segment in segments)
         correction_applied = True
         # Duration is a target, not a hard gate (rule: TTS does not exist yet,
@@ -737,8 +747,9 @@ async def _generate_and_attach(
         "duration_difference_ms": difference,
         "duration_difference_pct": round(difference / target * 100, 1) if target else 0.0,
         "correction_applied": correction_applied,
-        "input_tokens": input_tokens,
-        "output_tokens": output_tokens,
+        "input_tokens": report.total.input_tokens or 0,
+        "output_tokens": report.total.output_tokens or 0,
+        "usage": report.as_dict(),
         "llm_model": llm.model,
     }
 
@@ -757,13 +768,16 @@ async def _mark_job_succeeded(
     return updated
 
 
-async def _mark_job_failed(session: AsyncSession, *, job_id: UUID, error: str) -> JobRecord:
+async def _mark_job_failed(
+    session: AsyncSession, *, job_id: UUID, error: str, result: dict[str, object] | None = None
+) -> JobRecord:
     updated = await jobs_repo.update(
         session,
         job_id=job_id,
         status="failed",
         finished_at=datetime.now(UTC),
         error=error,
+        **({"result": result} if result is not None else {}),
     )
     assert updated is not None
     return updated

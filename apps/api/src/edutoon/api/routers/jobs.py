@@ -17,7 +17,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from edutoon.api.dependencies import get_current_user
-from edutoon.api.schemas.jobs import JobListResponse, JobResponse
+from edutoon.api.schemas.jobs import JobListResponse, JobResponse, ProjectUsageResponse
 from edutoon.core.pagination import DEFAULT_PAGE_SIZE
 from edutoon.db.session import get_session
 from edutoon.services import jobs as jobs_service
@@ -28,6 +28,17 @@ router = APIRouter(prefix="/projects/{project_id}/jobs", tags=["jobs"])
 
 CurrentUser = Annotated[UserRecord, Depends(get_current_user)]
 Session = Annotated[AsyncSession, Depends(get_session)]
+
+
+@router.get("/usage")
+async def get_project_usage(
+    project_id: UUID, current_user: CurrentUser, session: Session
+) -> ProjectUsageResponse:
+    """What the language model has cost this project so far, by kind of call - the sum of what
+    its jobs recorded (``services.jobs.usage_for_project``)."""
+    await projects_service.get_project(session, project_id=project_id, owner_id=current_user.id)
+    report = await jobs_service.usage_for_project(session, project_id)
+    return ProjectUsageResponse.from_report(report)
 
 
 @router.get("")
