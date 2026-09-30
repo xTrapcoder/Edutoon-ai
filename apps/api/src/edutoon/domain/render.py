@@ -88,24 +88,36 @@ from edutoon.domain.visual import visual_drawing_id
 
 # --- production constants -----------------------------------------------------------
 
-FPS: Final = 30
-"""The production frame rate. 30 rather than 25 or 24: educational content is slides and
-short motions, where 30 gives visibly smoother fades and slides than 24/25 for ~17% more
-frames than 25, and is a whole-number divisor of nothing awkward - 30 fps is the same in
-Indian and European delivery (web/mobile playback is frame-rate agnostic), whereas 25 is a
-broadcast convention this product does not target. Phase 9 stores no frame rate; only the
-render configuration does."""
+FPS: Final = 60
+"""The production frame rate: a constant 60 fps. It is a whole-number divisor of nothing awkward
+for web and mobile playback (every mainstream player handles constant-frame-rate 60), and every
+frame position in this module is derived from it through :func:`frame_at`, never from a second
+copy of the number. It was 30 until the pre-API readiness pass; the change is not just the
+constant - the H.264 level each profile signals has to be valid for the frame size *at this rate*
+(:func:`profile_level_problem`, held by a test and re-checked on every render plan and on every
+finished video by :func:`check_output`), and a keyframe interval is stated in seconds
+(:data:`GOP_SECONDS`), not in frames. Phase 9 stores no frame rate; only the render configuration
+does."""
 
-RENDERER_VERSION: Final = "pillow-ffmpeg/3"
+RENDERER_VERSION: Final = "pillow-ffmpeg/4"
 """Identifies the drawing code *and* the assembly recipe. Bump it whenever a change would
 alter the pixels or the bitstream of an existing scene - every chunk fingerprint includes it,
 so artifacts from an older renderer are never treated as current.
 
-History: ``/3`` (Phase 11, glyph safety) - text that used a symbol Noto Sans lacks
+History: ``/4`` (60 fps) - the production frame rate went from 30 to 60, the H.264 levels were
+raised to ones that are valid at that rate and the keyframe interval was re-stated in seconds.
+Every chunk fingerprint already includes ``fps`` and the encoding profile, so chunks rendered at
+30 fps could never have been reused; the bump makes the break explicit and independent of those
+inputs. ``/3`` (Phase 11, glyph safety) - text that used a symbol Noto Sans lacks
 (``-> <= >= ~= ✓`` ...) was cached with a missing-glyph box in it. Drawing now falls back to the
 other bundled font, or to a drawn check/cross mark, so those pixels changed. This bump
 **intentionally invalidates every previously cached chunk once** (text templates included): they
 are re-rendered on the next render rather than keeping known-bad pixels."""
+
+GOP_SECONDS: Final = 2
+"""The keyframe interval, in seconds. A chunk is its own encode, so it always starts on a keyframe
+whatever this is; the interval only bounds seek granularity and error propagation inside a long
+scene. Two seconds is what the 30 fps profiles (60 frames) always meant."""
 
 MAX_STORED_ERROR_CHARS: Final = 500
 
@@ -169,6 +181,18 @@ class EncodingProfile:
 # because a still-heavy scene gains nothing from looking 40 frames ahead.
 X264_PARAMS: Final = "scenecut=0:threads=4:rc-lookahead=10"
 
+# The H.264 level each profile signals, and why (ITU-T H.264 Annex A, Table A-1). A level bounds
+# the macroblock (16x16) rate, the frame size and the decoded-picture buffer; a decoder is entitled
+# to refuse a stream that signals a level below what its pictures actually need. At 60 fps:
+#   * ``high``: 1920x1080 (and 1080x1920) is 120 x 68 = 8160 macroblocks a frame, 489 600 a
+#     second. Level 4.0/4.1 allow 245 760 a second (enough for 30 fps, 244 800 - not for 60);
+#     level 4.2 allows 522 240 and a frame of 8704, so 4.2 is the lowest valid level.
+#   * ``low``: 960x540 is 60 x 34 = 2040 macroblocks a frame, 122 400 a second. Level 3.1 allows
+#     108 000 (enough for 30 fps only); level 3.2 allows 216 000, the lowest valid level.
+# :func:`profile_level_problem` recomputes this from the frame size and rate, so the table above is
+# checked by a test rather than trusted, and :func:`check_output` checks the level a finished file
+# really signals.
+
 # ``bframes=0`` is deliberate: it makes the last frame of a chunk removable at assembly
 # without re-encoding (nothing decodes after it), which is what lets a chunk be rendered once
 # for any sub-frame phase (module docstring, "Timing"). The audio settings keep the
@@ -180,9 +204,9 @@ PROFILES: Final[Mapping[str, EncodingProfile]] = {
         crf=30,
         preset="veryfast",
         x264_profile="high",
-        x264_level="3.1",
+        x264_level="3.2",
         pix_fmt="yuv420p",
-        gop_frames=60,
+        gop_frames=GOP_SECONDS * FPS,
         bframes=0,
         x264_params=X264_PARAMS,
         audio_bitrate_kbps=64,
@@ -195,9 +219,9 @@ PROFILES: Final[Mapping[str, EncodingProfile]] = {
         crf=20,
         preset="medium",
         x264_profile="high",
-        x264_level="4.0",
+        x264_level="4.2",
         pix_fmt="yuv420p",
-        gop_frames=60,
+        gop_frames=GOP_SECONDS * FPS,
         bframes=0,
         x264_params=X264_PARAMS,
         audio_bitrate_kbps=96,
@@ -241,6 +265,81 @@ def output_size(orientation: str, quality: str) -> tuple[int, int]:
     width, height = _FULL_SIZE[orientation]
     percent = profile_for(quality).scale_percent
     return (width * percent // 100 // 2 * 2, height * percent // 100 // 2 * 2)
+
+
+# --- H.264 levels ----------------------------------------------------------------------------
+
+# (level_idc, MaxMBPS, MaxFS, MaxDpbMbs) from ITU-T H.264 Annex A, Table A-1, for the levels a 4:2:0
+# 8-bit High-profile video can use. ``level_idc`` is ten times the level (4.2 -> 42), which is also
+# how ffprobe reports it. Level 1b is left out: it has no bearing on HD video.
+H264_LEVELS: Final[tuple[tuple[int, int, int, int], ...]] = (
+    (10, 1_485, 99, 396),
+    (11, 3_000, 396, 900),
+    (12, 6_000, 396, 2_376),
+    (13, 11_880, 396, 2_376),
+    (20, 11_880, 396, 2_376),
+    (21, 19_800, 792, 4_752),
+    (22, 20_250, 1_620, 8_100),
+    (30, 40_500, 1_620, 8_100),
+    (31, 108_000, 3_600, 18_000),
+    (32, 216_000, 5_120, 20_480),
+    (40, 245_760, 8_192, 32_768),
+    (41, 245_760, 8_192, 32_768),
+    (42, 522_240, 8_704, 34_816),
+    (50, 589_824, 22_080, 110_400),
+    (51, 983_040, 36_864, 184_320),
+    (52, 2_073_600, 36_864, 184_320),
+)
+
+
+def level_idc(level: str) -> int:
+    """``"4.2"`` -> ``42``. Raises :class:`ValueError` for anything that is not ``major.minor``."""
+    major, dot, minor = level.partition(".")
+    if not dot or not major.isdigit() or not minor.isdigit() or len(minor) != 1:
+        raise ValueError(f"Not an H.264 level: {level!r}.")
+    return int(major) * 10 + int(minor)
+
+
+def minimum_level_idc(width: int, height: int, fps: float) -> int:
+    """The lowest H.264 ``level_idc`` whose limits a ``width`` x ``height`` picture at ``fps``
+    frames a second fits, from Table A-1: the macroblock rate (``MaxMBPS``), the frame size
+    (``MaxFS``), the picture width and height (each at most ``sqrt(8 * MaxFS)`` macroblocks) and
+    room in the decoded-picture buffer for at least one whole picture (``MaxDpbMbs``). A frame is
+    counted in whole macroblocks, so 1080 lines is 68 of them (1088). Raises :class:`ValueError`
+    for a picture nothing in the table can hold."""
+    if width <= 0 or height <= 0 or fps <= 0:
+        raise ValueError("width, height and fps must be positive.")
+    mb_width, mb_height = -(-width // 16), -(-height // 16)
+    frame_mbs = mb_width * mb_height
+    mb_rate = frame_mbs * fps
+    for idc, max_mbps, max_fs, max_dpb in H264_LEVELS:
+        if (
+            mb_rate <= max_mbps
+            and frame_mbs <= max_fs
+            and frame_mbs <= max_dpb
+            and mb_width * mb_width <= 8 * max_fs
+            and mb_height * mb_height <= 8 * max_fs
+        ):
+            return idc
+    raise ValueError(f"No H.264 level can hold {width}x{height} at {fps} fps.")
+
+
+def profile_level_problem(
+    profile: EncodingProfile, width: int, height: int, fps: float
+) -> str | None:
+    """Why ``profile``'s signalled level is not valid for a ``width`` x ``height`` picture at
+    ``fps`` (a sentence for a log or a test failure), or ``None`` if it is."""
+    try:
+        signalled = level_idc(profile.x264_level)
+        required = minimum_level_idc(width, height, fps)
+    except ValueError as exc:
+        return str(exc)
+    if signalled < required:
+        return (
+            f"level {profile.x264_level} is too low for {width}x{height} at {fps:g} fps "
+            f"(the lowest valid level is {required / 10:.1f})"
+        )
+    return None
 
 
 class RenderPlanError(Exception):
@@ -525,6 +624,11 @@ def build_render_plan(
         if not 0 <= value <= MAX_FADE_MS:
             raise RenderPlanError(f"The {name} must be between 0 and {MAX_FADE_MS} milliseconds.")
     width, height = output_size(orientation, quality)
+    level_problem = profile_level_problem(profile_for(quality), width, height, fps)
+    if level_problem is not None:
+        # A configuration fault, caught before any expensive work: a file signalling the wrong
+        # level can be refused by a player that would have played it had it been signalled right.
+        raise RenderPlanError(f"The {quality} encoding profile is misconfigured: {level_problem}.")
     if not segments:
         raise RenderPlanError("This script has no sections to render.")
 
@@ -727,6 +831,8 @@ def check_output(summary: Mapping[str, Any], plan: RenderPlan) -> list[str]:
             problems.append(f"{name} is {actual!r}, expected {wanted!r}")
 
     expect("video codec", summary.get("video_codec"), "h264")
+    expect("H.264 profile", summary.get("video_profile"), profile.x264_profile.capitalize())
+    expect("H.264 level", summary.get("video_level"), level_idc(profile.x264_level))
     expect("audio codec", summary.get("audio_codec"), "aac")
     expect("width", summary.get("width"), plan.width)
     expect("height", summary.get("height"), plan.height)
@@ -735,6 +841,35 @@ def check_output(summary: Mapping[str, Any], plan: RenderPlan) -> list[str]:
     expect("pixel format", summary.get("pix_fmt"), profile.pix_fmt)
     expect("sample rate", summary.get("sample_rate"), profile.audio_sample_rate)
     expect("channels", summary.get("channels"), profile.audio_channels)
+    if summary.get("constant_frame_rate") is not True:
+        problems.append("the video is not constant frame rate")
+    # Independent of what was asked for: the level the file signals must be valid for the pictures
+    # it actually holds, or a decoder is entitled to refuse it (a level 4.0 file at 60 fps).
+    signalled, width, height, rate = (
+        summary.get("video_level"),
+        summary.get("width"),
+        summary.get("height"),
+        summary.get("fps"),
+    )
+    if (
+        isinstance(signalled, int)
+        and isinstance(width, int)
+        and isinstance(height, int)
+        and isinstance(rate, int | float)
+        and width > 0
+        and height > 0
+        and rate > 0
+    ):
+        try:
+            required = minimum_level_idc(width, height, rate)
+        except ValueError as exc:
+            problems.append(str(exc))
+        else:
+            if signalled < required:
+                problems.append(
+                    f"H.264 level {signalled / 10:.1f} is too low for {width}x{height} at "
+                    f"{rate:g} fps (the lowest valid level is {required / 10:.1f})"
+                )
     if summary.get("faststart") is not True:
         problems.append("the index is not at the start of the file")
     for name in ("video_duration_ms", "audio_duration_ms", "container_duration_ms"):

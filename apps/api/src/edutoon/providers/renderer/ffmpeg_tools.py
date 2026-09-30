@@ -312,6 +312,15 @@ def _fps(rate: str) -> float:
         return 0.0
 
 
+def _is_constant_frame_rate(video: dict[str, Any]) -> bool:
+    """ffprobe's ``r_frame_rate`` is the smallest rate every frame timestamp is a multiple of;
+    ``avg_frame_rate`` is frames over duration. They agree exactly for constant-frame-rate video
+    and differ as soon as a timestamp is out of step."""
+    real = str(video.get("r_frame_rate", ""))
+    average = str(video.get("avg_frame_rate", ""))
+    return _fps(real) > 0 and _fps(real) == _fps(average)
+
+
 def probe_media(ffprobe: str, path: Path) -> MediaProbe:
     command = [
         ffprobe,
@@ -351,6 +360,8 @@ def probe_media(ffprobe: str, path: Path) -> MediaProbe:
             sample_rate=int(audio["sample_rate"]),
             channels=int(audio["channels"]),
             faststart=moov_before_mdat(path),
+            video_level=int(video.get("level", 0)),
+            constant_frame_rate=_is_constant_frame_rate(video),
         )
     except (KeyError, ValueError, TypeError) as exc:
         raise _fail(

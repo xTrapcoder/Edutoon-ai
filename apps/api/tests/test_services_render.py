@@ -330,7 +330,7 @@ async def test_the_estimate_is_shown_before_any_work(db_session, built):
     estimate = enqueued.estimate
     assert estimate.chunk_count == TOTAL_SCENES
     assert estimate.chunks_to_render == TOTAL_SCENES and estimate.chunks_reusable == 0
-    assert (estimate.width, estimate.height, estimate.fps) == (960, 540, 30)
+    assert (estimate.width, estimate.height, estimate.fps) == (960, 540, 60)
     assert estimate.total_ms == sum(a.measured_duration_ms for a in built.audio.values())
 
 
@@ -431,7 +431,9 @@ async def test_a_full_render_produces_a_verified_mp4_synchronised_with_the_narra
     video = next(s for s in info["streams"] if s["codec_type"] == "video")
     audio = next(s for s in info["streams"] if s["codec_type"] == "audio")
     assert (video["codec_name"], video["profile"], video["pix_fmt"]) == ("h264", "High", "yuv420p")
-    assert (video["width"], video["height"], video["r_frame_rate"]) == (960, 540, "30/1")
+    assert (video["width"], video["height"], video["r_frame_rate"]) == (960, 540, "60/1")
+    assert video["avg_frame_rate"] == "60/1"  # constant frame rate
+    assert video["level"] == 32  # H.264 level 3.2: the lowest valid one for 960x540 at 60 fps
     assert (audio["codec_name"], audio["sample_rate"], audio["channels"]) == ("aac", "22050", 1)
 
     total_ms = sum(a.measured_duration_ms for a in built.audio.values())

@@ -110,6 +110,11 @@ class MediaProbe:
     sample_rate: int
     channels: int
     faststart: bool
+    # H.264 ``level_idc`` as signalled in the stream (42 for level 4.2); 0 if ffprobe gives none.
+    video_level: int = 0
+    # Whether the stream is constant frame rate: ffprobe's ``r_frame_rate`` (the lowest rate every
+    # timestamp is a multiple of) equals its ``avg_frame_rate`` (frames over duration).
+    constant_frame_rate: bool = False
 
     def summary(self) -> dict[str, Any]:
         return {
@@ -123,6 +128,8 @@ class MediaProbe:
             "video_frames": self.video_frames,
             "video_codec": self.video.codec,
             "video_profile": self.video_profile,
+            "video_level": self.video_level,
+            "constant_frame_rate": self.constant_frame_rate,
             "pix_fmt": self.pix_fmt,
             "audio_codec": self.audio.codec,
             "sample_rate": self.sample_rate,

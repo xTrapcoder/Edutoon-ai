@@ -183,8 +183,9 @@ async def test_a_chunk_is_a_video_only_h264_mp4_with_the_canonical_frame_count(t
     renderer = PillowFfmpegRenderer()
     spec = _spec(2_333)
     chunk = await renderer.render_chunk(spec, tmp_path / "c.mp4")
-    assert chunk.frame_count == spec.canonical_frames == 70
-    assert _packet_count(chunk.path) == 70
+    # 2 333 ms at 60 fps is 139.98 frames: rendered with the ceiling, 140.
+    assert chunk.frame_count == spec.canonical_frames == 140
+    assert _packet_count(chunk.path) == 140
     streams = subprocess.run(
         [
             "ffprobe",
@@ -231,7 +232,9 @@ async def test_assembly_keeps_exactly_the_frames_the_absolute_timeline_calls_for
 
     probe = await renderer.probe(final)
     assert probe.video_frames == r.frame_at(total_ms) == sum(f.keep_frames for f in files)
-    assert (probe.width, probe.height, probe.fps) == (960, 540, 30.0)
+    assert (probe.width, probe.height, probe.fps) == (960, 540, 60.0)
+    assert probe.constant_frame_rate is True
+    assert probe.video_level == r.level_idc(r.profile_for("low").x264_level) == 32
     assert (probe.video.codec, probe.audio.codec, probe.sample_rate, probe.channels) == (
         "h264",
         "aac",
@@ -285,6 +288,103 @@ async def test_a_finished_video_passes_the_output_check_and_a_wrong_one_does_not
     assert any("index is not at the start" in p for p in problems)
     assert any("h264" in p for p in r.check_output({**summary, "video_codec": "vp9"}, plan))
     assert any("width" in p for p in r.check_output({**summary, "width": 1920}, plan))
+
+
+@requires_ffmpeg
+@pytest.mark.parametrize("orientation", ["horizontal", "vertical"])
+async def test_a_full_size_60_fps_video_signals_a_level_that_is_valid_for_what_it_holds(
+    tmp_path, orientation
+):
+    """The real encoder at the production size and rate: 1920x1080 / 1080x1920 at 60 fps must
+    signal H.264 High level 4.2 (level 4.0 cannot carry 489 600 macroblocks a second), be constant
+    frame rate with exactly the planned frame count, and pass the same output check the render job
+    applies before it publishes a video."""
+    renderer = PillowFfmpegRenderer()
+    total_ms = 2_000
+    segments = [
+        r.SegmentInput("s0", 0, total_ms, "h", [r.SceneInput(0, 0, total_ms, "title_card", TITLE)])
+    ]
+    plan = r.build_render_plan(segments, orientation=orientation, quality="high", encoder="libx264")
+    chunk = await renderer.render_chunk(
+        _spec(total_ms, quality="high", orientation=orientation), tmp_path / "c.mp4"
+    )
+    wav = tmp_path / "n.wav"
+    _write_wav(wav, total_ms)
+    final = tmp_path / "f.mp4"
+    await renderer.assemble(
+        AssemblySpec(
+            [
+                ChunkFile(
+                    chunk.path, plan.chunks[0].frame_count, plan.chunks[0].canonical_frame_count
+                )
+            ],
+            [NarrationPlacement(wav, 0, total_ms)],
+            total_ms,
+            r.FPS,
+            "libx264",
+            r.profile_for("high"),
+        ),
+        final,
+    )
+    probe = await renderer.probe(final)
+    assert (probe.width, probe.height) == r.output_size(orientation, "high")
+    assert probe.fps == 60.0 and probe.constant_frame_rate is True
+    assert probe.video_frames == plan.total_frames == 120
+    assert probe.video_profile == "High" and probe.video_level == 42
+    assert r.check_output(probe.summary(), plan) == []
+    # A file that claimed the old level would have been caught, not published.
+    falsely_signalled = {**probe.summary(), "video_level": 40}
+    assert any("too low" in p for p in r.check_output(falsely_signalled, plan))
+
+
+@requires_ffmpeg
+async def test_every_frame_timestamp_of_a_60_fps_video_is_exactly_one_frame_after_the_last(
+    tmp_path,
+):
+    """PTS and DTS: constant frame rate means every packet is exactly 1/60 s after the previous
+    one, and decode order is presentation order (no B-frames), so DTS == PTS - across the
+    boundaries where separately encoded chunks are joined."""
+    renderer = PillowFfmpegRenderer()
+    durations = [1_010, 1_020, 1_030]  # none lands on a frame boundary: the trim path joins them
+    ends = [sum(durations[: i + 1]) for i in range(len(durations))]
+    starts = [0, *ends[:-1]]
+    files, placements = [], []
+    for index, (duration, start, end) in enumerate(zip(durations, starts, ends, strict=True)):
+        chunk = await renderer.render_chunk(_spec(duration), tmp_path / f"c{index}.mp4")
+        files.append(
+            ChunkFile(chunk.path, r.frame_at(end) - r.frame_at(start), r.canonical_frames(duration))
+        )
+        wav = tmp_path / f"n{index}.wav"
+        _write_wav(wav, duration)
+        placements.append(NarrationPlacement(wav, start, end))
+    final = tmp_path / "final.mp4"
+    await renderer.assemble(
+        AssemblySpec(files, placements, ends[-1], r.FPS, "libx264", r.profile_for("low")), final
+    )
+    out = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "packet=pts,dts",
+            "-of",
+            "csv=p=0",
+            str(final),
+        ],  # fmt: skip
+        capture_output=True,
+        check=True,
+        text=True,
+    ).stdout.split()
+    pairs = [tuple(int(v) for v in line.split(",")) for line in out]
+    assert len(pairs) == r.frame_at(ends[-1])
+    pts = [p for p, _ in pairs]
+    assert all(p == d for p, d in pairs)  # decode order is presentation order
+    step = pts[1] - pts[0]
+    assert step > 0
+    assert all(b - a == step for a, b in zip(pts, pts[1:], strict=False))  # no jitter at any join
 
 
 @requires_ffmpeg

@@ -78,18 +78,20 @@ def test_the_render_plan_and_the_storyboard_read_model_place_every_scene_identic
 
 # The chunk fingerprints of the three text-only templates. They are pinned so a later change
 # cannot silently invalidate every cached text chunk (or, worse, keep reusing one whose pixels
-# changed). They have changed twice in Phase 11, each time deliberately and documented in its
-# commit message: (1) glyph safety bumped RENDERER_VERSION to "pillow-ffmpeg/3" (chunks cached
-# before it held missing-glyph boxes); (2) how a scene joins its neighbours (a straight cut inside
-# a topic, a tunable fade at a topic boundary) became a fingerprint input, so every chunk cached
-# before it is re-rendered once. Update these ONLY together with a documented, intentional bump.
+# changed). They have changed three times, each time deliberately and documented in its commit
+# message: (1) glyph safety bumped RENDERER_VERSION to "pillow-ffmpeg/3" (chunks cached before it
+# held missing-glyph boxes); (2) how a scene joins its neighbours (a straight cut inside a topic, a
+# tunable fade at a topic boundary) became a fingerprint input, so every chunk cached before it is
+# re-rendered once; (3) the move from 30 to 60 fps (RENDERER_VERSION "pillow-ffmpeg/4", fps, the
+# H.264 levels and the keyframe interval, all fingerprint inputs). Update these ONLY together
+# with a documented, intentional bump.
 _TEXT_ONLY_GOLDEN = {
-    ("horizontal", "high", "title_card"): "0f2a388598605c087790c15ef1d04e28dab1bc025f22cd6579ed2c0f53934ddd",  # noqa: E501
-    ("horizontal", "high", "bullet_points"): "33b75aac4e1d7c8c49930e4ee867d30b0355a7d65134631a154907a7c88cf073",  # noqa: E501
-    ("horizontal", "high", "formula_or_code"): "40752ae29979b1024061474faf2ab27fa32722b09897b9db99f1809f92d46c08",  # noqa: E501
-    ("vertical", "low", "title_card"): "fe0408ea7d87faf111239bcc2c04b64b7a60d40276526a73d13c938329e15849",  # noqa: E501
-    ("vertical", "low", "bullet_points"): "3f3cfce4e8a2db47ff8e73d29c176f0b8ec24eb241f2a455a33b9627fda8e680",  # noqa: E501
-    ("vertical", "low", "formula_or_code"): "e2a20252ba39e300820c7db7262c36bb3b17b0d5ff60ce44eb5ac86a78af177d",  # noqa: E501
+    ("horizontal", "high", "title_card"): "d62fe0bb2e9b1614cba91dae83fc674520c48da9df57a83ea650973ba1d99171",  # noqa: E501
+    ("horizontal", "high", "bullet_points"): "0336f6460ca4b90f3fb80ec2b0b59bcce2e55cb58f1197ad4b7928fa31bef5c8",  # noqa: E501
+    ("horizontal", "high", "formula_or_code"): "616b52d505f9e05e93a162ac3f83b7473348acba0c6114f8be9ae7a0928a53fe",  # noqa: E501
+    ("vertical", "low", "title_card"): "b3dcdf461c53790d54b8f8012dc6f0c4bb35ea821854fac19f98323cb5595083",  # noqa: E501
+    ("vertical", "low", "bullet_points"): "b6ace4dbeb437196cbd46aab487006e898c12b5035838681919ee07eb321aac8",  # noqa: E501
+    ("vertical", "low", "formula_or_code"): "3318832d58c37c979f2ceb560c6fbcbdaac8e74dcf111d02079a053481d3b6e7",  # noqa: E501
 }  # fmt: skip
 _TEXT_ONLY_SCENES = {
     "title_card": {"title": "How networks work", "subtitle": "Packets and routes"},
@@ -114,8 +116,8 @@ def test_text_only_chunk_fingerprints_are_pinned(orientation, quality, template)
     assert fingerprint == _TEXT_ONLY_GOLDEN[(orientation, quality, template)]
 
 
-def test_glyph_safety_bumped_the_renderer_version_so_known_bad_chunks_are_not_reused() -> None:
-    assert r.RENDERER_VERSION == "pillow-ffmpeg/3"
+def test_the_60_fps_change_bumped_the_renderer_version_so_30_fps_chunks_are_never_reused() -> None:
+    assert r.RENDERER_VERSION == "pillow-ffmpeg/4"
 
 
 # --- frame mapping -----------------------------------------------------------------------
@@ -123,7 +125,19 @@ def test_glyph_safety_bumped_the_renderer_version_so_known_bad_chunks_are_not_re
 
 @pytest.mark.parametrize(
     ("t_ms", "frame"),
-    [(0, 0), (16, 0), (17, 1), (33, 1), (34, 1), (50, 2), (150, 5), (1000, 30), (60_000, 1800)],
+    [
+        (0, 0),
+        (8, 0),
+        (9, 1),
+        (16, 1),
+        (25, 2),
+        (33, 2),
+        (34, 2),
+        (50, 3),
+        (150, 9),
+        (1000, 60),
+        (60_000, 3600),
+    ],
 )
 def test_frame_at_is_round_half_up_of_t_times_fps_over_1000(t_ms: int, frame: int) -> None:
     assert r.frame_at(t_ms) == frame
@@ -156,7 +170,7 @@ def _awkward_script() -> list[r.SegmentInput]:
     # 300 scenes of awkward, non-frame-aligned durations across 60 segments.
     durations = []
     for s in range(60):
-        durations.append([1_501 + (s * 37 + k * 211) % 1_777 for k in range(5)])
+        durations.append([1_501 + (s * 41 + k * 223) % 1_783 for k in range(5)])
     return _script(durations)
 
 

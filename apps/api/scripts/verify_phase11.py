@@ -491,7 +491,7 @@ def visual_costs() -> dict[str, Any]:
             drawn, previous = 0, None
             started = time.perf_counter()
             for i in range(frames):
-                t = i * 1000 / 30
+                t = i * 1000 / render_domain.FPS
                 key = compositor.state_key(t)
                 if key != previous:
                     compositor.frame(t).tobytes()
