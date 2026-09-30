@@ -34,7 +34,7 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from edutoon.core.config import Settings
-from edutoon.providers.embeddings import Embeddings, get_embeddings_client
+from edutoon.providers.embeddings import Embeddings, embeddings_from_settings
 from edutoon.providers.llm import LLM, get_llm_client
 from edutoon.providers.renderer import Renderer, get_renderer
 from edutoon.providers.storage import Storage, get_storage_client
@@ -87,9 +87,7 @@ def build_worker_providers(settings: Settings) -> WorkerProviders:
     scripts, and ``LLM_MODEL`` still serves everything else.
     """
     return WorkerProviders(
-        embeddings=get_embeddings_client(
-            api_key=settings.OPENAI_API_KEY, model=settings.EMBEDDING_MODEL
-        ),
+        embeddings=embeddings_from_settings(settings),
         llm=get_llm_client(api_key=settings.ANTHROPIC_API_KEY, model=settings.LLM_MODEL),
         script_llm=get_llm_client(
             api_key=settings.ANTHROPIC_API_KEY, model=settings.SCRIPT_LLM_MODEL

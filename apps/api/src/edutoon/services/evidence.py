@@ -21,14 +21,17 @@ persisted as "supported" without at least one citation; see the guard in
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
+import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from edutoon.core.errors import NotFoundError
+from edutoon.core.errors import ConflictError, NotFoundError
 from edutoon.core.pagination import DEFAULT_PAGE_SIZE, Page
+from edutoon.domain.embedding_batches import EMBEDDING_DIMENSIONS, estimate_tokens, plan_batches
 from edutoon.providers.embeddings import Embeddings
 from edutoon.providers.llm import LLM, Passage
 from edutoon.repositories import claim_verifications as claim_verifications_repo
@@ -45,7 +48,22 @@ from edutoon.repositories.jobs import JobRecord
 from edutoon.repositories.source_chunks import DEFAULT_SIMILARITY_LIMIT
 from edutoon.services.job_errors import describe_job_failure
 
+log = structlog.get_logger()
+
 BUILD_EVIDENCE_JOB_KIND = "build_evidence"
+
+
+@dataclass(slots=True)
+class IndexProgress:
+    """What indexing has durably done so far. Filled in by :func:`index_source` as each batch is
+    committed, so a job that fails part-way can say how far it got."""
+
+    total: int = 0
+    embedded: int = 0
+
+    @property
+    def remaining(self) -> int:
+        return self.total - self.embedded
 
 
 async def enqueue_indexing_job(
@@ -69,24 +87,54 @@ async def enqueue_indexing_job(
 
 
 async def index_source(
-    session: AsyncSession, embeddings: Embeddings, *, source_id: UUID
+    session: AsyncSession,
+    embeddings: Embeddings,
+    *,
+    source_id: UUID,
+    progress: IndexProgress | None = None,
 ) -> int:
     """Embed every chunk of ``source_id`` that doesn't have one yet.
 
     Returns the number of chunks embedded. Idempotent by construction: a
     re-run (e.g. after a prior partial failure) only ever touches chunks
-    still missing an embedding, never re-embeds ones that already have one.
+    still missing an embedding, never re-embeds ones that already have one,
+    and a chunk's vector lives on the chunk itself - so a retry can never
+    leave a second copy behind.
+
+    The chunks are embedded in batches sized to the provider's limits
+    (``domain.embedding_batches``), in document order, and **each batch is
+    committed as soon as it is stored**. A batch that fails - after the
+    provider's own transient-failure retries - therefore costs only itself: every
+    earlier batch stays indexed, nothing of the failed batch is written, and running
+    the job again continues from the first chunk still missing a vector. ``progress``
+    (if given) is updated after each commit.
     """
     chunks = await source_chunks_repo.list_missing_embedding_by_source(session, source_id)
+    if progress is not None:
+        progress.total = len(chunks)
     if not chunks:
         return 0
 
-    vectors = await embeddings.embed([chunk.content for chunk in chunks])
-    for chunk, vector in zip(chunks, vectors, strict=True):
-        await source_chunks_repo.update_embedding(
-            session, chunk_id=chunk.id, embedding=vector, embedding_model=embeddings.model
-        )
-    return len(chunks)
+    embedded = 0
+    batches = plan_batches([estimate_tokens(chunk.content) for chunk in chunks], embeddings.limits)
+    for batch in batches:
+        group = [chunks[i] for i in batch]
+        vectors = await embeddings.embed([chunk.content for chunk in group])
+        if len(vectors) != len(group) or any(len(v) != EMBEDDING_DIMENSIONS for v in vectors):
+            # Refused before anything is stored: a vector of the wrong width cannot be
+            # compared with the others, and the database would reject it anyway.
+            raise ValueError(
+                f"The embedding model returned vectors that are not {EMBEDDING_DIMENSIONS} wide."
+            )
+        for chunk, vector in zip(group, vectors, strict=True):
+            await source_chunks_repo.update_embedding(
+                session, chunk_id=chunk.id, embedding=vector, embedding_model=embeddings.model
+            )
+        await session.commit()  # this batch is durable whatever happens to the next
+        embedded += len(group)
+        if progress is not None:
+            progress.embedded = embedded
+    return embedded
 
 
 async def run_build_evidence_job(
@@ -112,13 +160,28 @@ async def run_build_evidence_job(
     )
     assert running is not None  # the job was just fetched by this same id
 
+    progress = IndexProgress()
     try:
         chunks_embedded = await index_source(
-            session, embeddings, source_id=UUID(running.payload["source_id"])
+            session, embeddings, source_id=UUID(running.payload["source_id"]), progress=progress
         )
     except Exception as exc:  # noqa: BLE001 - any failure marks the job failed, never raises
         error = describe_job_failure(exc, job_id=running.id, kind=BUILD_EVIDENCE_JOB_KIND)
-        return await _mark_failed(session, job_id=running.id, error=error)
+        log.warning(
+            "evidence.indexing_failed",
+            job_id=str(running.id),
+            chunks_embedded=progress.embedded,
+            chunks_remaining=progress.remaining,
+        )
+        return await _mark_failed(
+            session,
+            job_id=running.id,
+            error=error,
+            result={
+                "chunks_embedded": progress.embedded,
+                "chunks_remaining": progress.remaining,
+            },
+        )
 
     return await _mark_succeeded(session, job_id=running.id, chunks_embedded=chunks_embedded)
 
@@ -134,12 +197,56 @@ async def _mark_succeeded(
     return updated
 
 
-async def _mark_failed(session: AsyncSession, *, job_id: UUID, error: str) -> JobRecord:
-    updated = await jobs_repo.update(
-        session, job_id=job_id, status="failed", finished_at=datetime.now(UTC), error=error
-    )
+async def _mark_failed(
+    session: AsyncSession,
+    *,
+    job_id: UUID,
+    error: str,
+    result: dict[str, Any] | None = None,
+) -> JobRecord:
+    fields: dict[str, Any] = {
+        "status": "failed",
+        "finished_at": datetime.now(UTC),
+        "error": error,
+    }
+    if result is not None:
+        fields["result"] = result
+    updated = await jobs_repo.update(session, job_id=job_id, **fields)
     assert updated is not None
     return updated
+
+
+async def retry_indexing_job(
+    session: AsyncSession, *, project_id: UUID, source_id: UUID
+) -> JobRecord:
+    """Put a source's *failed* indexing back in the queue.
+
+    The job keeps its identity (its idempotency key is the source id), so the same source
+    still can only ever have one indexing job - a retry re-runs that job, it does not create a
+    second. Because :func:`index_source` only embeds chunks that still lack a vector, the retry
+    does exactly the work that was left.
+
+    Raises :class:`~edutoon.core.errors.NotFoundError` if the source was never queued for
+    indexing, and :class:`~edutoon.core.errors.ConflictError` if the job is still queued or
+    running, or has already succeeded - there is nothing to retry. The caller checks the source
+    belongs to the project (rule 9) first.
+    """
+    job = await jobs_repo.get_by_idempotency_key(
+        session,
+        project_id=project_id,
+        kind=BUILD_EVIDENCE_JOB_KIND,
+        idempotency_key=str(source_id),
+    )
+    if job is None:
+        raise NotFoundError(f"Uploaded source {source_id} has no indexing job to retry.")
+    if job.status in ("queued", "running"):
+        raise ConflictError("This source is already being indexed; wait for it to finish.")
+    if job.status == "succeeded":
+        raise ConflictError("This source is already indexed.")
+    requeued = await jobs_repo.requeue_failed(session, job_id=job.id)
+    if requeued is None:  # it changed state between the read and the update
+        raise ConflictError("This source's indexing changed state; try again.")
+    return requeued
 
 
 async def verify_claim(
@@ -205,9 +312,7 @@ async def verify_claim(
     # what it was shown, but this is the actual persistence boundary, so it
     # re-checks against the real candidate set rather than trusting that
     # filtering happened correctly one layer away.
-    cited = [
-        candidates_by_id[pid] for pid in verdict.cited_passage_ids if pid in candidates_by_id
-    ]
+    cited = [candidates_by_id[pid] for pid in verdict.cited_passage_ids if pid in candidates_by_id]
 
     status = verdict.status
     if status == "supported" and not cited:

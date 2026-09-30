@@ -120,6 +120,39 @@ async def update(session: AsyncSession, *, job_id: UUID, **fields: Any) -> JobRe
     return job
 
 
+async def requeue_failed(session: AsyncSession, *, job_id: UUID) -> JobRecord | None:
+    """Put a ``failed`` job back in the queue for a fresh series of attempts, keeping its
+    identity (id, payload, idempotency key) so the work it names is still done at most once.
+
+    A user-initiated retry starts over: ``attempts`` is reset (``ck_jobs_attempts_within_max``
+    would otherwise refuse the next run of a job that already used every attempt), and the old
+    outcome (``error``, ``result``, timestamps) is cleared. Only a ``failed`` job moves - a
+    ``queued`` / ``running`` one is in flight and a ``succeeded`` one is done - so this returns
+    ``None`` for any other status, or a missing job, and changes nothing.
+    """
+    stmt = (
+        jobs.update()
+        .where(jobs.c.id == job_id, jobs.c.status == "failed")
+        .values(
+            status="queued",
+            attempts=0,
+            error=None,
+            result=None,
+            started_at=None,
+            finished_at=None,
+            scheduled_at=func.now(),
+        )
+        .returning(*jobs.c)
+    )
+    row = (await session.execute(stmt)).mappings().one_or_none()
+    if row is None:
+        return None
+    job = _from_row(row)
+    # The job is in flight again, so the project is ``processing`` again.
+    await projects_repo.refresh_status(session, project_id=job.project_id)
+    return job
+
+
 async def get_by_id(session: AsyncSession, job_id: UUID) -> JobRecord | None:
     stmt = select(jobs).where(jobs.c.id == job_id)
     row = (await session.execute(stmt)).mappings().one_or_none()

@@ -922,3 +922,128 @@ async def test_every_uploaded_object_is_deleted_once_tracking_exits(auth_headers
 
     assert key is not None
     assert not await verifier.object_exists(bucket=settings.BUCKET_UPLOADS, key=key)
+
+
+# --- retrying a failed indexing ---------------------------------------------------------------
+
+
+async def _fail_indexing(db_session, project_id: str, source_id: str) -> None:
+    job = await jobs_repo.get_by_idempotency_key(
+        db_session, project_id=UUID(project_id), kind="build_evidence", idempotency_key=source_id
+    )
+    assert job is not None
+    await jobs_repo.update(db_session, job_id=job.id, status="running", started_at=job.created_at)
+    await jobs_repo.update(
+        db_session, job_id=job.id, status="failed", finished_at=job.created_at, error="x"
+    )
+
+
+async def _uploaded(client, headers, project_id: str, content: bytes = _DEFAULT_PDF) -> str:
+    response = await client.post(
+        f"/v1/projects/{project_id}/sources",
+        files=_pdf_file(content),
+        headers={**headers, "Idempotency-Key": str(uuid4())},
+    )
+    assert response.status_code == 201
+    return response.json()["id"]  # type: ignore[no-any-return]
+
+
+async def test_a_failed_indexing_can_be_retried_through_the_api(
+    client_factory, auth_headers, db_session
+):
+    headers = auth_headers()
+    async with client_factory() as client:
+        project_id = await _create_project(client, headers)
+        source_id = await _uploaded(client, headers, project_id)
+        await _fail_indexing(db_session, project_id, source_id)
+
+        response = await client.post(
+            f"/v1/projects/{project_id}/sources/{source_id}/index",
+            headers={**headers, "Idempotency-Key": str(uuid4())},
+        )
+
+    assert response.status_code == 202
+    body = response.json()
+    assert (body["kind"], body["status"], body["attempts"], body["error"]) == (
+        "build_evidence",
+        "queued",
+        0,
+        None,
+    )
+    assert body["payload"] == {"source_id": source_id}
+
+
+async def test_a_retry_that_repeats_its_key_replays_instead_of_running_twice(
+    client_factory, auth_headers, db_session
+):
+    headers = {**auth_headers(), "Idempotency-Key": str(uuid4())}
+    async with client_factory() as client:
+        project_id = await _create_project(client, headers)
+        source_id = await _uploaded(client, headers, project_id)
+        await _fail_indexing(db_session, project_id, source_id)
+        url = f"/v1/projects/{project_id}/sources/{source_id}/index"
+
+        first = await client.post(url, headers=headers)
+        second = await client.post(url, headers=headers)  # same key: a replay, not a conflict
+
+    assert first.status_code == second.status_code == 202
+    assert first.json()["id"] == second.json()["id"]
+
+
+async def test_retrying_an_indexing_that_is_still_queued_is_a_409(client_factory, auth_headers):
+    headers = auth_headers()
+    async with client_factory() as client:
+        project_id = await _create_project(client, headers)
+        source_id = await _uploaded(client, headers, project_id)
+
+        response = await client.post(
+            f"/v1/projects/{project_id}/sources/{source_id}/index",
+            headers={**headers, "Idempotency-Key": str(uuid4())},
+        )
+
+    assert response.status_code == 409
+
+
+async def test_retrying_another_users_source_is_a_404_not_a_403(
+    client_factory, auth_headers, db_session
+):
+    owner, other = auth_headers(), auth_headers()
+    async with client_factory() as client:
+        project_id = await _create_project(client, owner)
+        source_id = await _uploaded(client, owner, project_id)
+        await _fail_indexing(db_session, project_id, source_id)
+
+        response = await client.post(
+            f"/v1/projects/{project_id}/sources/{source_id}/index",
+            headers={**other, "Idempotency-Key": str(uuid4())},
+        )
+
+    assert response.status_code == 404
+
+
+async def test_a_source_from_a_different_project_is_a_404(client_factory, auth_headers):
+    headers = auth_headers()
+    async with client_factory() as client:
+        first_project = await _create_project(client, headers)
+        second_project = await _create_project(client, headers)
+        source_id = await _uploaded(client, headers, first_project)
+
+        response = await client.post(
+            f"/v1/projects/{second_project}/sources/{source_id}/index",
+            headers={**headers, "Idempotency-Key": str(uuid4())},
+        )
+
+    assert response.status_code == 404
+
+
+async def test_retrying_without_an_idempotency_key_is_rejected(client_factory, auth_headers):
+    headers = auth_headers()
+    async with client_factory() as client:
+        project_id = await _create_project(client, headers)
+        source_id = await _uploaded(client, headers, project_id)
+
+        response = await client.post(
+            f"/v1/projects/{project_id}/sources/{source_id}/index", headers=headers
+        )
+
+    assert response.status_code == 422

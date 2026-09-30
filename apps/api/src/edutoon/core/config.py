@@ -51,6 +51,23 @@ class Settings(BaseSettings):
     EMBEDDING_MODEL: str = "text-embedding-3-small"
     LLM_MODEL: str = "claude-sonnet-5"
 
+    # How a provider call is made safe to repeat and safe to wait for (pre-API readiness). Every
+    # one is optional: an ``.env`` written before it boots unchanged.
+    #
+    # PROVIDER_RETRY_* is the one policy for repeating a call that failed *transiently* (a rate
+    # limit, a timeout, a dropped connection, a 5xx) - ``providers.retry``. ``ATTEMPTS`` counts the
+    # first try (``1`` disables retrying); the wait doubles from ``BASE`` up to ``MAX`` seconds.
+    # A bad request, a rejected key or an exhausted quota is never retried.
+    #
+    # EMBEDDING_MAX_* are the size of one embeddings request. The defaults are the provider's own
+    # hard ceilings for ``text-embedding-3-small`` (2048 inputs, 300 000 tokens); lower them to make
+    # each request smaller, never higher. ``domain.embedding_batches`` explains the token estimate.
+    PROVIDER_RETRY_ATTEMPTS: int = Field(default=3, ge=1, le=8)
+    PROVIDER_RETRY_BASE_DELAY_SECONDS: float = Field(default=2.0, ge=0)
+    PROVIDER_RETRY_MAX_DELAY_SECONDS: float = Field(default=30.0, ge=0)
+    EMBEDDING_MAX_INPUTS_PER_REQUEST: int = Field(default=2048, ge=1, le=2048)
+    EMBEDDING_MAX_REQUEST_TOKENS: int = Field(default=300_000, ge=8192, le=300_000)
+
     # Script Generation Engine (SG-2). ``SCRIPT_LLM_MODEL`` is the model that
     # writes scripts: the worker builds a second LLM client bound to it for the
     # ``generate_script`` job, and the API queues a script for it. Claim judging

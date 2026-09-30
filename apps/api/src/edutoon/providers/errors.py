@@ -1,4 +1,5 @@
-"""What a failed provider call may say to the person who started the job.
+"""What a failed provider call may say to the person who started the job, and which failures are
+worth repeating (:func:`is_transient_provider_error`).
 
 An SDK exception's own text is not safe to show: it carries the provider's
 response body (which can echo the request, including the user's own material),
@@ -41,6 +42,10 @@ MODEL_UNAVAILABLE = (
 TOO_LARGE = "The material was too large for the AI provider to process."
 REJECTED = "The AI provider could not process this request."
 UNEXPECTED = "The AI provider returned an unexpected error."
+QUOTA_EXHAUSTED = (
+    "The AI provider account has no remaining quota or credit. "
+    "This is a configuration problem - please contact support."
+)
 
 
 def describe_provider_error(exc: BaseException) -> str | None:
@@ -52,6 +57,8 @@ def describe_provider_error(exc: BaseException) -> str | None:
     if isinstance(exc, _CONNECTION):
         return UNREACHABLE
     if isinstance(exc, _STATUS):
+        if getattr(exc, "code", None) == "insufficient_quota":
+            return QUOTA_EXHAUSTED
         return _describe_status(exc.status_code)
     if isinstance(exc, _ANY_PROVIDER_ERROR):
         return UNEXPECTED
@@ -74,3 +81,37 @@ def _describe_status(status: int) -> str:
     if status in (400, 422):
         return REJECTED
     return UNEXPECTED
+
+
+# --- which failures are worth repeating -------------------------------------------------------
+
+_TRANSIENT_STATUSES = frozenset({408, 409, 429})
+
+
+def is_transient_provider_error(exc: BaseException) -> bool:
+    """Whether repeating the call that raised ``exc`` could plausibly succeed: a timeout, a
+    dropped connection, a rate limit, a conflict the provider asks you to retry, or a 5xx
+    (Anthropic's 529 "overloaded" included). A bad request, a rejected key, a missing model, a
+    payload that is too large and - deliberately - an *exhausted quota* are not: they fail the same
+    way every time, and retrying a paid call that cannot succeed only wastes time and money."""
+    if isinstance(exc, _TIMEOUT + _CONNECTION):
+        return True
+    if isinstance(exc, _STATUS):
+        if getattr(exc, "code", None) == "insufficient_quota":
+            return False  # a 429 that means "your billing is exhausted", not "slow down"
+        return exc.status_code in _TRANSIENT_STATUSES or exc.status_code >= 500
+    return False
+
+
+def retry_after_seconds(exc: BaseException) -> float | None:
+    """How long the provider asked the caller to wait (its ``Retry-After`` header, in seconds), or
+    ``None`` if it did not say or said something unusable."""
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", None)
+    if headers is None:
+        return None
+    try:
+        value = float(headers.get("retry-after"))
+    except (TypeError, ValueError):
+        return None
+    return value if value >= 0 else None

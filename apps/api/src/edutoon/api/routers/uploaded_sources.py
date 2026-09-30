@@ -26,6 +26,7 @@ from fastapi.exceptions import RequestValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from edutoon.api.dependencies import IdempotencyKey, RedisDep, StorageDep, get_current_user
+from edutoon.api.schemas.jobs import JobResponse
 from edutoon.api.schemas.source_chunks import SourceChunkListResponse, SourceChunkResponse
 from edutoon.api.schemas.uploaded_sources import (
     UploadedSourceListResponse,
@@ -35,6 +36,7 @@ from edutoon.core.config import get_settings
 from edutoon.core.errors import PayloadTooLargeError
 from edutoon.core.pagination import DEFAULT_PAGE_SIZE
 from edutoon.db.session import get_session
+from edutoon.services import evidence as evidence_service
 from edutoon.services import idempotency as idempotency_service
 from edutoon.services import projects as projects_service
 from edutoon.services import source_chunks as source_chunks_service
@@ -143,6 +145,43 @@ async def upload_source(
         commit=session.commit,
     )
     return UploadedSourceResponse.model_validate(response_body)
+
+
+@router.post("/{source_id}/index", status_code=status.HTTP_202_ACCEPTED)
+async def retry_source_indexing(
+    request: Request,
+    project_id: UUID,
+    source_id: UUID,
+    current_user: CurrentUser,
+    session: Session,
+    redis: RedisDep,
+    idempotency_key: IdempotencyKey,
+) -> JobResponse:
+    """Retry a source's *failed* indexing (embedding). The job keeps its identity and only the
+    chunks still missing a vector are embedded, so a retry never duplicates work or evidence.
+    A source that is still being indexed, or already is, is a 409. Two-level ownership check
+    (rule 9), like ``GET .../chunks``; needs an ``Idempotency-Key`` (rule 8)."""
+    await projects_service.get_project(session, project_id=project_id, owner_id=current_user.id)
+    await uploaded_sources_service.get_uploaded_source_for_project(
+        session, source_id=source_id, project_id=project_id
+    )
+
+    async def _execute() -> tuple[int, Any]:
+        job = await evidence_service.retry_indexing_job(
+            session, project_id=project_id, source_id=source_id
+        )
+        return status.HTTP_202_ACCEPTED, JobResponse.from_record(job).model_dump(mode="json")
+
+    _, response_body = await idempotency_service.run_with_idempotency(
+        redis,
+        owner_id=current_user.id,
+        method="POST",
+        path=request.url.path,
+        idempotency_key=idempotency_key,
+        handler=_execute,
+        commit=session.commit,
+    )
+    return JobResponse.model_validate(response_body)
 
 
 @router.get("")
