@@ -38,6 +38,7 @@ row is checked to lie inside the project's own prefix before it is used.
 from __future__ import annotations
 
 import asyncio
+import re
 import shutil
 import tempfile
 import time
@@ -396,6 +397,64 @@ def _work_dir_root() -> Path:
     root = Path(configured) if configured else Path(tempfile.gettempdir())
     root.mkdir(parents=True, exist_ok=True)
     return root
+
+
+_WORK_DIR_NAME = re.compile(
+    r"^edutoon-render-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+)
+
+
+def _newest_change(directory: Path) -> float:
+    """The most recent modification time of ``directory`` or anything under it (symbolic links are
+    never followed). A running render writes into its directory continuously, so this is how
+    recently anything was alive there."""
+    newest = directory.stat().st_mtime
+    for path in directory.rglob("*"):
+        try:
+            newest = max(newest, path.lstat().st_mtime)
+        except OSError:
+            continue
+    return newest
+
+
+def sweep_abandoned_work_dirs(*, now: float | None = None) -> list[str]:
+    """Remove the scratch directories of renders that were killed mid-way, and return their names.
+
+    A render works in ``<work dir>/edutoon-render-<job id>`` and removes it when it ends, however
+    it ends - unless its process is killed, when nothing can. Those directories hold rendered
+    chunks and audio (hundreds of megabytes) and would eventually make the disk check refuse every
+    render. A worker calls this once as it starts.
+
+    Deliberately narrow, because it deletes: only a *directory* directly inside the work dir whose
+    name is exactly ``edutoon-render-`` and a UUID, that is not a symbolic link, and in which
+    nothing has changed for at least ``max(2 x RENDER_STALE_AFTER_SECONDS, 3 hours)`` - long past
+    the point a live render (which writes constantly, and whose job would already be reclaimed as
+    stale) could still own it. Anything else in the directory is left alone. Never raises.
+    """
+    settings = get_settings()
+    current = time.time() if now is None else now
+    quiet_for = max(2 * settings.RENDER_STALE_AFTER_SECONDS, 3 * 3600)
+    removed: list[str] = []
+    try:
+        entries = list(_work_dir_root().iterdir())
+    except OSError as exc:
+        log.warning("render.sweep_failed", error=str(exc)[:300])
+        return removed
+    for entry in entries:
+        try:
+            if (
+                not _WORK_DIR_NAME.match(entry.name)
+                or entry.is_symlink()
+                or not entry.is_dir()
+                or current - _newest_change(entry) < quiet_for
+            ):
+                continue
+            shutil.rmtree(entry, ignore_errors=True)
+            removed.append(entry.name)
+            log.info("render.abandoned_work_dir_removed", name=entry.name)
+        except OSError as exc:
+            log.warning("render.sweep_skipped", name=entry.name, error=str(exc)[:300])
+    return removed
 
 
 def _ensure_disk_space(required_bytes: int) -> None:

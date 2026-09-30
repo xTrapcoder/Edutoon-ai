@@ -18,6 +18,7 @@ from edutoon.core.config import get_settings
 from edutoon.core.logging import configure_logging
 from edutoon.db.database import dispose_engine, get_engine
 from edutoon.db.session import get_sessionmaker
+from edutoon.services.render import sweep_abandoned_work_dirs
 from edutoon.worker.dispatch import build_worker_providers
 from edutoon.worker.runner import run_forever
 
@@ -29,6 +30,9 @@ async def main() -> None:
     configure_logging(settings.LOG_LEVEL)
 
     providers = build_worker_providers(settings)
+
+    # Scratch left behind by a render whose worker was killed (see the function's docstring).
+    await asyncio.to_thread(sweep_abandoned_work_dirs)
 
     get_engine()  # initialise the process-wide engine/pool up front
     sessionmaker = get_sessionmaker()
