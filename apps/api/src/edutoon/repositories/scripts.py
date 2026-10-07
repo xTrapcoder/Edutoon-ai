@@ -12,8 +12,10 @@ Persistence shape and the invariants the DB enforces:
   like ``claim_citations``: this module never issues UPDATE or DELETE on
   them. A regenerated script is a new ``scripts`` row.
 - Every ``script_segment_claims`` row points at a real
-  ``claim_verifications`` row (FK ``ON DELETE RESTRICT``), so a script's
-  traceability back to the Evidence Engine cannot silently disappear.
+  ``claim_verifications`` row, so a script's traceability back to the
+  Evidence Engine is a database guarantee. The FK is ``ON DELETE CASCADE``
+  since migration 0018: no code path deletes a single claim, and deleting a
+  whole project must be able to remove its claims and the links to them.
 
 **Phase 7 atomicity (migration 0013).** ``uq_scripts_project_id_active`` used
 to cover ``pending`` / ``draft`` / ``approved``, so queuing a new generation

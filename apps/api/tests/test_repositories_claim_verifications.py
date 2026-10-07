@@ -11,7 +11,6 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import delete
-from sqlalchemy.exc import IntegrityError
 
 from edutoon.core.errors import ConflictError
 from edutoon.db.tables import project_topics, source_chunks
@@ -227,9 +226,12 @@ async def test_similarity_out_of_range_fails(db_session):
         )
 
 
-async def test_deleting_a_cited_source_chunk_is_restricted(db_session):
+async def test_deleting_a_cited_source_chunk_removes_its_citations_not_the_claim(db_session):
+    """``claim_citations.source_chunk_id`` is ``ON DELETE CASCADE`` (migration 0018): a project's
+    chunks and claims are deleted together with the project, so a citation cannot block its
+    chunk. The claim itself stays - only the evidence row that pointed at the chunk goes."""
     project, chunk = await _make_chunk(db_session)
-    await claim_verifications_repo.create(
+    claim = await claim_verifications_repo.create(
         db_session,
         project_id=project.id,
         claim_text="Claim that cites a chunk we will try to delete.",
@@ -239,8 +241,10 @@ async def test_deleting_a_cited_source_chunk_is_restricted(db_session):
         citations=[NewClaimCitation(source_chunk_id=chunk.id, similarity=0.6)],
     )
 
-    with pytest.raises(IntegrityError):
-        await db_session.execute(delete(source_chunks).where(source_chunks.c.id == chunk.id))
+    await db_session.execute(delete(source_chunks).where(source_chunks.c.id == chunk.id))
+
+    assert await claim_verifications_repo.list_citations(db_session, claim.id) == []
+    assert await claim_verifications_repo.get_by_id(db_session, claim.id) is not None
 
 
 # --- list_supported_by_project (SG-3 helper) --------------------------------------

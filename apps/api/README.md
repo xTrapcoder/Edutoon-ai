@@ -105,7 +105,10 @@ lock out of a model call's transaction.
 ## Deleting a project
 
 `DELETE /v1/projects/{id}` removes the project and, through `ON DELETE CASCADE`, its sources,
-topics, jobs, claims and scripts. It also removes the PDFs the project uploaded from object
+topics, jobs, claims (with their citations), scripts (with their segments, claim links, audio,
+scenes and render rows). Two foreign keys used to be `RESTRICT` and made this fail for any project
+with claims - `claim_citations -> source_chunks` and `script_segment_claims -> claim_verifications`;
+migration 0018 made them `CASCADE`, and nothing else about deletion changed. It also removes the PDFs the project uploaded from object
 storage, which the rows only pointed at. The order matters, because the database is the record
 of what exists:
 

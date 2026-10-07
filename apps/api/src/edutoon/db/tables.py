@@ -227,7 +227,8 @@ script_segments = sa.Table(
 )
 
 # The traceability link back to the Evidence Engine: every row points at a
-# real claim_verifications row (FK ON DELETE RESTRICT).
+# real claim_verifications row (FK ON DELETE CASCADE since migration 0018, so a
+# deleted project takes its script's claim links with it).
 script_segment_claims = sa.Table(
     "script_segment_claims",
     metadata,

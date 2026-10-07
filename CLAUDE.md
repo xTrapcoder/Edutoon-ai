@@ -97,7 +97,9 @@ unsupported claims ever reach the script or the screen.
   only once the object is uploaded), `render_outputs` (the finished MP4 for one
   `(script, orientation, quality)`) and `render_output_scenes` (which chunk each
   scene used in that output) - no video bytes in the database (`apps/api/README.md`,
-  "Video rendering").
+  "Video rendering"). Migration 0018 (2026-10-07) makes `claim_citations.source_chunk_id` and
+  `script_segment_claims.claim_verification_id` `ON DELETE CASCADE` (they were `RESTRICT`, which made
+  deleting any project with claims fail); nothing else about deletion changed.
 - `projects.status` is derived, never set by a client: `edutoon.domain.project_status` is the
   rule and `projects.refresh_status` applies it whenever a job is queued or ends or a PDF fails
   to parse (`apps/api/README.md`, "Project status"). Deleting a project removes its uploaded PDFs
@@ -247,7 +249,7 @@ its `illustration` - five kinds only (`process_flow`, `cycle`, `hierarchy`, `com
 generated from the same constants (`domain/visual_schema.py`), laid out purely with integer
 geometry and an injected text measurer (`domain/visual_layout.py` - a genuinely different design
 per orientation) and painted by `providers/renderer/visual_*.py`. No image generation, no
-chart / map / photo kinds, no new table, bucket, dependency or migration (head was still 0016; it is 0017 now).
+chart / map / photo kinds, no new table, bucket, dependency or migration (head was still 0016; it is 0018 now).
 A structurally invalid visual is **dropped, not fatal**: the scene stays, is drawn by its
 template's deterministic fallback, and is counted in `dropped_visual_count` (shown in the
 workspace); a provenance violation - including nested text and numeric leaves - is still a hard
@@ -315,7 +317,7 @@ apps/
   api/        FastAPI service (uv, src/edutoon)
     src/edutoon/          api/ (routers, schemas) · services/ · domain/ (pure; deck*.py = the deck engine) ·
                           repositories/ · providers/ · worker/ · db/ · core/
-    alembic/              migration environment + versions/0001..0017
+    alembic/              migration environment + versions/0001..0018
   parser/     PDF/topic parser — not yet initialised
   render/     placeholder - the renderer lives in apps/api/src/edutoon/providers/renderer
 packages/
