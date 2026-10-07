@@ -19,7 +19,7 @@ const USES = [
   ],
   [
     'Video',
-    'Orientation is the shape of the video that is rendered. Videos up to 10:00 are supported for now.',
+    'Orientation is the shape of the video that is rendered. Videos from 1:00 up to 30:00 are supported, at up to 720p.',
   ],
 ] as const;
 

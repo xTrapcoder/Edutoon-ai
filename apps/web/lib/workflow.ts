@@ -1,5 +1,6 @@
 import type { Job, Project, Script, Source, Topic } from '@edutoon/contracts';
 import { isActiveJob, latestJobOfKind } from '@/lib/jobs';
+import { isFileProject, sourceWords } from '@/lib/source-kind';
 
 /**
  * Where a project is in its journey, worked out from what the API actually returns.
@@ -77,7 +78,7 @@ export interface Workflow {
   next: NextAction | null;
   /** The script a person is working with, if any (the newest that has not been superseded). */
   script: Script | undefined;
-  /** The PDF the project is built from, if any. */
+  /** The PDF or deck the project is built from, if any. */
   source: Source | undefined;
   /** Topics that have not been rejected. */
   usableTopicCount: number;
@@ -165,7 +166,7 @@ export function deriveStage(input: WorkflowInput): StageId {
   if (extraction?.status === 'failed' && !hasDerivedTopics) return 'topics_failed';
   if (hasDerivedTopics || extraction?.status === 'succeeded') return 'topics_ready';
 
-  if (project.source_type === 'pdf') {
+  if (isFileProject(project)) {
     const source = sources?.[0];
     if (sources === undefined) return 'unknown';
     if (!source) return 'needs_source';
@@ -187,7 +188,7 @@ function nextActionFor(stage: StageId, projectId: string): NextAction | null {
     case 'keywords_unsupported':
       return { label: 'Start a PDF project', href: '/projects/new' };
     case 'source_failed':
-      return { label: 'Upload a different PDF', href: base };
+      return { label: 'Upload a different file', href: base };
     case 'reading_source':
       return { label: 'View progress', href: `${base}/topics` };
     case 'ready_for_topics':
@@ -211,11 +212,11 @@ function nextActionFor(stage: StageId, projectId: string): NextAction | null {
   }
 }
 
-function pdfDetail(source: Source | undefined): string | null {
+function fileDetail(source: Source | undefined, unit: string): string | null {
   if (!source) return null;
   const pages = source.page_count;
   return pages
-    ? `${source.original_filename} · ${pages} ${pages === 1 ? 'page' : 'pages'}`
+    ? `${source.original_filename} · ${pages} ${pages === 1 ? unit : `${unit}s`}`
     : source.original_filename;
 }
 
@@ -240,12 +241,11 @@ export function deriveWorkflow(input: WorkflowInput): Workflow {
   };
 
   const details: Record<StepId, string | null> = {
-    source:
-      project.source_type === 'pdf'
-        ? pdfDetail(source)
-        : topics && topics.length > 0
-          ? `${topics.length} ${topics.length === 1 ? 'keyword' : 'keywords'}`
-          : null,
+    source: isFileProject(project)
+      ? fileDetail(source, sourceWords(project).unit)
+      : topics && topics.length > 0
+        ? `${topics.length} ${topics.length === 1 ? 'keyword' : 'keywords'}`
+        : null,
     topics:
       topicsSettled && topics
         ? `${usableTopicCount} ${usableTopicCount === 1 ? 'topic' : 'topics'}`

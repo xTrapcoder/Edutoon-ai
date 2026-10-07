@@ -13,7 +13,7 @@ export const MAX_KEYWORDS = 30;
 export const MAX_KEYWORD_CHARS = 120;
 export const MAX_TITLE_CHARS = 200;
 
-export type SourceMode = 'pdf' | 'keywords' | 'both';
+export type SourceMode = 'pdf' | 'pptx' | 'keywords' | 'both';
 
 /**
  * Whether a project can be built from keywords alone. It cannot yet: every claim in a video is
@@ -41,20 +41,43 @@ export interface WizardValues {
 }
 
 export const usesPdf = (mode: SourceMode): boolean => mode === 'pdf' || mode === 'both';
+export const usesDeck = (mode: SourceMode): boolean => mode === 'pptx';
+/** Whether the project is made from an uploaded file (a PDF or a PowerPoint deck). */
+export const usesFile = (mode: SourceMode): boolean => usesPdf(mode) || usesDeck(mode);
 export const usesKeywords = (mode: SourceMode): boolean => mode === 'keywords' || mode === 'both';
 
-/** The API has two source types; "PDF + keywords" is a PDF project that also has keywords. */
+/**
+ * The API has three source types; "PDF + keywords" is a PDF project that also has keywords.
+ * (Keywords for a PowerPoint deck are not offered yet.)
+ */
 export function projectSourceType(mode: SourceMode): ProjectSourceType {
+  if (mode === 'pptx') return 'pptx';
   return mode === 'keywords' ? 'topic' : 'pdf';
 }
 
+export type FileKind = 'pdf' | 'pptx';
+
+export const PPTX_MIME =
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+
+/** The kind of file a mode asks for. */
+export const fileKindOf = (mode: SourceMode): FileKind => (usesDeck(mode) ? 'pptx' : 'pdf');
+
 /** A readable problem with a chosen file, or null if it is fine. */
-export function fileProblem(file: File): string | null {
-  const looksLikePdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
-  if (!looksLikePdf) return 'That is not a PDF. Choose a file that ends in .pdf.';
-  if (file.size === 0) return 'That file is empty. Choose a different PDF.';
+export function fileProblem(file: File, kind: FileKind = 'pdf'): string | null {
+  const word = kind === 'pptx' ? 'PowerPoint deck' : 'PDF';
+  if (kind === 'pptx') {
+    if (/\.ppt$/i.test(file.name) || file.type === 'application/vnd.ms-powerpoint')
+      return 'Older .ppt files are not supported. Open it in PowerPoint and save it as .pptx.';
+    if (file.type !== PPTX_MIME && !/\.pptx$/i.test(file.name))
+      return 'That is not a PowerPoint deck. Choose a file that ends in .pptx.';
+  } else {
+    const looksLikePdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
+    if (!looksLikePdf) return 'That is not a PDF. Choose a file that ends in .pdf.';
+  }
+  if (file.size === 0) return `That file is empty. Choose a different ${word}.`;
   if (file.size > MAX_UPLOAD_BYTES)
-    return `That file is over ${MAX_UPLOAD_MB} MB. Choose a smaller PDF.`;
+    return `That file is over ${MAX_UPLOAD_MB} MB. Choose a smaller ${word}.`;
   return null;
 }
 
@@ -99,7 +122,7 @@ export function mergeKeywords(current: readonly string[], raw: string): KeywordM
 /** "data_structures-notes.pdf" becomes "Data structures notes". */
 export function suggestTitle(fileName: string): string {
   const stem = fileName
-    .replace(/\.pdf$/i, '')
+    .replace(/\.(pdf|pptx)$/i, '')
     .replace(/[_-]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
@@ -122,10 +145,13 @@ export function sourceErrors(values: WizardValues): SourceErrors {
 
   if (!isModeAvailable(values.mode)) errors.mode = KEYWORD_ONLY_UNSUPPORTED_MESSAGE;
 
-  if (usesPdf(values.mode)) {
-    if (!values.file) errors.file = 'Choose a PDF to upload.';
+  if (usesFile(values.mode)) {
+    const kind = fileKindOf(values.mode);
+    if (!values.file)
+      errors.file =
+        kind === 'pptx' ? 'Choose a PowerPoint deck to upload.' : 'Choose a PDF to upload.';
     else {
-      const problem = fileProblem(values.file);
+      const problem = fileProblem(values.file, kind);
       if (problem) errors.file = problem;
     }
   }

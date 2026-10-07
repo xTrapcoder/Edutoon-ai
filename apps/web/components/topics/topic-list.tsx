@@ -12,6 +12,8 @@ interface TopicListProps {
   onSelect: (id: string) => void;
   collapsed: ReadonlySet<string>;
   onToggle: (id: string) => void;
+  /** What the source's parts are called: a PDF has pages, a deck has slides. */
+  unit?: 'Page' | 'Slide';
 }
 
 /** A small mark for where a topic came from: source pages, the person's own, or an unverified suggestion. */
@@ -25,9 +27,9 @@ export function OriginIcon({ topic, className }: { topic: Topic; className?: str
   return <User className={cn('text-ink-400', className)} aria-hidden />;
 }
 
-function originLabel(topic: Topic): string {
+function originLabel(topic: Topic, unit: 'Page' | 'Slide'): string {
   if (topic.origin === 'suggested') return 'Suggested, not from your source';
-  if (topic.evidence.length > 0) return evidencePages(topic) ?? 'Cited from your source';
+  if (topic.evidence.length > 0) return evidencePages(topic, unit) ?? 'Cited from your source';
   return 'Added by you';
 }
 
@@ -58,7 +60,14 @@ function StatusMark({ status }: { status: Topic['status'] }) {
  * The topic hierarchy. Each row is a button that selects the topic; a separate button folds a
  * topic's subtopics away, and says which state it is in.
  */
-export function TopicList({ topics, selectedId, onSelect, collapsed, onToggle }: TopicListProps) {
+export function TopicList({
+  topics,
+  selectedId,
+  onSelect,
+  collapsed,
+  onToggle,
+  unit = 'Page',
+}: TopicListProps) {
   const rows = useMemo(() => visibleRows(buildTree(topics), collapsed), [topics, collapsed]);
 
   return (
@@ -111,7 +120,7 @@ export function TopicList({ topics, selectedId, onSelect, collapsed, onToggle }:
                 </span>
                 <span className="mt-0.5 flex items-center gap-1 text-xs text-ink-500">
                   <OriginIcon topic={topic} className="size-3 shrink-0" />
-                  <span className="truncate">{originLabel(topic)}</span>
+                  <span className="truncate">{originLabel(topic, unit)}</span>
                 </span>
               </span>
             </button>

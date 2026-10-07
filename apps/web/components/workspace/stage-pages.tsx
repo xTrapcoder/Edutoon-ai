@@ -37,6 +37,7 @@ import { languageLabel, orientationLabel } from '@/lib/generation-settings';
 import { PIPELINE_STATUS, type PipelineStageId } from '@/lib/pipeline';
 import type { RenderSelection } from '@/lib/render';
 import { QueryGate } from './query-gate';
+import { sourceWords } from '@/lib/source-kind';
 import { useWorkspaceContext } from './workspace-context';
 
 /** The stage each one waits on, so a blocked page can point straight at what to do first. */
@@ -198,10 +199,12 @@ function ClaimEvidence({
   projectId,
   sourceId,
   citations,
+  unit,
 }: {
   projectId: string;
   sourceId: string | undefined;
   citations: ClaimVerification['citations'];
+  unit: 'Page' | 'Slide';
 }) {
   const chunks = useSourceChunks(projectId, sourceId);
   const [showAll, setShowAll] = useState(false);
@@ -234,7 +237,7 @@ function ClaimEvidence({
       {visible.map(({ citation, chunk }) => (
         <CitedPassage
           key={citation.id}
-          pages={formatPageRange(chunk.page_from, chunk.page_to)}
+          pages={formatPageRange(chunk.page_from, chunk.page_to, unit)}
           similarity={citation.similarity}
           text={chunk.content.replace(/\s+/g, ' ').trim()}
         />
@@ -319,6 +322,7 @@ export function ClaimsPage() {
                         projectId={project.id}
                         sourceId={sourceId}
                         citations={claim.citations}
+                        unit={sourceWords(project).Unit}
                       />
                     </li>
                   );

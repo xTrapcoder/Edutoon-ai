@@ -16,6 +16,7 @@ import { formatDuration, pluralise } from '@/lib/format';
 import { languageLabel, orientationLabel } from '@/lib/generation-settings';
 import { isActiveJob, latestJobOfKind } from '@/lib/jobs';
 import { jobIsFor } from '@/lib/render';
+import { isFileProject, sourceWords } from '@/lib/source-kind';
 import type { Tone, Workflow } from '@/lib/workflow';
 
 /**
@@ -153,13 +154,13 @@ function sourceOutcome(input: PipelineInput): Outcome {
   if (workflow.stage === 'keywords_unsupported') {
     return blocked('A PDF is required - keyword-only projects are not supported yet.');
   }
-  if (project.source_type !== 'pdf') {
+  if (!isFileProject(project)) {
     const keywords = topics?.filter((topic) => topic.origin === 'user').length ?? 0;
     return outcome('completed', keywords > 0 ? pluralise(keywords, 'keyword') : null);
   }
   if (sources === undefined) return unresolved('source', input);
   const source = sources[0];
-  if (!source) return outcome('pending', 'Add a PDF');
+  if (!source) return outcome('pending', `Add a ${sourceWords(project).noun}`);
   if (source.status === 'failed') return outcome('failed', source.original_filename);
   if (source.status === 'pending' || source.status === 'processing') {
     return outcome('processing', `Reading ${source.original_filename}`);
@@ -167,7 +168,9 @@ function sourceOutcome(input: PipelineInput): Outcome {
   const pages = source.page_count;
   return outcome(
     'completed',
-    pages ? `${source.original_filename} · ${pluralise(pages, 'page')}` : source.original_filename,
+    pages
+      ? `${source.original_filename} · ${pluralise(pages, sourceWords(project).unit)}`
+      : source.original_filename,
   );
 }
 
@@ -191,7 +194,7 @@ function topicsOutcome(input: PipelineInput, source: Outcome): Outcome {
     return outcome('completed', `${pluralise(usable.length, 'topic')} · ${accepted} accepted`);
   }
   if (extraction?.status === 'failed') return outcome('failed', 'Extraction did not finish');
-  if (source.status !== 'completed') return blocked('The source PDF must be read first.');
+  if (source.status !== 'completed') return blocked('The source must be read first.');
   return outcome('pending', 'Ready to extract');
 }
 

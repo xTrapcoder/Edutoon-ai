@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  fileKindOf,
   fileProblem,
   isModeAvailable,
   KEYWORD_ONLY_SUPPORTED,
@@ -10,6 +11,9 @@ import {
   settingsErrors,
   sourceErrors,
   suggestTitle,
+  usesDeck,
+  usesFile,
+  usesKeywords,
   type WizardValues,
 } from './wizard-model';
 
@@ -108,9 +112,46 @@ describe('settingsErrors', () => {
 
   it('refuses a length that is too short, or longer than can be made yet, and says which', () => {
     expect(settingsErrors(values({ durationMs: 59_000 })).duration).toMatch(/shorter than 1:00/);
-    expect(settingsErrors(values({ durationMs: 1_800_000 })).duration).toMatch(
-      /longer than 10:00 are not supported yet/,
+    expect(settingsErrors(values({ durationMs: 2_400_000 })).duration).toMatch(
+      /longer than 30:00 are not supported yet/,
     );
+  });
+});
+
+describe('PowerPoint decks', () => {
+  const deck = (name = 'induction.pptx', size = 10, type = '') =>
+    new File([new Uint8Array(size)], name, { type });
+
+  it('accepts a .pptx by its name or its type, and refuses everything else with the reason', () => {
+    expect(fileProblem(deck(), 'pptx')).toBeNull();
+    expect(
+      fileProblem(
+        deck('x', 10, 'application/vnd.openxmlformats-officedocument.presentationml.presentation'),
+        'pptx',
+      ),
+    ).toBeNull();
+    expect(fileProblem(deck('notes.docx'), 'pptx')).toMatch(/not a PowerPoint deck/);
+    expect(fileProblem(deck('old.ppt'), 'pptx')).toMatch(/Older \.ppt files are not supported/);
+    expect(fileProblem(deck('empty.pptx', 0), 'pptx')).toMatch(/empty/);
+    expect(fileProblem(deck('induction.pptx'))).toMatch(/not a PDF/); // a PDF is still the default
+  });
+
+  it('is a project source of its own, and a file project, but has no keywords', () => {
+    expect(projectSourceType('pptx')).toBe('pptx');
+    expect(usesFile('pptx')).toBe(true);
+    expect(usesDeck('pptx')).toBe(true);
+    expect(usesKeywords('pptx')).toBe(false);
+    expect(fileKindOf('pptx')).toBe('pptx');
+    expect(fileKindOf('both')).toBe('pdf');
+  });
+
+  it('names a project from the deck file, dropping .pptx', () => {
+    expect(suggestTitle('data_structures-notes.pptx')).toBe('Data structures notes');
+  });
+
+  it('asks for a deck, not a PDF, when none is chosen', () => {
+    const errors = sourceErrors({ ...values(), mode: 'pptx', file: null });
+    expect(errors.file).toBe('Choose a PowerPoint deck to upload.');
   });
 });
 

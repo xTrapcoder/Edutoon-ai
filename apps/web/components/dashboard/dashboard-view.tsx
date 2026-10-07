@@ -1,14 +1,7 @@
 'use client';
 
 import { useUser } from '@clerk/nextjs';
-import {
-  ArrowRight,
-  FilePlus2,
-  FolderPlus,
-  ListChecks,
-  PenLine,
-  ShieldCheck,
-} from 'lucide-react';
+import { ArrowRight, FilePlus2, FolderPlus, ListChecks, PenLine, ShieldCheck } from 'lucide-react';
 import Link from 'next/link';
 import { ProjectRow, ProjectRowSkeleton } from '@/components/projects/project-row';
 import { ButtonLink } from '@/components/ui/button';
@@ -22,12 +15,12 @@ const HOW_IT_WORKS = [
   {
     icon: FilePlus2,
     title: 'Add your source',
-    body: 'Upload a PDF, type the topics you want covered, or use both.',
+    body: 'Upload a PDF or a PowerPoint deck. With a PDF you can also type the topics you want covered.',
   },
   {
     icon: ListChecks,
     title: 'Review the topics',
-    body: 'See the topics we found, each with the pages it came from.',
+    body: 'See the topics we found, each with the pages or slides it came from.',
   },
   {
     icon: PenLine,
@@ -107,7 +100,7 @@ export function DashboardView() {
                   className="border-0 bg-transparent py-8"
                   icon={FolderPlus}
                   title="Create your first project"
-                  description="Upload a PDF or enter the topics you want to teach. We will find what is worth covering and check every claim against your source."
+                  description="Upload a PDF or a PowerPoint deck. We will find what is worth covering and check every claim against your source."
                   action={<ButtonLink href="/projects/new">Create project</ButtonLink>}
                 />
               </div>

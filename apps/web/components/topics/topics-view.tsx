@@ -12,10 +12,11 @@ import { useStartExtraction } from '@/lib/api/queries';
 import { claimsForTopic } from '@/lib/claims';
 import { pluralise } from '@/lib/format';
 import { isActiveJob, jobFailureMessage, latestJobOfKind, readExtractionSummary } from '@/lib/jobs';
-import { AddKeywordsForm, AddPdfForm } from '@/components/workspace/add-source';
+import { AddKeywordsForm, AddSourceForm } from '@/components/workspace/add-source';
 import { JobProgressCard, stepsForJob } from '@/components/workspace/job-progress';
 import { QueryGate } from '@/components/workspace/query-gate';
 import { useWorkspaceContext } from '@/components/workspace/workspace-context';
+import { isDeckProject, isFileProject, sourceWords } from '@/lib/source-kind';
 import { ClaimExtractionPanel } from './claim-extraction-panel';
 import { TopicDetail } from './topic-detail';
 import { TopicList } from './topic-list';
@@ -49,6 +50,7 @@ function ExtractButton({
 
 function TopicsView() {
   const { project, workflow, sources, topics, jobs, claims } = useWorkspaceContext();
+  const words = sourceWords(project);
   const start = useStartExtraction(project.id);
   const topicList = useMemo(() => topics.data ?? [], [topics.data]);
   const claimList = useMemo(() => claims.data ?? [], [claims.data]);
@@ -140,13 +142,15 @@ function TopicsView() {
     return (
       <Card>
         <CardHeader
-          title={project.source_type === 'pdf' ? 'Add your PDF first' : 'Add your keywords first'}
+          title={
+            isFileProject(project) ? `Add your ${words.noun} first` : 'Add your keywords first'
+          }
           description="Topics are found from your source, so we need that before we can start."
           icon={<FilePlus2 className="size-4" aria-hidden />}
         />
         <CardBody>
-          {project.source_type === 'pdf' ? (
-            <AddPdfForm projectId={project.id} />
+          {isFileProject(project) ? (
+            <AddSourceForm projectId={project.id} kind={isDeckProject(project) ? 'pptx' : 'pdf'} />
           ) : (
             <AddKeywordsForm projectId={project.id} />
           )}
@@ -161,12 +165,12 @@ function TopicsView() {
       <JobProgressCard
         icon={<ListTree className="size-7" aria-hidden />}
         title="Extracting topics from your content"
-        description="We are working out what is worth covering, and which pages each topic comes from."
+        description={`We are working out what is worth covering, and which ${words.unit}s each topic comes from.`}
         job={extraction}
         steps={stepsForJob(extraction, {
           ready:
-            project.source_type === 'pdf' && sources.data?.length
-              ? 'Your PDF has been read'
+            isFileProject(project) && sources.data?.length
+              ? `Your ${words.noun} has been read`
               : 'Your keywords are saved',
           working: 'Extracting and organising topics',
         })}
@@ -303,8 +307,8 @@ function TopicsView() {
               disabled={active}
               leadingIcon={<Wand2 className="size-4" aria-hidden />}
             >
-              {project.source_type === 'pdf' && sources.data?.length
-                ? 'Extract topics from PDF'
+              {isFileProject(project) && sources.data?.length
+                ? `Extract topics from ${words.noun}`
                 : 'Suggest related topics'}
             </Button>
           )}
@@ -378,6 +382,7 @@ function TopicsView() {
               onSelect={select}
               collapsed={collapsed}
               onToggle={toggle}
+              unit={words.Unit}
             />
           </div>
         </Card>
@@ -389,6 +394,7 @@ function TopicsView() {
               topic={selected}
               wordingLocked={active}
               claims={claimsForTopic(claimList, selected.id)}
+              unit={words.Unit}
             />
           ) : null}
         </div>

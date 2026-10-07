@@ -8,8 +8,8 @@ import type { Language, Orientation } from '@edutoon/contracts';
  * **Duration.** A target is any number of whole seconds from one minute up to the longest video
  * that can be rendered today - never a list of preset lengths. The API stores milliseconds and can
  * hold anything from one to sixty minutes; what is *offered* is capped lower, because a longer
- * video cannot be made end to end yet (`MAX_RENDER_DURATION_MS` in the API, 10 minutes, is the
- * limit rendering was built and verified to). When the long-video work is done this constant is
+ * video cannot be made end to end yet (`MAX_RENDER_DURATION_MS` in the API, 30 minutes, is the
+ * product's maximum). When the long-video work is done this constant is
  * the one number to raise.
  */
 
@@ -18,7 +18,7 @@ export const MS_PER_MINUTE = 60_000;
 
 export const MIN_DURATION_MS = 1 * MS_PER_MINUTE;
 /** The longest video that can be produced end to end today (mirrors the API's render limit). */
-export const MAX_SUPPORTED_DURATION_MS = 10 * MS_PER_MINUTE;
+export const MAX_SUPPORTED_DURATION_MS = 30 * MS_PER_MINUTE;
 export const DEFAULT_DURATION_MS = 5 * MS_PER_MINUTE;
 
 export const DEFAULT_LANGUAGE: Language = 'en-IN';
