@@ -30,6 +30,7 @@ import structlog
 from sqlalchemy.exc import SQLAlchemyError
 
 from edutoon.core.errors import AppError
+from edutoon.domain.deck_plan import DeckPlanError
 from edutoon.domain.llm_usage import ProviderCallLimitError
 from edutoon.domain.render import RenderPlanError
 from edutoon.domain.script_provenance import UngroundedSegmentError, UnsourcedSegmentError
@@ -58,6 +59,7 @@ TIMEOUT_ERROR = "An operation timed out while running this job. Please try again
 _OWN_MESSAGE = (
     AppError,
     TopicError,
+    DeckPlanError,
     UnsourcedSegmentError,
     UngroundedSegmentError,
     LLMResponseError,

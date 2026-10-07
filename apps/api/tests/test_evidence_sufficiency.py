@@ -303,13 +303,13 @@ async def test_a_target_longer_than_the_longest_renderable_video_is_refused_befo
     owner, project, _topics, _claims = await _project_with_topics(
         db_session,
         [("A", [f"a{i}" for i in range(15)])] * 1,
-        target_duration_ms=11 * MINUTE,
+        target_duration_ms=31 * MINUTE,
     )
 
     with pytest.raises(ValidationError) as caught:
         await _enqueue(db_session, project, owner)
 
-    assert "target of 11:00 is longer than the longest video that can be made today (10:00)" in (
+    assert "target of 31:00 is longer than the longest video that can be made today (30:00)" in (
         caught.value.message
     )
     assert "Shorten the target" in caught.value.message
@@ -321,9 +321,9 @@ async def test_a_target_exactly_at_the_ceiling_is_not_refused_for_its_length(
 ):
     owner, project, _topics, _claims = await _project_with_topics(
         db_session,
-        [(f"T{t}", [f"t{t}c{i}" for i in range(15)]) for t in range(2)],
-        target_duration_ms=10 * MINUTE,
-    )  # 2 topics x 15 claims: 2 x (450 + 10) + 15 = 935 s, enough for 10:00
+        [(f"T{t}", [f"t{t}c{i}" for i in range(15)]) for t in range(4)],
+        target_duration_ms=30 * MINUTE,
+    )  # 4 topics x 15 claims: 4 x (450 + 10) + 15 = 1855 s, enough for 30:00
 
     result = await _enqueue(db_session, project, owner)
 
@@ -338,6 +338,8 @@ async def test_the_ceiling_is_the_render_limit_so_raising_it_lifts_it(
         [(f"T{t}", [f"t{t}c{i}" for i in range(15)]) for t in range(3)],
         target_duration_ms=20 * MINUTE,
     )  # 3 x (450 + 10) + 15 = 1395 s: enough evidence for 20:00
+    monkeypatch.setenv("MAX_RENDER_DURATION_MS", str(10 * MINUTE))
+    get_settings.cache_clear()
     with pytest.raises(ValidationError, match="longer than the longest video"):
         await _enqueue(db_session, project, owner, key="before")
 

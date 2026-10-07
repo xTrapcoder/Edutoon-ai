@@ -55,7 +55,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Protocol
 from uuid import UUID
 
 import structlog
@@ -85,7 +85,11 @@ from edutoon.domain.storyboard_timing import (
     timeline_positions,
 )
 from edutoon.domain.visual import visual_problem, without_invalid_visual
-from edutoon.providers.llm import LLM, StoryboardSegmentBrief
+from edutoon.providers.llm import (
+    StoryboardSceneSetDraft,
+    StoryboardSegmentBrief,
+    TokenUsage,
+)
 from edutoon.repositories import jobs as jobs_repo
 from edutoon.repositories import projects as projects_repo
 from edutoon.repositories import script_segment_audio as script_segment_audio_repo
@@ -349,9 +353,19 @@ async def _recover_stale_storyboards(session: AsyncSession, *, project_id: UUID)
 # --- run (background job) --------------------------------------------------------
 
 
+class SceneComposer(Protocol):
+    """What writes a segment's scenes: the language model (``providers.llm.LLM``) or, for a
+    PowerPoint deck, the deterministic deck composer (``services.deck_lesson``). Whatever it is,
+    its output is validated and checked for provenance here exactly the same way."""
+
+    async def compose_storyboard_scenes(
+        self, segment: StoryboardSegmentBrief, *, max_scenes: int
+    ) -> tuple[StoryboardSceneSetDraft, TokenUsage]: ...
+
+
 async def run_generate_storyboard_job(
     session: AsyncSession,
-    llm: LLM,
+    llm: SceneComposer,
     *,
     job_id: UUID,
     sessionmaker: async_sessionmaker[AsyncSession] | None = None,
@@ -420,7 +434,7 @@ async def run_generate_storyboard_job(
 
 async def _generate_storyboard(
     session: AsyncSession,
-    llm: LLM,
+    llm: SceneComposer,
     *,
     project_id: UUID,
     script_id: UUID,

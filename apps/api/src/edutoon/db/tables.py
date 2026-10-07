@@ -123,6 +123,8 @@ source_chunks = sa.Table(
     sa.Column("token_count", sa.Integer),
     sa.Column("embedding", Vector(EMBEDDING_DIMENSIONS)),
     sa.Column("embedding_model", sa.Text),
+    # Migration 0017. A deck slide's structure (domain.deck); NULL for a PDF page.
+    sa.Column("structure", JSONB(none_as_null=True)),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
 )

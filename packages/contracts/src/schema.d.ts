@@ -658,7 +658,7 @@ export interface components {
              * Source Type
              * @enum {string}
              */
-            source_type: "pdf" | "topic";
+            source_type: "pdf" | "topic" | "pptx";
             /** Description */
             description?: string | null;
             /**
@@ -706,7 +706,7 @@ export interface components {
              * Source Type
              * @enum {string}
              */
-            source_type: "pdf" | "topic";
+            source_type: "pdf" | "topic" | "pptx";
             /**
              * Status
              * @enum {string}
@@ -1392,9 +1392,9 @@ export interface components {
             uploader_id: string | null;
             /**
              * Kind
-             * @constant
+             * @enum {string}
              */
-            kind: "pdf";
+            kind: "pdf" | "pptx";
             /** Original Filename */
             original_filename: string;
             /** Content Type */

@@ -74,12 +74,14 @@ async def create(
     uploader_id: UUID | None = None,
     content_type: str = "application/pdf",
     page_count: int | None = None,
+    kind: str = "pdf",
 ) -> UploadedSourceRecord:
     stmt = (
         uploaded_sources.insert()
         .values(
             project_id=project_id,
             uploader_id=uploader_id,
+            kind=kind,
             original_filename=original_filename,
             content_type=content_type,
             storage_bucket=storage_bucket,
