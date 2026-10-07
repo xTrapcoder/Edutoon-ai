@@ -4,7 +4,6 @@ import { useUser } from '@clerk/nextjs';
 import {
   ArrowRight,
   FilePlus2,
-  Film,
   FolderPlus,
   ListChecks,
   PenLine,
@@ -57,23 +56,13 @@ export function DashboardView() {
         title={firstName ? `${greeting}, ${firstName}` : greeting}
         description="Turn your learning material into a verified, cited script - every claim traced back to your source."
         actions={
-          <>
-            <ButtonLink
-              href="/video-demo"
-              variant="secondary"
-              size="lg"
-              leadingIcon={<Film className="size-5" aria-hidden />}
-            >
-              Open Video Demo
-            </ButtonLink>
-            <ButtonLink
-              href="/projects/new"
-              size="lg"
-              leadingIcon={<FolderPlus className="size-5" aria-hidden />}
-            >
-              Create project
-            </ButtonLink>
-          </>
+          <ButtonLink
+            href="/projects/new"
+            size="lg"
+            leadingIcon={<FolderPlus className="size-5" aria-hidden />}
+          >
+            Create project
+          </ButtonLink>
         }
       />
 
