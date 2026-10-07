@@ -39,6 +39,7 @@ import {
 } from '@/lib/jobs';
 
 import { sceneStateView, type RenderSelection } from '@/lib/render';
+import { isDeckProject } from '@/lib/source-kind';
 import { IllustrationSummary } from './visual-summary';
 
 interface StoryboardPanelProps {
@@ -409,7 +410,12 @@ export function StoryboardPanel({ project, script, renderSelection }: Storyboard
           </Alert>
         ) : null}
 
-        {!active && status ? (
+        {!active && status && isDeckProject(project) ? (
+          <p className="text-[13px] text-ink-500">
+            No AI is used for a PowerPoint deck: each scene is composed from what its section says.
+          </p>
+        ) : null}
+        {!active && status && !isDeckProject(project) ? (
           <p className="text-[13px] text-ink-500">
             Estimated AI calls:{' '}
             <span className="font-medium text-ink-700">{status.estimated_provider_calls}</span>

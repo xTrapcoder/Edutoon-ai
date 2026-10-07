@@ -60,7 +60,7 @@ app/                      routes: landing, sign-in/up, and (app)/ for everything
 components/
   ui/                     button, card, badge, field, modal (<dialog>), feedback (alert, empty, error, progress)
   app-shell/              sidebar, top bar, mobile drawer
-  wizard/                 create-project steps, PDF dropzone, keyword input, creation orchestration
+  wizard/                 create-project steps, PDF / PowerPoint dropzone, keyword input, creation orchestration
   workspace/              the project frame, overview, activity, job progress, add source, edit settings
   topics/  script/        the Topic Understanding and Script Studio screens
 lib/
@@ -161,6 +161,11 @@ fail on its last scene (to see the failure and Retry), and `POST /__mock/edit-sc
 The storyboard job also makes an illustrated scene per section, cycling through every kind of visual the video can
 draw and the two ways a scene is drawn as text (one whose visual was dropped counts in the storyboard's notice);
 `MOCK_VISUALS=0` turns that off. Check narrow layouts with `resize_window` / a 375 px viewport: no card may scroll sideways.
+
+To drive the signed-in screens against the **real** API, worker, Piper and FFmpeg when Clerk sign-in is not
+available, run `uv run python scripts/dev_qa_api.py` in `apps/api` (it accepts only this stand-in's fixed token, as one
+local user, and refuses to run outside `ENVIRONMENT=development`) and `pnpm --filter @edutoon/web dev:qa:real`.
+A PowerPoint project is built from a `.pptx` (`lib/source-kind.ts` decides the wording: slides, not pages).
 
 **This is not authentication.** `dev:qa` swaps `@clerk/nextjs` for `test-support/qa` through a
 webpack alias that `next.config.ts` refuses to enable during `next build` or `next start`, and shows

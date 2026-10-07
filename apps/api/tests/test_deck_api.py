@@ -345,6 +345,45 @@ async def _job_of_kind(db_session, project_id: str, kind: str) -> str:
     return str(job.id)
 
 
+async def test_a_target_at_the_render_ceiling_is_planned_a_little_under_it(
+    client_factory, auth_headers, db_session, worker_sessionmaker, no_provider, monkeypatch
+):
+    """A lesson planned to exactly the longest renderable video came out 1% longer once narrated,
+    and could not be rendered. A target at the ceiling is planned 5% under it; a shorter one is
+    not."""
+    from edutoon.core.config import get_settings
+
+    monkeypatch.setenv("MAX_RENDER_DURATION_MS", "100000")
+    get_settings.cache_clear()
+    try:
+        headers = auth_headers()
+        async with client_factory() as client:
+            client._transport.app.state.script_llm = _providers().script_llm  # type: ignore[attr-defined]
+            project_id = await _project(client, headers, target_ms=100_000)
+            await _upload(client, headers, project_id, sample_training_deck())
+            base = f"/v1/projects/{project_id}"
+            for path in ("topics/extraction", "claim-verifications/extraction", "scripts"):
+                queued = await client.post(f"{base}/{path}", headers={**headers, **_key()})
+                assert queued.status_code == 202, queued.text
+                kind = {
+                    "topics/extraction": "extract_topics",
+                    "claim-verifications/extraction": "extract_claims",
+                    "scripts": "generate_script",
+                }[path]
+                job = await _run_one_job(
+                    db_session,
+                    worker_sessionmaker,
+                    await _job_of_kind(db_session, project_id, kind),
+                )
+                assert job.status == "succeeded", job.error
+        assert job.result["planned_for_ms"] == 95_000
+        assert job.result["target_duration_ms"] == 100_000
+        assert 0 < job.result["estimated_duration_ms"] <= 95_100
+        assert job.result["statements_dropped"] > 0  # the deck holds more than that
+    finally:
+        get_settings.cache_clear()
+
+
 async def test_a_pdf_project_is_still_routed_to_the_model(db_session):
     """The deck engine is chosen by the project's source type and nothing else."""
     from edutoon.repositories import projects as projects_repo

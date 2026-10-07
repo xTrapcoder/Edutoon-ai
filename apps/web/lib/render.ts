@@ -17,8 +17,8 @@ export const ORIENTATION_CHOICES: readonly {
   title: string;
   detail: string;
 }[] = [
-  { value: 'horizontal', title: 'Horizontal', detail: '1920 × 1080 — for screens and slides' },
-  { value: 'vertical', title: 'Vertical', detail: '1080 × 1920 — for phones' },
+  { value: 'horizontal', title: 'Horizontal', detail: '1280 × 720 — for screens and slides' },
+  { value: 'vertical', title: 'Vertical', detail: '720 × 1280 — for phones' },
 ];
 
 export const QUALITY_CHOICES: readonly { value: RenderQuality; title: string; detail: string }[] = [

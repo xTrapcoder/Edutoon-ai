@@ -2,10 +2,11 @@
 
     uv run python scripts/dev_qa_api.py          # :8000, the real database, storage and routes
 
-The web app's UI QA mode (``pnpm --filter @edutoon/web dev:qa:real``) stands in for Clerk and sends a
-fixed bearer token. This launcher makes the API accept exactly that token, as one fixed local user,
-and nothing else - so the signed-in screens can be driven end to end against the real pipeline
-(Postgres, MinIO, the job worker, Piper, FFmpeg) when a person cannot sign in through Clerk.
+The web app's UI QA mode (``pnpm --filter @edutoon/web dev:qa:real``) stands in for Clerk and
+sends a fixed bearer token. This launcher makes the API accept exactly that token, as one fixed
+local user, and nothing else - so the signed-in screens can be driven end to end against the real
+pipeline (Postgres, MinIO, the job worker, Piper, FFmpeg) when a person cannot sign in through
+Clerk.
 
 **This is not authentication.** It refuses to start unless ``ENVIRONMENT`` is ``development``, binds
 only to ``127.0.0.1``, and changes nothing in the application: the one function that verifies a

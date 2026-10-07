@@ -84,6 +84,13 @@ NO_EMBEDDING_MODEL = "none"
 
 SOURCE_TYPE_DECK = "pptx"
 
+CEILING_HEADROOM_PERCENT = 5
+"""How far under the longest renderable video (``MAX_RENDER_DURATION_MS``) a lesson is planned.
+The plan is sized from the words at an estimated pace, and the narration it becomes is measured
+afterwards: a lesson planned to exactly the ceiling came out 1% longer once narrated (30.3 minutes)
+and could not be rendered. A shorter target is planned as asked; only one near the ceiling is
+trimmed."""
+
 
 # --- routing ---------------------------------------------------------------------------
 
@@ -430,11 +437,13 @@ async def run_generate_script_job(session: AsyncSession, *, job_id: UUID) -> Job
             for topic in topics
         ]
         lesson_title = lesson_title_of(deck.slides, fallback=project.title)
+        ceiling_ms = settings.MAX_RENDER_DURATION_MS * (100 - CEILING_HEADROOM_PERCENT) // 100
+        planned_for_ms = min(project.target_duration_ms, ceiling_ms)
         plan = plan_lesson(
             deck.slides,
             groups,
             lesson_title=lesson_title,
-            target_ms=project.target_duration_ms,
+            target_ms=planned_for_ms,
             words_per_minute=settings.DECK_SPEECH_WORDS_PER_MINUTE,
             allowed=frozenset(claim_by_key),
         )
@@ -497,6 +506,7 @@ async def run_generate_script_job(session: AsyncSession, *, job_id: UUID) -> Job
             "topic_count": len(topics),
             "estimated_duration_ms": validated.estimated_duration_ms,
             "target_duration_ms": target,
+            "planned_for_ms": planned_for_ms,
             "duration_difference_ms": difference,
             "duration_difference_pct": round(difference / target * 100, 1) if target else 0.0,
             "correction_applied": False,

@@ -201,8 +201,9 @@ function TopicsView() {
                   {failed ? "Let's try that again" : 'Ready to find your topics'}
                 </h2>
                 <p className="mt-2 text-sm text-ink-500">
-                  We will read your material and outline what is worth covering, with the pages each
-                  topic comes from. Nothing is added to a script until you have reviewed it.
+                  We will read your material and outline what is worth covering, with the{' '}
+                  {words.unit}s each topic comes from. Nothing is added to a script until you have
+                  reviewed it.
                 </p>
               </div>
               {failed ? (
@@ -277,14 +278,17 @@ function TopicsView() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-3">
-          <Button
-            variant="secondary"
-            onClick={() => setAddingKeywords((value) => !value)}
-            aria-expanded={addingKeywords}
-            leadingIcon={<Plus className="size-4" aria-hidden />}
-          >
-            Add keywords
-          </Button>
+          {/* Keywords steer which topics a PDF covers; a deck's topics follow its own sections. */}
+          {!isDeckProject(project) ? (
+            <Button
+              variant="secondary"
+              onClick={() => setAddingKeywords((value) => !value)}
+              aria-expanded={addingKeywords}
+              leadingIcon={<Plus className="size-4" aria-hidden />}
+            >
+              Add keywords
+            </Button>
+          ) : null}
           {derived ? (
             <Button
               variant="secondary"
