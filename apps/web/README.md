@@ -3,11 +3,14 @@
 The EduToon AI front end: Next.js 15 (App Router), TypeScript, Tailwind CSS 4, TanStack Query, and
 Clerk for sign-in. It is a client of the API in `apps/api` and of nothing else.
 
-It covers everything the API can do today: sign in, projects, PDF and keyword sources, generation
-settings, topic extraction and review (with evidence), script generation, review and approval,
-narration (Phase 8) and the storyboard timeline (Phase 9) in Script Studio.
-It does **not** cover animation or rendering - those stages do not exist yet, and
-the UI describes rendering as "coming soon" rather than offering it.
+It covers everything the API can do today, as an eight-stage pipeline shown on every project page:
+**Source → Settings → Topics → Claims → Script → Narration → Storyboard → Video**. Each stage has its
+own page (`/projects/[id]`, `/topics`, `/claims`, `/script`, `/narration`, `/storyboard`, `/video`) and
+a status read from the API - Completed, Processing, Pending, Failed or "Blocked — prerequisite
+required" - never assumed (`lib/pipeline.ts`). The video page plays and downloads the rendered MP4;
+narration audio is played and downloaded section by section. Rendering keeps the API's own guards
+(approved script, complete narration, complete storyboard): the page shows the blocker rather than
+working around it.
 
 ## Run it
 
@@ -52,7 +55,8 @@ One thing the generated types cannot say: the API's real error body is
 ```
 app/                      routes: landing, sign-in/up, and (app)/ for everything behind sign-in
   (app)/dashboard         recent projects
-  (app)/projects          list, /new (the wizard), /[projectId] (overview), /topics, /script
+  (app)/projects          list, /new (the wizard), /[projectId] (overview), /topics, /claims, /script,
+                          /narration, /storyboard, /video
 components/
   ui/                     button, card, badge, field, modal (<dialog>), feedback (alert, empty, error, progress)
   app-shell/              sidebar, top bar, mobile drawer

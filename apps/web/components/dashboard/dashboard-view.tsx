@@ -1,7 +1,15 @@
 'use client';
 
 import { useUser } from '@clerk/nextjs';
-import { ArrowRight, FilePlus2, FolderPlus, ListChecks, PenLine, ShieldCheck } from 'lucide-react';
+import {
+  ArrowRight,
+  FilePlus2,
+  Film,
+  FolderPlus,
+  ListChecks,
+  PenLine,
+  ShieldCheck,
+} from 'lucide-react';
 import Link from 'next/link';
 import { ProjectRow, ProjectRowSkeleton } from '@/components/projects/project-row';
 import { ButtonLink } from '@/components/ui/button';
@@ -30,7 +38,7 @@ const HOW_IT_WORKS = [
   {
     icon: ShieldCheck,
     title: 'Approve it',
-    body: 'Approve the wording when you are happy. Narration and video come next.',
+    body: 'Approve the wording when you are happy. After approval, the script can be narrated, storyboarded, and rendered into video.',
   },
 ] as const;
 
@@ -49,13 +57,23 @@ export function DashboardView() {
         title={firstName ? `${greeting}, ${firstName}` : greeting}
         description="Turn your learning material into a verified, cited script - every claim traced back to your source."
         actions={
-          <ButtonLink
-            href="/projects/new"
-            size="lg"
-            leadingIcon={<FolderPlus className="size-5" aria-hidden />}
-          >
-            Create project
-          </ButtonLink>
+          <>
+            <ButtonLink
+              href="/video-demo"
+              variant="secondary"
+              size="lg"
+              leadingIcon={<Film className="size-5" aria-hidden />}
+            >
+              Open Video Demo
+            </ButtonLink>
+            <ButtonLink
+              href="/projects/new"
+              size="lg"
+              leadingIcon={<FolderPlus className="size-5" aria-hidden />}
+            >
+              Create project
+            </ButtonLink>
+          </>
         }
       />
 

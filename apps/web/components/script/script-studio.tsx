@@ -414,7 +414,7 @@ function ApprovalCard({ project, script }: { project: Project; script: ScriptDet
  * script may be narrated. en-IN projects currently narrate with the same British-English voice as
  * en-GB - a deliberate, explicit temporary substitution, never presented as Indian English.
  */
-function SynthesisCard({ project, script }: { project: Project; script: ScriptDetail }) {
+export function SynthesisCard({ project, script }: { project: Project; script: ScriptDetail }) {
   const approved = script.status === 'approved';
   const { data: status } = useSynthesisStatus(project.id, approved ? script.id : undefined);
   const enqueue = useEnqueueSynthesis(project.id, script.id);

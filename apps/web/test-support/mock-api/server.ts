@@ -663,8 +663,11 @@ function finishClaimExtraction(job_: Row) {
       }
     }
     processed += 1;
+    // A claim the source backs cites the passages its topic was drawn from, best match first.
+    const evidence = (t.evidence ?? []) as { source_chunk_id: string }[];
     for (const [template, status, rationale] of CLAIM_TEMPLATES) {
       candidatesGenerated += 1;
+      const backed = status === 'supported' || status === 'partially_supported';
       claims.push({
         id: uuid(),
         project_id: projectId,
@@ -675,7 +678,14 @@ function finishClaimExtraction(job_: Row) {
         llm_model: 'mock',
         topic_id: t.id,
         created_at: now(),
-        citations: [],
+        citations: backed
+          ? evidence.map((passage, i) => ({
+              id: uuid(),
+              source_chunk_id: passage.source_chunk_id,
+              similarity: Math.max(0.5, 0.91 - i * 0.07),
+              created_at: now(),
+            }))
+          : [],
       });
       claimsVerified += 1;
       byStatus[status] = (byStatus[status] ?? 0) + 1;

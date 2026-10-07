@@ -238,7 +238,7 @@ function SegmentTimeline({
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between gap-2">
-        <h4 className="text-sm font-semibold text-ink-950">Section {index + 1}</h4>
+        <h3 className="text-sm font-semibold text-ink-950">Section {index + 1}</h3>
         {segment.is_stale ? (
           <Badge tone="warning" dot>
             Stale — needs another attempt

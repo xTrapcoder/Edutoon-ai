@@ -9,6 +9,7 @@ import {
   PenLine,
   ShieldCheck,
   Video,
+  Volume2,
 } from 'lucide-react';
 import Link from 'next/link';
 import { Logo } from '@/components/brand/logo';
@@ -51,9 +52,10 @@ const STEPS = [
   ['Approve it', 'Lock in the script that the next stages will build on.'],
 ] as const;
 
-const UPCOMING = [
-  { icon: Clapperboard, title: 'Visual scenes' },
-  { icon: Video, title: 'Rendered video' },
+const AFTER_APPROVAL = [
+  { icon: Volume2, title: 'Narration' },
+  { icon: Clapperboard, title: 'Storyboard' },
+  { icon: Video, title: 'Video' },
 ] as const;
 
 const FAQ = [
@@ -67,7 +69,7 @@ const FAQ = [
   },
   {
     q: 'Can I make a video today?',
-    a: 'Not yet. Today EduToon takes you from your material to an approved, cited script, and lets you narrate it with a local, offline voice. Visual scenes and rendering are the next stages and are still being built.',
+    a: 'Yes, for a project that gets that far. After a script is approved you can narrate it with a local, offline voice, build its storyboard, and render it into a video. Each stage needs the one before it: the narration must be complete and the storyboard finished before a video can be rendered.',
   },
   {
     q: 'Which languages are supported?',
@@ -262,14 +264,15 @@ export default function LandingPage() {
               ))}
             </ol>
 
-            <div className="mt-12 rounded-xl border border-dashed border-line-strong bg-surface-sunken p-6">
-              <p className="text-sm font-semibold text-ink-950">Coming next</p>
+            <div className="mt-12 rounded-xl border border-line-strong bg-surface-sunken p-6">
+              <p className="text-sm font-semibold text-ink-950">After approval</p>
               <p className="mt-1 text-sm text-ink-600">
-                Once a script is approved, you can already narrate it with a local, offline voice.
-                Turning it into a full video still needs these stages, which are being built.
+                Once a script is approved, you can narrate it with a local, offline voice, build its
+                storyboard, and render it into a video. Each stage builds on the one before, so a
+                video is only offered once its narration is complete and its storyboard is finished.
               </p>
               <ul className="mt-4 flex flex-wrap gap-3">
-                {UPCOMING.map((stage) => (
+                {AFTER_APPROVAL.map((stage) => (
                   <li
                     key={stage.title}
                     className="inline-flex items-center gap-2 rounded-full border border-line bg-surface px-3.5 py-1.5 text-sm font-medium text-ink-600"

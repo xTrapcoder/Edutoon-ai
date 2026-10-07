@@ -490,6 +490,7 @@ describe('Storyboard (Phase 9)', () => {
     renderProjectPage(<ScriptPage />, 'script');
 
     await screen.findByRole('navigation', { name: 'Script sections' });
-    expect(screen.queryByText('Storyboard')).toBeNull();
+    // (the stepper names the stage too; what must be absent is the storyboard panel itself.)
+    expect(screen.queryByRole('heading', { name: 'Storyboard' })).toBeNull();
   });
 });

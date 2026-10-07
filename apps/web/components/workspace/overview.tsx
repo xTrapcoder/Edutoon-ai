@@ -1,6 +1,14 @@
 'use client';
 
-import { ArrowRight, CheckCircle2, FileText, ListChecks, PenLine, Settings2 } from 'lucide-react';
+import {
+  ArrowRight,
+  CheckCircle2,
+  FileText,
+  ListChecks,
+  PenLine,
+  Settings2,
+  Video,
+} from 'lucide-react';
 import { useState } from 'react';
 import type { Source, Topic } from '@edutoon/contracts';
 import { Badge } from '@/components/ui/badge';
@@ -76,14 +84,20 @@ const GUIDANCE: Record<StageId, Guidance> = {
   },
   approved: {
     title: 'Script approved',
-    body: 'Narrate it and build its storyboard from Script Studio. Rendering is the production stage still to come.',
+    body: 'Next: Narration → Storyboard → Video. Each has its own page, and each waits for the one before it.',
   },
 };
 
 function NextStepCard() {
-  const { project, workflow } = useWorkspaceContext();
+  const { project, workflow, pipeline } = useWorkspaceContext();
   const { stage, next, meta } = workflow;
   const guidance = GUIDANCE[stage];
+  // After approval, the way on is the first of the production stages that is not finished yet.
+  const production = pipeline.filter((entry) =>
+    ['narration', 'storyboard', 'video'].includes(entry.id),
+  );
+  const continueTo = production.find((entry) => entry.status !== 'completed');
+  const video = production.find((entry) => entry.id === 'video');
   const showPdfForm =
     project.source_type === 'pdf' && (stage === 'needs_source' || stage === 'source_failed');
 
@@ -104,12 +118,23 @@ function NextStepCard() {
             <p className="mt-1 max-w-xl text-sm text-ink-500">{guidance.body}</p>
           </div>
           {next && !showPdfForm ? (
-            <ButtonLink
-              href={next.href}
-              trailingIcon={<ArrowRight className="size-4" aria-hidden />}
-            >
-              {next.label}
-            </ButtonLink>
+            <div className="flex flex-wrap gap-3">
+              <ButtonLink
+                href={next.href}
+                trailingIcon={<ArrowRight className="size-4" aria-hidden />}
+              >
+                {next.label}
+              </ButtonLink>
+              {stage === 'approved' && (continueTo ?? video) ? (
+                <ButtonLink
+                  href={(continueTo ?? video)!.href}
+                  variant="secondary"
+                  leadingIcon={<Video className="size-4" aria-hidden />}
+                >
+                  {continueTo ? `Continue to ${continueTo.label.toLowerCase()}` : 'Watch the video'}
+                </ButtonLink>
+              ) : null}
+            </div>
           ) : null}
         </div>
         {meta.busy ? <Progress label={guidance.title} /> : null}
@@ -246,7 +271,7 @@ function SettingsCard() {
 
   return (
     <>
-      <Card>
+      <Card id="settings" className="scroll-mt-24">
         <CardHeader
           title="Generation settings"
           icon={<Settings2 className="size-4" aria-hidden />}
