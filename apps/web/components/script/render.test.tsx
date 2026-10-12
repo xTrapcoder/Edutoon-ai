@@ -102,7 +102,7 @@ describe('Video (Phase 10)', () => {
     renderProjectPage(<ScriptPage />, 'script');
 
     expect(await screen.findByText('Not ready to render yet')).toBeInTheDocument();
-    expect(screen.getByText(/generate the storyboard first/i)).toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent(/generate the storyboard first/i);
     expect(await screen.findByRole('button', { name: 'Render preview' })).toBeDisabled();
   });
 

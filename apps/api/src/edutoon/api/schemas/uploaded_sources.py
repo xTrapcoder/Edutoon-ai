@@ -22,7 +22,7 @@ from pydantic import BaseModel, ConfigDict
 from edutoon.core.config import get_settings
 from edutoon.services.uploaded_sources import UploadedSourceRecord
 
-SourceKind = Literal["pdf"]
+SourceKind = Literal["pdf", "pptx"]
 SourceStatus = Literal["pending", "processing", "parsed", "failed"]
 
 
@@ -36,6 +36,8 @@ def failure_reason(record: UploadedSourceRecord, *, max_pages: int) -> str | Non
     """
     if record.status != "failed":
         return None
+    if record.kind == "pptx":
+        return _deck_failure_reason(record)
     if record.page_count is None:
         return (
             "This PDF could not be read. It may be damaged or password-protected; "
@@ -49,6 +51,23 @@ def failure_reason(record: UploadedSourceRecord, *, max_pages: int) -> str | Non
     return (
         "No text could be read from this PDF - it looks like a scan or a set of images. "
         "Upload a text-based PDF, or run it through text recognition (OCR) first."
+    )
+
+
+def _deck_failure_reason(record: UploadedSourceRecord) -> str:
+    if record.page_count is None:
+        return (
+            "This presentation could not be read. It may be damaged or password-protected; "
+            "try saving a fresh copy as .pptx."
+        )
+    if record.page_count > get_settings().MAX_DECK_SLIDES:
+        return (
+            f"This presentation has {record.page_count} slides; the limit is "
+            f"{get_settings().MAX_DECK_SLIDES}. Split it and upload the parts you need."
+        )
+    return (
+        "No text could be read from this presentation - its slides look like pictures only. "
+        "Add text, or speaker notes, to the slides and upload it again."
     )
 
 

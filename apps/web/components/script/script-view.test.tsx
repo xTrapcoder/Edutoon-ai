@@ -127,9 +127,15 @@ describe('Script step', () => {
 
     expect(await screen.findByRole('heading', { name: 'Script approved' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: /what.s next/i })).toBeInTheDocument();
-    // Rendering is still described, never offered - only 1 "Coming soon" stage now that
-    // narration (Phase 8) and the storyboard (Phase 9) are both real.
-    expect(screen.getAllByText('Coming soon')).toHaveLength(1);
+    // Narration, the storyboard and the video are all real stages: none is described as coming soon,
+    // and "Go to Video" is only a link to the Video page - it starts nothing, and the Video card
+    // still offers no render button before its prerequisites are met.
+    expect(screen.queryByText(/coming soon|still to come/i)).not.toBeInTheDocument();
+    expect(screen.getByText('Next: Narration → Storyboard → Video')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Go to Video' })).toHaveAttribute(
+      'href',
+      `/projects/${PROJECT_ID}/video`,
+    );
     expect(screen.queryByRole('button', { name: /render|scene|video/i })).not.toBeInTheDocument();
     // Narration is real: Script Studio's own narration panel offers it directly.
     expect(await screen.findByRole('button', { name: 'Narrate this script' })).toBeInTheDocument();

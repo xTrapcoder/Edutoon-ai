@@ -38,6 +38,8 @@ interface TopicDetailProps {
   wordingLocked: boolean;
   /** This topic's own extracted claims (never a claim typed in by hand). */
   claims: ClaimVerification[];
+  /** What the source's parts are called: a PDF has pages, a deck has slides. */
+  unit?: 'Page' | 'Slide';
 }
 
 /** What claim extraction has found for this topic so far, if anything. */
@@ -76,7 +78,15 @@ function ClaimsSummary({ claims }: { claims: ClaimVerification[] }) {
   );
 }
 
-function PassageExcerpt({ projectId, topic }: { projectId: string; topic: Topic }) {
+function PassageExcerpt({
+  projectId,
+  topic,
+  unit,
+}: {
+  projectId: string;
+  topic: Topic;
+  unit: 'Page' | 'Slide';
+}) {
   const first = topic.evidence[0];
   const chunks = useSourceChunks(projectId, first?.source_id);
   const [expanded, setExpanded] = useState(false);
@@ -86,8 +96,8 @@ function PassageExcerpt({ projectId, topic }: { projectId: string; topic: Topic 
   if (chunks.isError) {
     return (
       <p className="text-[13px] text-ink-500">
-        We couldn&apos;t load the passage text just now, but the pages above are where this topic
-        comes from.
+        We couldn&apos;t load the passage text just now, but the {unit.toLowerCase()}s above are
+        where this topic comes from.
       </p>
     );
   }
@@ -97,7 +107,7 @@ function PassageExcerpt({ projectId, topic }: { projectId: string; topic: Topic 
   const text = chunk.content.replace(/\s+/g, ' ').trim();
   const long = text.length > EXCERPT_CHARS;
   const shown = expanded || !long ? text : `${text.slice(0, EXCERPT_CHARS).trimEnd()}…`;
-  const pages = formatPageRange(first.page_from, first.page_to);
+  const pages = formatPageRange(first.page_from, first.page_to, unit);
 
   return (
     <figure className="rounded-md border-l-4 border-brand-300 bg-brand-50/50 p-4">
@@ -118,8 +128,16 @@ function PassageExcerpt({ projectId, topic }: { projectId: string; topic: Topic 
   );
 }
 
-function Evidence({ projectId, topic }: { projectId: string; topic: Topic }) {
-  const pages = evidencePages(topic);
+function Evidence({
+  projectId,
+  topic,
+  unit,
+}: {
+  projectId: string;
+  topic: Topic;
+  unit: 'Page' | 'Slide';
+}) {
+  const pages = evidencePages(topic, unit);
 
   if (topic.origin === 'suggested') {
     return (
@@ -133,7 +151,8 @@ function Evidence({ projectId, topic }: { projectId: string; topic: Topic }) {
     return (
       <p className="flex gap-2 text-sm text-ink-600">
         <User className="mt-0.5 size-4 shrink-0 text-ink-400" aria-hidden />
-        You added this topic yourself, so it does not point to a page in your source.
+        You added this topic yourself, so it does not point to a {unit.toLowerCase()} in your
+        source.
       </p>
     );
   }
@@ -146,7 +165,7 @@ function Evidence({ projectId, topic }: { projectId: string; topic: Topic }) {
           <span className="text-ink-500">({topic.evidence.length} passages)</span>
         ) : null}
       </p>
-      <PassageExcerpt projectId={projectId} topic={topic} />
+      <PassageExcerpt projectId={projectId} topic={topic} unit={unit} />
     </div>
   );
 }
@@ -257,7 +276,13 @@ const DECISIONS = [
 ] as const;
 
 /** The selected topic: its wording, where it came from and the accept / reject decision. */
-export function TopicDetail({ projectId, topic, wordingLocked, claims }: TopicDetailProps) {
+export function TopicDetail({
+  projectId,
+  topic,
+  wordingLocked,
+  claims,
+  unit = 'Page',
+}: TopicDetailProps) {
   const [editing, setEditing] = useState(false);
   const update = useUpdateTopic(projectId);
 
@@ -351,7 +376,7 @@ export function TopicDetail({ projectId, topic, wordingLocked, claims }: TopicDe
           <h3 id="evidence-heading" className="text-sm font-semibold text-ink-950">
             Evidence and source
           </h3>
-          <Evidence projectId={projectId} topic={topic} />
+          <Evidence projectId={projectId} topic={topic} unit={unit} />
         </section>
 
         <section aria-labelledby="claims-heading" className="space-y-3 border-t border-line pt-5">

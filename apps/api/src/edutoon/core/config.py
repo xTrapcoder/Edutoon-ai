@@ -56,6 +56,9 @@ class Settings(BaseSettings):
     # deleting code. PDF projects with keywords are unaffected.
     KEYWORD_ONLY_PROJECTS_ENABLED: bool = False
     MAX_PDF_PAGES: int = 300
+    # The most slides one uploaded PowerPoint deck may have (hidden ones included; they are counted
+    # before any text is read). A lesson covers at most MAX_SCRIPT_SECTIONS topics of a few slides.
+    MAX_DECK_SLIDES: int = Field(default=100, ge=1)
     EMBEDDING_MODEL: str = "text-embedding-3-small"
     LLM_MODEL: str = "claude-sonnet-5"
 
@@ -109,6 +112,13 @@ class Settings(BaseSettings):
     MAX_SCRIPT_SEGMENTS: int = 12
     MAX_CLAIMS_PER_GENERATION: int = 40
     SCRIPT_WORDS_PER_MINUTE: int = 150
+    # How many words a minute a *PowerPoint deck* lesson is planned at (``domain.deck_plan``). A
+    # deck's length comes from the words it is given, so the pace has to be the real pace of the
+    # narrator. Piper's ``en_GB-cori-medium`` at its defaults was measured at 163 words a minute
+    # on a real deck lesson (145 to 180 by section) and 132 on a longer-worded sample, so the pace
+    # depends on the words: 160 here, an estimate that the measured narration then replaces. The
+    # model-written scripts above keep their own, older estimate.
+    DECK_SPEECH_WORDS_PER_MINUTE: int = Field(default=160, ge=60, le=240)
 
     # Topic extraction (Phase 5). Every one is optional: an ``.env`` written
     # before Phase 5 boots unchanged. ``TOPIC_INPUT_BUDGET_CHARS`` bounds how
@@ -241,6 +251,17 @@ class Settings(BaseSettings):
     PIPER_VOICE_EN_IN: str = "en_GB-cori-medium"
     PIPER_EN_IN_IS_TEMPORARY_SUBSTITUTE: bool = True
 
+    # How Piper speaks. The defaults are exactly how ``en_GB-cori-medium`` was trained, which
+    # pauses naturally between sentences and speaks 130 to 165 words a minute depending on the words
+    # (measured; see apps/api/README.md, "Text-to-speech"). PIPER_LENGTH_SCALE stretches speech
+    # (1.1 is about 10% slower, 0.9 faster); PIPER_NOISE_SCALE and PIPER_NOISE_W_SCALE are how much
+    # the pitch and the rhythm of each sentence may vary (higher is livelier, too high is unsteady).
+    # Anything other than the trained values is part of the narration's fingerprint, so changing
+    # one re-narrates rather than mixing two ways of speaking in one video.
+    PIPER_LENGTH_SCALE: float = Field(default=1.0, gt=0.5, le=2.0)
+    PIPER_NOISE_SCALE: float = Field(default=0.667, ge=0, le=1.5)
+    PIPER_NOISE_W_SCALE: float = Field(default=0.8, ge=0, le=1.5)
+
     # Safety caps on one synthesis job, all generous defaults - never required, never
     # meant to bind in ordinary use. MAX_TTS_CHARS_PER_CALL bounds one internal Piper
     # invocation (domain.script_audio splits a segment's text into chunks at sentence
@@ -289,10 +310,12 @@ class Settings(BaseSettings):
     # scene count; MAX_STORYBOARD_SEGMENTS bounds how many segments (and so provider
     # calls - exactly one per segment, never one per scene) one storyboard generation
     # may cover.
-    # (300 scenes is a scene-count ceiling, not a time limit: at the default scene lengths it
-    # bounds a script to roughly an hour of video, and at ten minutes it is far from binding. It is
-    # enforced with a clear message, never by dropping scenes, and is a long-video item to revisit.)
-    MAX_SCENES_PER_SCRIPT: int = Field(default=300, ge=1)
+    # (1200 scenes is a scene-count ceiling, not a time limit: it is exactly the worst case of the
+    # two limits below it, 200 segments of at most 6 scenes, so it never binds on its own. The check
+    # counts the most a script *could* need - every segment at its maximum - not what a writer will
+    # propose: a 25-minute, 72-section deck lesson counted 432, which the earlier 300 refused. It is
+    # enforced with a clear message, never by dropping scenes.)
+    MAX_SCENES_PER_SCRIPT: int = Field(default=1200, ge=1)
     MAX_STORYBOARD_SEGMENTS: int = Field(default=200, ge=1)
 
     # Mirrors the other STALE_AFTER_SECONDS settings: how long a generate_storyboard job
@@ -309,7 +332,7 @@ class Settings(BaseSettings):
     # AAC patent licensing, which is a separate business/legal decision
     # (apps/api/README.md, "Video rendering").
     #
-    # MAX_RENDER_DURATION_MS is the longest video one render may produce (10 minutes today;
+    # MAX_RENDER_DURATION_MS is the longest video one render may produce (30 minutes today;
     # the chunked design itself does not depend on it). It is the single source of truth for
     # "the longest video this product can make end to end", so it is also the longest *target* a
     # script will be written for (``services.scripts``) - writing, narrating and storyboarding a
@@ -326,7 +349,7 @@ class Settings(BaseSettings):
     FFMPEG_BINARY: str = "ffmpeg"
     FFPROBE_BINARY: str = "ffprobe"
     RENDER_VIDEO_ENCODER: Literal["libx264", "h264_nvenc"] = "libx264"
-    MAX_RENDER_DURATION_MS: int = Field(default=600_000, ge=1_000)
+    MAX_RENDER_DURATION_MS: int = Field(default=1_800_000, ge=1_000)
     RENDER_WORK_DIR: str = ""
     RENDER_MIN_FREE_DISK_MB: int = Field(default=1024, ge=0)
     RENDER_CONCURRENCY: int = Field(default=2, ge=1, le=16)

@@ -9,7 +9,7 @@ import { jobFailureMessage } from '@/lib/jobs';
 import type { Tone } from '@/lib/workflow';
 
 const KIND_LABEL: Record<JobKind, string> = {
-  parse_source: 'Reading your PDF',
+  parse_source: 'Reading your source',
   build_evidence: 'Preparing your source for verification',
   extract_topics: 'Extracting topics',
   extract_claims: 'Extracting and verifying claims',

@@ -13,7 +13,7 @@ import {
 describe('the supported range', () => {
   it('is one minute up to ten, defaulting to five - the longest video rendering was verified to', () => {
     expect(MIN_DURATION_MS).toBe(60_000);
-    expect(MAX_SUPPORTED_DURATION_MS).toBe(600_000);
+    expect(MAX_SUPPORTED_DURATION_MS).toBe(1_800_000);
     expect(DEFAULT_DURATION_MS).toBe(300_000);
   });
 });
@@ -25,6 +25,7 @@ describe('formatClock', () => {
     [60_000, '1:00'],
     [225_000, '3:45'],
     [600_000, '10:00'],
+    [1_800_000, '30:00'],
     [3_725_000, '1:02:05'],
   ])('writes %i ms as %s', (ms, text) => {
     expect(formatClock(ms)).toBe(text);
@@ -39,6 +40,7 @@ describe('parseClock', () => {
     ['5:30', 330_000],
     ['05:30', 330_000],
     ['10:00', 600_000],
+    ['30:00', 1_800_000],
     ['0:59', 59_000],
     [' 7:15 ', 435_000],
     ['12', 720_000],
@@ -55,14 +57,14 @@ describe('parseClock', () => {
 });
 
 describe('isValidDurationMs', () => {
-  it('accepts any whole number of seconds from one minute to ten, not just round minutes', () => {
-    for (const ms of [60_000, 61_000, 225_000, 331_000, 599_000, 600_000]) {
+  it('accepts any whole number of seconds from one minute to thirty, not just round minutes', () => {
+    for (const ms of [60_000, 61_000, 225_000, 331_000, 599_000, 600_000, 1_799_000, 1_800_000]) {
       expect(isValidDurationMs(ms)).toBe(true);
     }
   });
 
   it('refuses shorter, longer, fractional and non-integer lengths', () => {
-    for (const ms of [0, 59_000, 59_999, 600_001, 601_000, 1_800_000, 3_600_000, 90_500, 1.5]) {
+    for (const ms of [0, 59_000, 59_999, 1_800_001, 1_801_000, 3_600_000, 90_500, 1.5]) {
       expect(isValidDurationMs(ms)).toBe(false);
     }
   });
@@ -72,7 +74,7 @@ describe('isValidDurationMs', () => {
     for (let ms = MIN_DURATION_MS; ms <= MAX_SUPPORTED_DURATION_MS; ms += 1000) {
       if (isValidDurationMs(ms)) accepted += 1;
     }
-    expect(accepted).toBe(541);
+    expect(accepted).toBe(1741);
   });
 });
 
@@ -83,14 +85,14 @@ describe('durationProblem', () => {
   });
 
   it('is honest that longer videos are not supported yet, and gives the range', () => {
-    expect(durationProblem(660_000)).toBe(
-      'Videos longer than 10:00 are not supported yet. Enter a length from 1:00 to 10:00.',
+    expect(durationProblem(1_860_000)).toBe(
+      'Videos longer than 30:00 are not supported yet. Enter a length from 1:00 to 30:00.',
     );
-    expect(durationProblem(3_600_000)).toMatch(/longer than 10:00 are not supported yet/);
+    expect(durationProblem(3_600_000)).toMatch(/longer than 30:00 are not supported yet/);
   });
 
   it('says what to enter when the text was not a length, or was too short', () => {
-    expect(durationProblem(null)).toBe('Enter a length from 1:00 to 10:00, such as 5 or 7:30.');
+    expect(durationProblem(null)).toBe('Enter a length from 1:00 to 30:00, such as 5 or 7:30.');
     expect(durationProblem(30_000)).toMatch(/shorter than 1:00 are not supported/);
   });
 });

@@ -121,7 +121,10 @@ export function serveProject(data: ProjectApi = {}) {
 }
 
 /** Render a project page inside the real workspace shell, as the app does. */
-export function renderProjectPage(page_: ReactElement, path: 'topics' | 'script' | '' = '') {
+export function renderProjectPage(
+  page_: ReactElement,
+  path: 'topics' | 'claims' | 'script' | 'narration' | 'storyboard' | 'video' | '' = '',
+) {
   navigation.projectId = PROJECT_ID;
   navigation.pathname = `/projects/${PROJECT_ID}${path ? `/${path}` : ''}`;
   return renderWithClient(<WorkspaceShell>{page_}</WorkspaceShell>);

@@ -87,8 +87,8 @@ export function eligibleAcceptedTopics(topics: readonly Topic[]): Topic[] {
   return result;
 }
 
-/** Where a topic was drawn from, in a few words: "Page 4" or "Pages 3–5, 9". */
-export function evidencePages(topic: Topic): string | null {
+/** Where a topic was drawn from, in a few words: "Page 4", "Pages 3–5, 9" or "Slide 4". */
+export function evidencePages(topic: Topic, unit: 'Page' | 'Slide' = 'Page'): string | null {
   const ranges: string[] = [];
   for (const entry of topic.evidence) {
     const from = entry.page_from ?? entry.page_to;
@@ -99,7 +99,7 @@ export function evidencePages(topic: Topic): string | null {
   }
   if (ranges.length === 0) return null;
   const single = ranges.length === 1 && !(ranges[0] ?? '').includes('–');
-  return `${single ? 'Page' : 'Pages'} ${ranges.join(', ')}`;
+  return `${single ? unit : `${unit}s`} ${ranges.join(', ')}`;
 }
 
 /** Whether a topic has real source material behind it. */

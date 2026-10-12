@@ -97,13 +97,17 @@ export function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-/** "Page 4" or "Pages 4-6" (an en dash, as in print). */
-export function formatPageRange(from: number | null, to: number | null): string | null {
+/** "Page 4" or "Pages 4-6" (an en dash, as in print); "Slide 4" for a deck. */
+export function formatPageRange(
+  from: number | null,
+  to: number | null,
+  unit: 'Page' | 'Slide' = 'Page',
+): string | null {
   if (from === null && to === null) return null;
   const start = from ?? to;
   const end = to ?? from;
   if (start === null || end === null) return null;
-  return start === end ? `Page ${start}` : `Pages ${start}–${end}`;
+  return start === end ? `${unit} ${start}` : `${unit}s ${start}–${end}`;
 }
 
 export function pluralise(count: number, singular: string, plural = `${singular}s`): string {

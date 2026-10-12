@@ -3128,7 +3128,8 @@
             "type": "string",
             "enum": [
               "pdf",
-              "topic"
+              "topic",
+              "pptx"
             ],
             "title": "Source Type"
           },
@@ -3236,7 +3237,8 @@
             "type": "string",
             "enum": [
               "pdf",
-              "topic"
+              "topic",
+              "pptx"
             ],
             "title": "Source Type"
           },
@@ -4992,7 +4994,10 @@
           },
           "kind": {
             "type": "string",
-            "const": "pdf",
+            "enum": [
+              "pdf",
+              "pptx"
+            ],
             "title": "Kind"
           },
           "original_filename": {

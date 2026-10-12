@@ -1,6 +1,6 @@
 'use client';
 
-import { FilePlus2, FileText, ListChecks } from 'lucide-react';
+import { FilePlus2, FileText, ListChecks, Presentation } from 'lucide-react';
 import { useId } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardBody, CardHeader } from '@/components/ui/card';
@@ -9,12 +9,14 @@ import { RadioCard } from '@/components/ui/radio-card';
 import { FileDropzone } from './file-dropzone';
 import { KeywordInput } from './keyword-input';
 import {
+  fileKindOf,
   isModeAvailable,
   KEYWORD_ONLY_UNSUPPORTED_MESSAGE,
   MAX_TITLE_CHARS,
   suggestTitle,
+  usesDeck,
+  usesFile,
   usesKeywords,
-  usesPdf,
   type SourceErrors,
   type SourceMode,
   type WizardValues,
@@ -41,6 +43,12 @@ const MODES: readonly {
     title: 'PDF document',
     description: 'Upload your study material',
     icon: FileText,
+  },
+  {
+    value: 'pptx',
+    title: 'PowerPoint deck',
+    description: 'Upload a .pptx - explained as one continuous lesson',
+    icon: Presentation,
   },
   {
     value: 'keywords',
@@ -102,7 +110,7 @@ export function SourceStep({
             description="What should the video be about?"
           />
           <CardBody className="space-y-6">
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
               {MODES.map((mode) => (
                 <RadioCard
                   key={mode.value}
@@ -123,7 +131,8 @@ export function SourceStep({
             <p className="text-[13px] text-ink-500">
               Keyword-only projects are not supported yet: every claim in a video is checked against
               your own source material, and keywords alone give nothing to check against. Upload a
-              PDF, and add keywords if you want to steer which topics it covers.
+              PDF or a PowerPoint deck; with a PDF you can also add keywords to steer which topics
+              it covers.
             </p>
             {errors.mode ? (
               <p role="alert" className="text-[13px] font-medium text-danger-700">
@@ -133,15 +142,24 @@ export function SourceStep({
 
             <div
               className={
-                usesPdf(values.mode) && usesKeywords(values.mode) ? 'grid gap-8 lg:grid-cols-2' : ''
+                usesFile(values.mode) && usesKeywords(values.mode)
+                  ? 'grid gap-8 lg:grid-cols-2'
+                  : ''
               }
             >
-              {usesPdf(values.mode) ? (
+              {usesFile(values.mode) ? (
                 <section aria-labelledby={`${name}-pdf`} className="space-y-3">
                   <h3 id={`${name}-pdf`} className="text-sm font-semibold text-ink-950">
-                    Upload PDF document
+                    {usesDeck(values.mode) ? 'Upload PowerPoint deck' : 'Upload PDF document'}
                   </h3>
+                  {usesDeck(values.mode) ? (
+                    <p className="text-[13px] text-ink-500">
+                      Each slide is read as it is - title, bullets, tables and speaker notes - and
+                      explained as one connected lesson, in the order of your deck.
+                    </p>
+                  ) : null}
                   <FileDropzone
+                    kind={fileKindOf(values.mode)}
                     file={values.file}
                     error={errors.file}
                     disabled={disabled}

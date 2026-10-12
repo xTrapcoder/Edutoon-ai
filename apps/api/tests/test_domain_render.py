@@ -83,15 +83,16 @@ def test_the_render_plan_and_the_storyboard_read_model_place_every_scene_identic
 # held missing-glyph boxes); (2) how a scene joins its neighbours (a straight cut inside a topic, a
 # tunable fade at a topic boundary) became a fingerprint input, so every chunk cached before it is
 # re-rendered once; (3) the move from 30 to 60 fps (RENDERER_VERSION "pillow-ffmpeg/4", fps, the
-# H.264 levels and the keyframe interval, all fingerprint inputs). Update these ONLY together
-# with a documented, intentional bump.
+# H.264 levels and the keyframe interval, all fingerprint inputs); (4) the output specification
+# became at most 720p at 30 fps (RENDERER_VERSION "pillow-ffmpeg/5": frame size, frame rate and
+# levels). Update these ONLY together with a documented, intentional bump.
 _TEXT_ONLY_GOLDEN = {
-    ("horizontal", "high", "title_card"): "d62fe0bb2e9b1614cba91dae83fc674520c48da9df57a83ea650973ba1d99171",  # noqa: E501
-    ("horizontal", "high", "bullet_points"): "0336f6460ca4b90f3fb80ec2b0b59bcce2e55cb58f1197ad4b7928fa31bef5c8",  # noqa: E501
-    ("horizontal", "high", "formula_or_code"): "616b52d505f9e05e93a162ac3f83b7473348acba0c6114f8be9ae7a0928a53fe",  # noqa: E501
-    ("vertical", "low", "title_card"): "b3dcdf461c53790d54b8f8012dc6f0c4bb35ea821854fac19f98323cb5595083",  # noqa: E501
-    ("vertical", "low", "bullet_points"): "b6ace4dbeb437196cbd46aab487006e898c12b5035838681919ee07eb321aac8",  # noqa: E501
-    ("vertical", "low", "formula_or_code"): "3318832d58c37c979f2ceb560c6fbcbdaac8e74dcf111d02079a053481d3b6e7",  # noqa: E501
+    ("horizontal", "high", "title_card"): "87111819860a8e02d25508fa4709313d36d73854ca8234447a570ccac84ad730",  # noqa: E501
+    ("horizontal", "high", "bullet_points"): "c2dc43442fa2179d3d4449b59bc293454da909f3e6a56e600241b5d449481ece",  # noqa: E501
+    ("horizontal", "high", "formula_or_code"): "e0b620e8fa21157b1877088f42c45701a71210cfb60ee60e942e650dbeae9346",  # noqa: E501
+    ("vertical", "low", "title_card"): "f63567dc51f67a3cb1deedae325d0c2b160279d062d4c2b0b81d9c77dd573b5d",  # noqa: E501
+    ("vertical", "low", "bullet_points"): "f85d152b36b1ee3c9917621a028f8970b2d92788cf3201c3ecd6a5edfc10fe2e",  # noqa: E501
+    ("vertical", "low", "formula_or_code"): "19b703f94dfa089d73d54690d9cdab1088de0479ccbe70961e6a7890b507cd81",  # noqa: E501
 }  # fmt: skip
 _TEXT_ONLY_SCENES = {
     "title_card": {"title": "How networks work", "subtitle": "Packets and routes"},
@@ -116,8 +117,8 @@ def test_text_only_chunk_fingerprints_are_pinned(orientation, quality, template)
     assert fingerprint == _TEXT_ONLY_GOLDEN[(orientation, quality, template)]
 
 
-def test_the_60_fps_change_bumped_the_renderer_version_so_30_fps_chunks_are_never_reused() -> None:
-    assert r.RENDERER_VERSION == "pillow-ffmpeg/4"
+def test_the_720p_30_fps_change_bumped_the_renderer_version() -> None:
+    assert r.RENDERER_VERSION == "pillow-ffmpeg/5"
 
 
 # --- frame mapping -----------------------------------------------------------------------
@@ -127,16 +128,16 @@ def test_the_60_fps_change_bumped_the_renderer_version_so_30_fps_chunks_are_neve
     ("t_ms", "frame"),
     [
         (0, 0),
-        (8, 0),
-        (9, 1),
-        (16, 1),
-        (25, 2),
-        (33, 2),
-        (34, 2),
-        (50, 3),
-        (150, 9),
-        (1000, 60),
-        (60_000, 3600),
+        (16, 0),
+        (17, 1),
+        (33, 1),
+        (49, 1),
+        (50, 2),
+        (66, 2),
+        (100, 3),
+        (150, 5),
+        (1000, 30),
+        (60_000, 1800),
     ],
 )
 def test_frame_at_is_round_half_up_of_t_times_fps_over_1000(t_ms: int, frame: int) -> None:
@@ -314,10 +315,10 @@ def test_unknown_orientation_quality_and_encoder_are_refused() -> None:
 
 
 def test_output_sizes() -> None:
-    assert r.output_size("horizontal", "high") == (1920, 1080)
-    assert r.output_size("vertical", "high") == (1080, 1920)
-    assert r.output_size("horizontal", "low") == (960, 540)
-    assert r.output_size("vertical", "low") == (540, 960)
+    assert r.output_size("horizontal", "high") == (1280, 720)
+    assert r.output_size("vertical", "high") == (720, 1280)
+    assert r.output_size("horizontal", "low") == (640, 360)
+    assert r.output_size("vertical", "low") == (360, 640)
     for orientation in ("horizontal", "vertical"):
         for quality in ("low", "high"):
             width, height = r.output_size(orientation, quality)

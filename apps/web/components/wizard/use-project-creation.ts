@@ -6,7 +6,7 @@ import * as api from '@/lib/api/endpoints';
 import { newIdempotencyKey } from '@/lib/api/client';
 import { ApiError } from '@/lib/api/errors';
 import { queryKeys } from '@/lib/api/queries';
-import { projectSourceType, usesKeywords, usesPdf, type WizardValues } from './wizard-model';
+import { projectSourceType, usesFile, usesKeywords, type WizardValues } from './wizard-model';
 
 export type CreationStepKey = 'project' | 'upload' | 'keywords';
 export type CreationStatus = 'pending' | 'running' | 'done' | 'error';
@@ -19,14 +19,14 @@ export interface CreationStep {
 
 const LABELS: Record<CreationStepKey, string> = {
   project: 'Creating your project',
-  upload: 'Uploading and reading your PDF',
+  upload: 'Uploading and reading your file',
   keywords: 'Saving your keywords',
 };
 
 function planFor(values: WizardValues): CreationStepKey[] {
   return [
     'project',
-    ...(usesPdf(values.mode) ? (['upload'] as const) : []),
+    ...(usesFile(values.mode) ? (['upload'] as const) : []),
     ...(usesKeywords(values.mode) ? (['keywords'] as const) : []),
   ];
 }
@@ -39,7 +39,7 @@ function signatureOf(values: WizardValues): string {
 }
 
 /**
- * Creates a project in up to three requests: the project, then its PDF, then its keywords.
+ * Creates a project in up to three requests: the project, then its file, then its keywords.
  * Each request has its own idempotency key, kept while the same form is retried, so a request
  * whose outcome was unknown (a timeout) is replayed rather than done twice. If a later step
  * fails the project already exists: the failure is reported per step and the person can retry

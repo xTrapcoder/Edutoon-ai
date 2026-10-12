@@ -1,4 +1,4 @@
-"""``/v1/projects/{project_id}/sources`` - PDF upload onto a project.
+"""``/v1/projects/{project_id}/sources`` - PDF or PowerPoint (``.pptx``) upload onto a project.
 
 ``project_id`` ownership is checked first on every route (rule 9: a project
 the caller doesn't own looks exactly like one that doesn't exist - 404,
@@ -49,8 +49,38 @@ CurrentUser = Annotated[UserRecord, Depends(get_current_user)]
 Session = Annotated[AsyncSession, Depends(get_session)]
 
 _ALLOWED_FORM_FIELDS = {"file"}
-_PDF_MAGIC_BYTES = b"%PDF"
-_ACCEPTED_CONTENT_TYPE = "application/pdf"
+_PDF_CONTENT_TYPE = "application/pdf"
+_PPTX_CONTENT_TYPE = uploaded_sources_service.PPTX_CONTENT_TYPE
+_LEGACY_PPT_CONTENT_TYPE = "application/vnd.ms-powerpoint"
+# What a browser may call a .pptx it does not recognise; the file's own bytes still decide.
+_GENERIC_CONTENT_TYPES = {
+    "",
+    "application/octet-stream",
+    "application/zip",
+    "application/x-zip-compressed",
+}
+_KIND_LABEL = {"pdf": "a PDF", "pptx": "a PowerPoint (.pptx) presentation"}
+
+
+def _declared_kind(content_type: str | None, filename: str) -> str:
+    """The kind of file the client says this is, or a 422: ``pdf`` or ``pptx``."""
+    name = filename.strip().lower()
+    declared = (content_type or "").lower()
+    if declared == _LEGACY_PPT_CONTENT_TYPE or name.endswith(".ppt"):
+        _raise_validation_error(
+            "file",
+            "Older .ppt files are not supported. Open it in PowerPoint and save it as .pptx.",
+            "content_type_error",
+        )
+    if declared == _PDF_CONTENT_TYPE:
+        return "pdf"
+    if declared == _PPTX_CONTENT_TYPE or (
+        declared in _GENERIC_CONTENT_TYPES and name.endswith(".pptx")
+    ):
+        return "pptx"
+    _raise_validation_error(
+        "file", "Only PDF and PowerPoint (.pptx) uploads are accepted.", "content_type_error"
+    )
 
 
 def _raise_validation_error(field: str, msg: str, error_type: str = "value_error") -> NoReturn:
@@ -100,15 +130,11 @@ async def upload_source(
 
     await projects_service.get_project(session, project_id=project_id, owner_id=current_user.id)
 
-    if file.content_type != _ACCEPTED_CONTENT_TYPE:
-        _raise_validation_error(
-            "file", f"Only {_ACCEPTED_CONTENT_TYPE} uploads are accepted.", "content_type_error"
-        )
-    content_type = _ACCEPTED_CONTENT_TYPE
-
     filename = file.filename
     if not filename or not filename.strip():
         _raise_validation_error("file", "A filename is required.", "missing")
+    declared_kind = _declared_kind(file.content_type, filename)
+    content_type = _PDF_CONTENT_TYPE if declared_kind == "pdf" else _PPTX_CONTENT_TYPE
 
     settings = get_settings()
     # The body was already refused if it declared more than the limit (api.middleware); this is
@@ -121,8 +147,10 @@ async def upload_source(
     content = await file.read(settings.MAX_UPLOAD_BYTES + 1)
     if len(content) > settings.MAX_UPLOAD_BYTES:
         raise too_large
-    if not content.startswith(_PDF_MAGIC_BYTES):
-        _raise_validation_error("file", "File does not look like a PDF.", "value_error")
+    if uploaded_sources_service.detect_kind(content) != declared_kind:
+        _raise_validation_error(
+            "file", f"File does not look like {_KIND_LABEL[declared_kind]}.", "value_error"
+        )
 
     async def _execute() -> tuple[int, Any]:
         source = await uploaded_sources_service.upload_source(
@@ -135,6 +163,7 @@ async def upload_source(
             content=content,
             bucket=settings.BUCKET_UPLOADS,
             max_pages=settings.MAX_PDF_PAGES,
+            max_slides=settings.MAX_DECK_SLIDES,
         )
         return status.HTTP_201_CREATED, UploadedSourceResponse.from_record(source).model_dump(
             mode="json"

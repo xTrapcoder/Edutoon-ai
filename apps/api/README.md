@@ -105,7 +105,10 @@ lock out of a model call's transaction.
 ## Deleting a project
 
 `DELETE /v1/projects/{id}` removes the project and, through `ON DELETE CASCADE`, its sources,
-topics, jobs, claims and scripts. It also removes the PDFs the project uploaded from object
+topics, jobs, claims (with their citations), scripts (with their segments, claim links, audio,
+scenes and render rows). Two foreign keys used to be `RESTRICT` and made this fail for any project
+with claims - `claim_citations -> source_chunks` and `script_segment_claims -> claim_verifications`;
+migration 0018 made them `CASCADE`, and nothing else about deletion changed. It also removes the PDFs the project uploaded from object
 storage, which the rows only pointed at. The order matters, because the database is the record
 of what exists:
 
@@ -397,6 +400,79 @@ whole script any more), `MAX_CLAIMS_PER_GENERATION` (the whole script's
 claim-count ceiling, distinct from the new per-section one) and
 `SCRIPT_WORDS_PER_MINUTE`.
 
+## PowerPoint decks
+
+A project can be built from a `.pptx` deck (`source_type: "pptx"`). It runs the same stages as a PDF project
+- topics, claims, script, narration, storyboard, video - under the **same job kinds, endpoints and review
+pages**, but **no model writes anything**: the lesson is planned by deterministic code
+(`domain/deck.py`, `deck_text.py`, `deck_plan.py`, `deck_scenes.py`; `services/deck_lesson.py`). It needs no
+provider key, makes no provider call and needs no embeddings. A PDF project never reaches this code: the worker
+routes by the project's source type (`worker.dispatch`), and the PDF services are unchanged.
+
+**Upload.** `POST /v1/projects/{id}/sources` accepts a PDF or a `.pptx` (up to `MAX_UPLOAD_BYTES`, and
+`MAX_DECK_SLIDES` slides, counted before any text is read). The file's *bytes* decide what it is, not its name
+or type: a `.pptx` the browser reported as `application/octet-stream` is accepted, a PDF called `.pptx` is a
+`422`, and an older binary `.ppt` is a `422` that says to save it as `.pptx`. The archive is checked before it is
+opened (entry count and expanded size). A deck that cannot be read, has too many slides, or has no text at all
+(every slide a picture) is recorded as `failed` with a reason, exactly as a PDF is. Hidden slides are skipped;
+every slide keeps its number in the deck, which is the chunk's `page_from`/`page_to`.
+
+**Structure, not flat text** (migration 0017). Each slide is one `source_chunks` row with two renderings: the
+flat `content` every chunk has always had (a citation shows it, and every claim is checked against it) and a new
+`structure` (`jsonb`) holding what the slide is made of - title, paragraphs, bullets with their level, numbered
+steps, tables, speaker notes. The generator reads the structure; nothing else changed about chunks.
+
+**Topics** (`extract_topics`). The deck's own section-header slides name the topics; with none, neighbouring slides
+are cut into balanced runs of three or so. No more than `MAX_SCRIPT_SECTIONS` topics and six slides to a topic.
+Each topic cites the slides it covers and is saved `accepted` (it can still be rejected or renamed on the review
+page before the script is written). Title, agenda, closing ("Thank you", "Questions") and empty slides shape the
+lesson but are not narrated point by point.
+
+**Claims** (`extract_claims`). Every statement a slide makes - a bullet, a numbered step, a table row, a sentence
+of a paragraph or of the speaker notes - becomes a claim, `supported` because it is *quoted* from the slide
+(`domain.deck.claim_is_quoted`) and citing that slide's chunk. There is no judge and no embedding, so the ledger
+records the engine, not a model: `llm_model = deck-engine/1`, `embedding_model = none`. Footers repeated across
+slides, URLs, e-mail addresses and presenter instructions in the notes ("click to show the chart") are not
+statements.
+
+**Script** (`generate_script`). The verified statements are fitted to the target length and written as one
+continuous narration. It goes through the same rules as a model-written script
+(`script_provenance.filter_and_validate`: every fact-bearing section cites a supported claim; no number, date or
+name appears that the slides do not contain).
+
+- *Choosing.* If the deck holds more than the target can carry, the lowest-ranked statements are left out first
+  (`score_statement`: definitions, steps and anything with a figure rank higher; later and nested points lower),
+  then whole slides, but never the last slide of a topic. If it holds less, **nothing is added**: the video is
+  shorter than the target and the script page says so. (A 25-minute deck asked to fill 30 minutes is a 25-minute
+  video; the same deck asked for 20 drops statements until it fits.)
+- *One lesson, not a run of slides.* It opens by naming the lesson and what it covers; each topic is introduced
+  and tied to the last ("Now that we have seen X, let's move on to Y"; the last is "Finally, ..."); each slide is
+  introduced by its title with varying lead-ins; short fragment bullets are spoken as one sentence ("This covers
+  slips, trips and falls, including wet floors and loose cables ..."), steps in order ("There are four steps.
+  First, ... Finally, ..."), table rows as comparisons; connectives vary and are never put in front of a
+  proper noun; and it closes with a summary. Wording is plain, short sentences - what a new employee can follow.
+- *Pace.* `DECK_SPEECH_WORDS_PER_MINUTE` (160) sizes the plan. Piper was measured at 163 words a minute on a real
+  deck lesson (145 to 180 by section) and 132 on a longer-worded sample, so the plan is an estimate; the measured
+  narration replaces it.
+
+**Storyboard.** `DeckStoryboardComposer` stands where the model stands in `services.storyboard` (the same
+`compose_storyboard_scenes` call, the same slot and provenance checks on its output). It composes each section's
+scenes **from what the narration says**: the slide is found by which of its statements are spoken, so it does not
+matter if the target or the accepted topics changed since the script was written. A welcome is a title card, a
+slide is its spoken statements as bullets under its own title (about three a scene), the summary is a "Recap".
+Text only: a table is shown as its rows, and a diagram is never invented.
+
+**Not done, on purpose.** Keywords for a deck (the wizard offers none; a keyword topic would have no slide behind
+it); pictures, charts and SmartArt (they carry no text this library exposes, so a picture-only slide is left out);
+an older `.ppt`; a second language; a table as a comparison diagram (the procedural visuals exist, nothing in the
+deck engine produces one yet).
+
+**Verified** (this machine, the real stack, the real worker, no provider key): the sample induction deck
+(13 slides, one hidden) through the browser to a 2-minute MP4, and two large synthetic decks to 25 and 30
+minutes; see the numbers under "Video rendering". `tests/test_deck_api.py` runs the same journey through the real
+API and worker with every provider call made to fail. **Not verified:** how the narration *sounds* to a listener
+(no one has listened to it), a real customer deck, Indian-English pronunciation.
+
 ## Text-to-speech
 
 Phase 8 turns an approved script into narrated audio with
@@ -458,6 +534,16 @@ resulting service is distributed - **this needs a company legal/licensing
 review before any production or customer-facing distribution**, independent
 of whether a genuine Indian-English voice is also added. This is not yet
 reviewed or approved for production use.
+
+**Pace, measured (2026-10-07).** At its trained settings `en_GB-cori-medium` leaves about 250 ms between sentences on its own
+(measured: 120 ms or longer gaps between every pair of sentences) and speaks **163 words a minute on a real deck lesson** (339 words,
+145 to 180 by section) and 132 on a longer-worded sample - the pace depends on the words, which is why a plan is an estimate that the
+measured narration replaces. It is not the cause of the robotic sound, so it is not slowed down by default. What *can* be tuned without
+a paid service is how it speaks: `PIPER_LENGTH_SCALE`, `PIPER_NOISE_SCALE` (pitch variation) and `PIPER_NOISE_W_SCALE` (rhythm
+variation) - the trained values by default, and part of the narration's fingerprint (`providers.tts.engine_version`) when changed.
+Four samples of the same lesson text in different styles are written to `var/samples/voice-sample-*.wav` for someone to **listen
+to and choose**; nothing in this repository has been judged by ear. Whether another free voice sounds more natural, or more Indian, needs
+the same listening (and a download, which was not done).
 
 Settings (all optional, see `core/config.py`): `PIPER_VOICES_DIR` (where
 `make voices` / `scripts/download_piper_voices.py` puts the downloaded
@@ -576,8 +662,8 @@ configuration.
 ## Video rendering
 
 Phase 10 turns an approved script - with fully measured narration and a complete
-storyboard - into a real, seekable MP4: **H.264 High + AAC-LC, 60 fps**, 1920×1080
-(horizontal) or 1080×1920 (vertical) at `high` quality, and half that size at `low`
+storyboard - into a real, seekable MP4: **H.264 High + AAC-LC, 30 fps**, at most 720p: 1280×720
+(horizontal) or 720×1280 (vertical) at `high` quality, and half that size at `low`
 (a review render). Rendering makes no provider call and needs no key: it reads what
 Phases 8 and 9 stored and produces pictures and bytes. No image is generated. Since
 Phase 11 a scene's diagram is drawn procedurally from its structured `visual` (see
@@ -788,9 +874,9 @@ one banner "Timings update when narration finishes." and keeps its per-scene sta
 
 | | `high` | `low` |
 | --- | --- | --- |
-| Size | 1920×1080 / 1080×1920 | 960×540 / 540×960 |
-| H.264 | High profile, **level 4.2**, `yuv420p`, BT.709 limited range, CRF 20, preset `medium` | High, **level 3.2**, CRF 30, `veryfast` |
-| GOP / B-frames | 2 seconds = 120 frames, none (a chunk's last frame must be removable without re-encoding) | same |
+| Size | 1280×720 / 720×1280 | 640×360 / 360×640 |
+| H.264 | High profile, **level 3.1**, `yuv420p`, BT.709 limited range, CRF 20, preset `medium` | High, **level 3.0**, CRF 30, `veryfast` |
+| GOP / B-frames | 2 seconds = 60 frames, none (a chunk's last frame must be removable without re-encoding) | same |
 | x264 tuning | `scenecut=0:threads=4:rc-lookahead=10` | same |
 | Audio | AAC-LC, mono, 22 050 Hz (the narration's own format - never widened to stereo / 48 kHz), 96 kb/s target (≈ 109 kb/s achieved) | 64 kb/s target |
 | Container | MP4, `+faststart` (index first: plays and seeks before it has downloaded) | same |
@@ -801,10 +887,10 @@ works on this machine's RTX 3050 Ti but is not faster (the compositor, not the e
 bottleneck - 190 fps vs 220 fps for libx264 on a 1080p chunk) and produced 66% larger files
 (138 KB vs 83 KB for the same chunk), so `libx264` stays the default.
 
-**60 fps** (it was 30 through Phase 11; the change and why the H.264 level had to change with it
-are in "Reliability and safety before the first real-provider run"). Level 4.2 / 3.2 are the lowest
-valid levels for 1080p and 540p at 60 fps, derived from the frame size rather than trusted
-(`domain.render.minimum_level_idc`). Slides, fades and slide-ins are smoother, and web/phone playback
+**720p at 30 fps** (the output specification: at most 720p; it was 1080p at 60 fps from the pre-API pass
+to 2026-10-07, and 1080p at 30 before that - `RENDERER_VERSION` is `pillow-ffmpeg/5`). Level 3.1 / 3.0 are
+the lowest valid levels for 720p and 360p at 30 fps, derived from the frame size rather than trusted
+(`domain.render.minimum_level_idc`); the 1080p/60 figures in the tables below are history. Slides, fades and slide-ins are smoother, and web/phone playback
 is frame-rate agnostic. Phase 9 stores no frame rate; only the render configuration does.
 
 x264's default thread count (one frame-thread per logical core, 20 here) held ~2 GB of frames in
@@ -835,7 +921,7 @@ fields are a 422) answers `202` with a `render_video` job and an **estimate** (s
 video length, expected size). It refuses, before any work and with a message that says what to do:
 a script that is not approved (409); narration missing, stale or in another format; a storyboard
 that is incomplete or stale; scenes whose timings do not tile their segment; a video longer than
-`MAX_RENDER_DURATION_MS` (10 minutes today - the design does not depend on the number); another render
+`MAX_RENDER_DURATION_MS` (30 minutes today - the design does not depend on the number); another render
 already queued or running for the project (409); or too little free disk space in `RENDER_WORK_DIR`
 (507; checked again by the worker). It needs an `Idempotency-Key` (1–255 characters).
 
@@ -989,6 +1075,21 @@ was left as it was: over-estimating is the safe direction for a free-space check
 **Not measured:** GPU use (libx264 does not use it; it was not sampled in this run, and Phase 10 sampled 0%); a render at
 exactly the 10:00 ceiling (the longest was 9.7 minutes, 581 977 ms); any render longer than that; `h264_nvenc` at 60 fps.
 
+### Measured at 720p / 30 fps (2026-10-07, PowerPoint decks, the real stack, no provider key)
+
+Real API, real worker, Piper, the Pillow compositor and FFmpeg on the development machine (i7-12700H, libx264). Every file
+was checked by the render job's own `ffprobe` gate before it was published: H.264 **High, level 3.1**, 1280x720 `yuv420p`,
+constant 30/1, `+faststart`, AAC mono 22.05 kHz, video frames exactly `round(narration_ms * 30 / 1000)`.
+
+| Lesson | Narration (measured) | Narrating | Storyboard | Render | File | Frames |
+| --- | --- | --- | --- | --- | --- | --- |
+| sample induction deck, 9 sections | 125.0 s | 9.1 s | 0.2 s | 9.8 s | 4.3 MB | 3 750 / 3 750 |
+| synthetic deck, 72 sections (nothing dropped) | 25.2 min (1 510 202 ms) | 98.9 s | 6.1 s | 99.0 s | 62.9 MB | 45 306 / 45 306 |
+| synthetic deck asked for 30:00, 82 sections | 28.8 min (1 730 747 ms) | 82.6 s | 4.1 s | 105.0 s | 71.1 MB | 51 922 / 51 922 |
+
+Video and audio durations agreed to within 14 ms in every file. Not measured this time: peak memory, vertical or `low` renders at length,
+a render at exactly 30:00 (the ceiling check and the frame arithmetic - unit-tested to 60 minutes - allow it).
+
 ### Not decided / not verified
 
 - **H.264 and AAC patent licensing, and distributing an FFmpeg build that contains libx264 (GPL),** are business/legal decisions.
@@ -1028,6 +1129,9 @@ application has no billing and does not try to reproduce the providers'; the in-
 stop a runaway, not a budget.
 
 ### 60 fps, and an H.264 level that is valid for it
+
+> **Superseded 2026-10-07.** The output specification is now at most 720p at 30 fps (`pillow-ffmpeg/5`; see "Encoding"). The
+> reasoning about levels below is unchanged and is what the 720p/30 levels were derived with; the 60 fps figures are history.
 
 The production frame rate is a constant **60 fps** (`domain.render.FPS`; it was 30). The change is not
 the constant: an H.264 stream signals a *level* that bounds its macroblock rate, and a decoder may
@@ -1164,8 +1268,10 @@ returns it should be a separate mode that says its output is unverified.
 ### Duration: any length, up to what can actually be made
 
 The model, the database and the API schema hold milliseconds and accept 1 to 60 minutes. What is
-*supported end to end* is what rendering was built and verified to: `MAX_RENDER_DURATION_MS`, **10 minutes**.
-The web app offers any whole number of seconds from 1:00 to 10:00 (never presets) and says longer videos
+*supported end to end* is `MAX_RENDER_DURATION_MS`, **30 minutes** (the product's maximum; it was 10 until
+2026-10-07, and the scene ceiling `MAX_SCENES_PER_SCRIPT` was raised from 300 to 1200 - exactly 200 segments
+of 6 scenes - when a 25-minute, 72-section deck counted 432 and was refused). The longest video actually rendered
+and checked is 28.8 minutes (below). The web app offers any whole number of seconds from 1:00 to 30:00 (never presets) and says longer videos
 are not supported yet; script generation, the first paid step, refuses a longer target. Raising that
 setting lifts the limit in the API; the web app mirrors it in `lib/generation-settings.ts`.
 
@@ -1185,7 +1291,7 @@ Done: deleting a project removes its PDFs, narration audio and render objects (a
 render prunes the chunks it no longer uses; a worker sweeps the scratch directories a killed render left
 behind (`sweep_abandoned_work_dirs`, narrowly matched and age-guarded). **Deferred, on purpose:** the narration audio
 and rendered videos of a *superseded* script stay in storage until the project is deleted (about 26 MB of audio
-and 32 MB of video per ten minutes per regeneration) - a collector must be written and tested with care because it
+and 32 MB of video per ten minutes per regeneration, at the old 1080p60 size) - a collector must be written and tested with care because it
 deletes, and a bucket lifecycle rule is the simpler stop-gap; an object orphaned by a crash between an upload and its row
 is overwritten by a retry or, otherwise, only by a lifecycle rule.
 

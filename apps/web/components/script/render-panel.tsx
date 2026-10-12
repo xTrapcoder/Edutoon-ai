@@ -240,7 +240,7 @@ export function RenderPanel({ project, script, selection, onSelectionChange }: R
 
   if (!narrationReady) {
     return (
-      <Card>
+      <Card id="video" className="scroll-mt-24">
         <CardHeader title="Video" icon={<Film className="size-4" aria-hidden />} as="h2" />
         <CardBody>
           <p className="text-sm text-ink-600">
@@ -292,7 +292,7 @@ export function RenderPanel({ project, script, selection, onSelectionChange }: R
     : [];
 
   return (
-    <Card>
+    <Card id="video" className="scroll-mt-24">
       <CardHeader title="Video" icon={<Film className="size-4" aria-hidden />} as="h2" />
       <CardBody className="space-y-4">
         <Segmented

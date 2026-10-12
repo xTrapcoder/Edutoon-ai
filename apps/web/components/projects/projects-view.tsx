@@ -12,11 +12,12 @@ import { cn } from '@/lib/cn';
 import { pluralise } from '@/lib/format';
 import { ProjectRow, ProjectRowSkeleton } from './project-row';
 
-type SourceFilter = 'all' | 'pdf' | 'topic';
+type SourceFilter = 'all' | 'pdf' | 'pptx' | 'topic';
 
 const FILTERS: readonly { value: SourceFilter; label: string }[] = [
   { value: 'all', label: 'All' },
   { value: 'pdf', label: 'PDF' },
+  { value: 'pptx', label: 'PowerPoint' },
   { value: 'topic', label: 'Keywords' },
 ];
 

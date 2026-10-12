@@ -12,6 +12,18 @@
       "runtimeExecutable": "C:\\Users\\durge\\AppData\\Local\\Temp\\n22\\pnpm.cmd",
       "runtimeArgs": ["--filter", "@edutoon/web", "dev:qa"],
       "port": 3000
+    },
+    {
+      "name": "web-qa-real",
+      "runtimeExecutable": "C:\\Users\\durge\\AppData\\Local\\Temp\\n22\\pnpm.cmd",
+      "runtimeArgs": ["--filter", "@edutoon/web", "dev:qa:real"],
+      "port": 3000
+    },
+    {
+      "name": "api-qa",
+      "runtimeExecutable": "uv",
+      "runtimeArgs": ["--directory", "apps/api", "run", "python", "scripts/dev_qa_api.py"],
+      "port": 8000
     }
   ]
 }

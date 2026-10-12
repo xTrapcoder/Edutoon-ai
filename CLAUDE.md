@@ -97,7 +97,9 @@ unsupported claims ever reach the script or the screen.
   only once the object is uploaded), `render_outputs` (the finished MP4 for one
   `(script, orientation, quality)`) and `render_output_scenes` (which chunk each
   scene used in that output) - no video bytes in the database (`apps/api/README.md`,
-  "Video rendering").
+  "Video rendering"). Migration 0018 (2026-10-07) makes `claim_citations.source_chunk_id` and
+  `script_segment_claims.claim_verification_id` `ON DELETE CASCADE` (they were `RESTRICT`, which made
+  deleting any project with claims fail); nothing else about deletion changed.
 - `projects.status` is derived, never set by a client: `edutoon.domain.project_status` is the
   rule and `projects.refresh_status` applies it whenever a job is queued or ends or a PDF fails
   to parse (`apps/api/README.md`, "Project status"). Deleting a project removes its uploaded PDFs
@@ -169,12 +171,38 @@ the provenance reviewer flag as a warning). Real Clerk sign-in is
 **unverified** - the Clerk keys are placeholders - as are the real
 LLM/embeddings providers.
 
+**PowerPoint decks (2026-10-07) - a deterministic deck-to-video path, no model and no key.** A project
+can be built from a `.pptx` (`source_type: pptx`, migration **0017**: `source_chunks.structure` and the `pptx`
+kind). The deck is parsed into slide _structure_ (title, bullets and their level, numbered steps, tables, speaker
+notes; `providers/pptx.py`, `domain/deck.py`) beside each chunk's flat text, and the worker routes a deck
+project's existing job kinds to `services/deck_lesson.py` instead of the model-backed services: topics from the
+deck's sections, every slide statement a claim _quoted_ from its slide (`llm_model = deck-engine/1`, no
+embeddings), a script fitted to the target length by leaving out the lowest-ranked statements - never padded -
+and written as one continuous lesson (`domain/deck_plan.py`: welcome, linked topic introductions, fragments
+spoken as sentences, steps in order, closing summary), and a storyboard composed from what the narration says
+(`domain/deck_scenes.py`). It passes the same provenance rules as a model-written script. Narration, rendering
+and every review page are the existing ones. **PDF projects never reach this code and are unchanged.** Full
+detail, limits and what is not done: `apps/api/README.md`, "PowerPoint decks".
+
+**Output specification (same day): at most 720p at 30 fps, 1 to 30 minutes.** `high` is 1280x720 / 720x1280,
+`low` 640x360, constant 30 fps, H.264 High level 3.1 / 3.0 (derived), `RENDERER_VERSION` `pillow-ffmpeg/5`;
+`MAX_RENDER_DURATION_MS` is 30 minutes and `MAX_SCENES_PER_SCRIPT` 1200. Verified on this machine through the real
+stack: a 2-minute deck (browser, end to end), a 25.2-minute and a 28.8-minute deck (render 99 s and 105 s). A deck
+planned for the ceiling is planned 5% under it (`CEILING_HEADROOM_PERCENT`), because a plan sized from an
+estimated pace came out 1% over once narrated. **Not verified:** how any narration sounds (nobody has
+listened), a real customer deck, a render at exactly 30:00.
+
+**Dev QA without Clerk** (development only): `uv run python scripts/dev_qa_api.py` starts the real API accepting
+only the web UI-QA stand-in token as one local user; `pnpm --filter @edutoon/web dev:qa:real` runs the web app
+against it (`.claude/launch.json`: `api-qa`, `web-qa-real`). A worker started before a code change keeps the old
+code - **restart `make worker`/`make dev` after pulling** or a deck job can be picked up by a stale worker.
+
 **Phase 10 - professional video rendering: built, and verified end to end on this
 machine (see `apps/api/README.md`, "Video rendering").** An approved script with fully
 measured narration and a complete storyboard renders to a real MP4: H.264 High +
-AAC-LC mono 22.05 kHz, **60 fps** (H.264 level 4.2 for `high`, 3.2 for `low` - the lowest
-valid levels at that rate, derived not trusted; the pre-API pass below), 1920x1080 or
-1080x1920 (`high`) or half-size (`low`, a review render), with `+faststart`. The engine is a
+AAC-LC mono 22.05 kHz, **30 fps** (H.264 level 3.1 for `high`, 3.0 for `low` - the lowest
+valid levels at that rate, derived not trusted; it was 1080p at 60 fps until 2026-10-07), 1280x720 or
+720x1280 (`high`) or half-size (`low`, a review render), with `+faststart`. The engine is a
 **Pillow scene compositor feeding FFmpeg** behind a `Renderer` interface (`providers/renderer`); Remotion was rejected on
 licensing (a paid company licence above three people) and is not used. All six
 storyboard templates render from text alone; since Phase 11 an illustrated scene's diagram
@@ -196,7 +224,7 @@ The finished video is verified with `ffprobe` before it is published.
 
 `render_video` jobs (`services.render`) follow the storyboard job's conventions:
 enqueue behind a prerequisite gate (approved script, ready and current narration, complete
-storyboard, valid timings, `MAX_RENDER_DURATION_MS` = 10 minutes, free disk space), one
+storyboard, valid timings, `MAX_RENDER_DURATION_MS` = 30 minutes, free disk space), one
 active render per project (409), an `Idempotency-Key`, independent progress commits, stale
 recovery, sanitised errors. Each chunk is uploaded and recorded in its own transaction the
 moment it finishes, so a crash or a failed chunk loses nothing already made and a retry
@@ -205,12 +233,12 @@ renders only what is left. `GET .../render/video` streams with HTTP `Range` supp
 The front end adds a Video card to Script Studio (shape and quality, estimate, real
 progress, failure and retry, a player and download) and a per-scene render-state badge
 (ready / needs render / stale / failed) on the storyboard's scene cards. The current
-maximum is 10 minutes; nothing in the chunked design depends on that number.
+maximum is 30 minutes; nothing in the chunked design depends on that number.
 
 **Not decided / not verified (Phase 10):** H.264 and AAC patent licensing, and shipping an
 FFmpeg build with libx264 (GPL), are business/legal decisions that choosing an encoder does
 not settle; the front end plays the video from a `blob:` URL (the whole file is fetched before
-it plays - fine at 10 minutes, worth a proxy route for much longer videos); real Clerk
+it plays - fine at 30 minutes (a 71 MB file), worth a proxy route for much longer videos); real Clerk
 sign-in is still unverified.
 
 **Phase 11 - educational visuals (Phase 11B): built and verified locally; not pushed (see
@@ -221,7 +249,7 @@ its `illustration` - five kinds only (`process_flow`, `cycle`, `hierarchy`, `com
 generated from the same constants (`domain/visual_schema.py`), laid out purely with integer
 geometry and an injected text measurer (`domain/visual_layout.py` - a genuinely different design
 per orientation) and painted by `providers/renderer/visual_*.py`. No image generation, no
-chart / map / photo kinds, no new table, bucket, dependency or migration (head is still 0016).
+chart / map / photo kinds, no new table, bucket, dependency or migration (head was still 0016; it is 0018 now).
 A structurally invalid visual is **dropped, not fatal**: the scene stays, is drawn by its
 template's deterministic fallback, and is counted in `dropped_visual_count` (shown in the
 workspace); a provenance violation - including nested text and numeric leaves - is still a hard
@@ -242,7 +270,8 @@ the fingerprint (a documented gap - bump `RENDERER_VERSION` when upgrading them)
 still **0016**; no phase was started; nothing was run against a real provider (see
 `apps/api/README.md`, "Reliability and safety before the first real-provider run", which
 separates implemented / verified locally / unverified / future work). In short: production video
-is **60 fps** with a valid H.264 level and `RENDERER_VERSION` `pillow-ffmpeg/4`; embeddings are
+was **60 fps** with a valid H.264 level and `RENDERER_VERSION` `pillow-ffmpeg/4` (now 720p/30,
+`pillow-ffmpeg/5`, above); embeddings are
 batched to the provider's limits (never truncating) and transient provider failures are retried by
 one policy; every language-model response is checked for refusal, truncation and malformed tool
 calls before it is read, thinking is explicitly disabled, and the model is unchanged
@@ -253,10 +282,10 @@ cannot honestly fill is refused before any paid call (`domain/evidence_sufficien
 figures and names must come from its claims, and a storyboard illustration that fails provenance falls
 back instead of failing the segment; oversized uploads are refused before parsing, pages are counted
 before extraction and a PDF with no text is a clear failure; **keyword-only projects are switched off**
-(`KEYWORD_ONLY_PROJECTS_ENABLED`); the UI offers any length to the second from 1:00 to **10:00** (`MAX_RENDER_DURATION_MS`; the longest
-render verified at 60 fps was 9.7 minutes) while the model keeps 1-60 minutes; a live
+(`KEYWORD_ONLY_PROJECTS_ENABLED`); the UI offers any length to the second from 1:00 to **30:00** (`MAX_RENDER_DURATION_MS`; it was 10:00
+until 2026-10-07) while the model keeps 1-60 minutes; a live
 job is never reclaimed as stale and a reclaimed worker stops. Not settled: H.264/AAC/x264/Piper licensing,
-long-video (over ten minutes) work, cleanup of superseded scripts' audio and videos.
+long-video (over thirty minutes) work, cleanup of superseded scripts' audio and videos.
 
 **Phase 12 has not started and needs the owner's explicit approval.**
 
@@ -286,9 +315,9 @@ its dev-only UI QA mode (mock API and Clerk stub, never enabled in a build).
 apps/
   web/        Next.js 15 front end (README.md explains it)
   api/        FastAPI service (uv, src/edutoon)
-    src/edutoon/          api/ (routers, schemas) · services/ · domain/ (pure) ·
+    src/edutoon/          api/ (routers, schemas) · services/ · domain/ (pure; deck*.py = the deck engine) ·
                           repositories/ · providers/ · worker/ · db/ · core/
-    alembic/              migration environment + versions/0001..0016
+    alembic/              migration environment + versions/0001..0018
   parser/     PDF/topic parser — not yet initialised
   render/     placeholder - the renderer lives in apps/api/src/edutoon/providers/renderer
 packages/
