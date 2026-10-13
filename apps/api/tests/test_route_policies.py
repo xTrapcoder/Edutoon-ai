@@ -1,0 +1,385 @@
+"""Every route declares its role policy, and the policy is actually enforced.
+
+Two layers, both against the real application:
+
+1. **Introspection.** Walk every route the app serves and require that it carries exactly one
+   policy dependency from ``edutoon.api.policies`` (``public`` / ``authenticated`` / ``admin`` /
+   ``employee``). A route added without one - or with two - fails this test, so "I forgot to say
+   who may call it" cannot reach a release. The checker is itself tested on a synthetic app.
+2. **Behaviour.** Call every ``admin`` route as an employee, a suspended administrator, an
+   uninvited person and an anonymous caller, and require 403 / 403 / 403 / 401, with no user row
+   created for the uninvited person.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+
+import pytest
+from fastapi import APIRouter, Depends, FastAPI
+from fastapi.routing import APIRoute
+from sqlalchemy import text
+
+from edutoon.api.policies import POLICY_NAMES, require_admin
+from edutoon.main import create_app
+
+pytestmark = pytest.mark.real_auth
+
+# Starlette's own documentation routes (not APIRoute); nothing else may be served outside APIRoute.
+FRAMEWORK_PATHS = {"/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc"}
+
+# Routes whose policy is not "admin". Everything else must be admin - until a later step adds the
+# employee area, at which point its routes are added here deliberately, in the same change.
+EXPECTED_NON_ADMIN = {
+    ("GET", "/health"): "public",
+    ("GET", "/v1/auth/me"): "authenticated",
+}
+
+
+@dataclass(frozen=True)
+class Endpoint:
+    path: str
+    methods: frozenset[str]
+    dependant: object
+
+
+def flatten(app: FastAPI) -> tuple[list[Endpoint], list[str]]:
+    """Every endpoint the app serves, and a description of anything that is not an APIRoute.
+
+    FastAPI (0.141) keeps routers added with ``include_router`` as lazy ``_IncludedRouter`` objects
+    whose routes are listed by ``effective_route_contexts()``. Anything this helper does not
+    recognise is *reported* rather than skipped, so a framework change fails the test loudly
+    instead of letting routes go unchecked.
+    """
+    endpoints: list[Endpoint] = []
+    unknown: list[str] = []
+
+    def add(item) -> None:
+        methods = frozenset(item.methods - {"HEAD", "OPTIONS"})
+        endpoints.append(Endpoint(item.path, methods, item.dependant))
+
+    for route in app.routes:
+        if isinstance(route, APIRoute):
+            add(route)
+        elif type(route).__name__ == "_IncludedRouter":
+            for context in route.effective_route_contexts():
+                if isinstance(context.original_route, APIRoute):
+                    add(context)
+                else:
+                    unknown.append(f"{context.path or context.frontend_prefix!r} (in a router)")
+        elif getattr(route, "path", None) in FRAMEWORK_PATHS:
+            continue
+        else:
+            unknown.append(f"{getattr(route, 'path', repr(route))} ({type(route).__name__})")
+    return endpoints, unknown
+
+
+def policies_of(endpoint: Endpoint) -> set[str]:
+    found: set[str] = set()
+
+    def walk(dependant) -> None:
+        if dependant.call in POLICY_NAMES:
+            found.add(POLICY_NAMES[dependant.call])
+        for sub in dependant.dependencies:
+            walk(sub)
+
+    walk(endpoint.dependant)
+    return found
+
+
+def policy_violations(app: FastAPI) -> list[str]:
+    """Human-readable problems with the app's routes (empty when every route is accounted for)."""
+    endpoints, unknown = flatten(app)
+    problems = [
+        f"{item}: served outside APIRoute and not a known framework route" for item in unknown
+    ]
+    for endpoint in endpoints:
+        found = policies_of(endpoint)
+        label = f"{sorted(endpoint.methods)} {endpoint.path}"
+        if not found:
+            problems.append(f"{label}: declares no role policy")
+        elif len(found) > 1:
+            problems.append(f"{label}: declares several role policies {sorted(found)}")
+    return problems
+
+
+def api_routes(app: FastAPI) -> list[tuple[str, Endpoint]]:
+    endpoints, _ = flatten(app)
+    return [(method, endpoint) for endpoint in endpoints for method in sorted(endpoint.methods)]
+
+
+# --- layer 1: introspection ------------------------------------------------------------------
+
+
+def test_every_route_of_the_real_app_declares_exactly_one_role_policy():
+    assert policy_violations(create_app()) == []
+
+
+def test_the_checker_catches_a_route_added_without_a_policy():
+    app = FastAPI()
+    router = APIRouter(prefix="/v1")
+
+    @router.get("/forgotten")
+    async def forgotten() -> dict[str, str]:
+        return {}
+
+    app.include_router(router)
+
+    problems = policy_violations(app)
+
+    assert len(problems) == 1
+    assert "/v1/forgotten" in problems[0] and "no role policy" in problems[0]
+
+
+def test_the_checker_catches_a_route_with_two_policies_and_accepts_one():
+    from edutoon.api.policies import require_employee
+
+    app = FastAPI()
+    both = APIRouter(prefix="/v1", dependencies=[Depends(require_admin), Depends(require_employee)])
+    one = APIRouter(prefix="/v1", dependencies=[Depends(require_admin)])
+
+    @both.get("/both")
+    async def both_route() -> dict[str, str]:
+        return {}
+
+    @one.get("/one")
+    async def one_route() -> dict[str, str]:
+        return {}
+
+    app.include_router(both)
+    app.include_router(one)
+
+    problems = policy_violations(app)
+
+    assert len(problems) == 1 and "/v1/both" in problems[0] and "several" in problems[0]
+
+
+def test_a_route_mounted_outside_apiroute_is_flagged():
+    from starlette.responses import PlainTextResponse
+    from starlette.routing import Route
+
+    app = FastAPI()
+    app.router.routes.append(Route("/sneaky", lambda request: PlainTextResponse("x")))
+
+    assert any("/sneaky" in problem for problem in policy_violations(app))
+
+
+def _expected_policy(method: str, path: str) -> str:
+    if (method, path) in EXPECTED_NON_ADMIN:
+        return EXPECTED_NON_ADMIN[(method, path)]
+    # A route that names a project answers a non-administrator 404; every other admin route 403.
+    return "admin_project" if "{project_id}" in path else "admin"
+
+
+def test_the_policy_of_every_route_is_the_expected_one():
+    """Pins the whole map: /health is public, /v1/auth/me is any active user, every route naming
+    a project is admin-with-404, and every other route is admin-with-403."""
+    actual = {
+        (method, endpoint.path): next(iter(policies_of(endpoint)))
+        for method, endpoint in api_routes(create_app())
+    }
+    expected = {key: _expected_policy(*key) for key in actual}
+
+    assert actual == expected
+    assert sum(1 for policy in actual.values() if policy == "admin_project") >= 30
+    assert sum(1 for policy in actual.values() if policy == "admin") >= 5
+
+
+def test_the_project_collection_routes_are_403_and_the_project_id_routes_are_404():
+    actual = {
+        (method, endpoint.path): next(iter(policies_of(endpoint)))
+        for method, endpoint in api_routes(create_app())
+    }
+
+    assert actual[("GET", "/v1/projects")] == "admin"
+    assert actual[("POST", "/v1/projects")] == "admin"
+    for method in ("GET", "PATCH", "DELETE"):
+        assert actual[(method, "/v1/projects/{project_id}")] == "admin_project"
+    assert actual[("GET", "/v1/admin/users")] == "admin"  # no project id: 403 for an employee
+
+
+# --- layer 2: behaviour ----------------------------------------------------------------------
+
+NIL_ID = "00000000-0000-4000-8000-000000000000"
+
+
+def _concrete(path: str, project_id: str = NIL_ID) -> str:
+    return re.sub(r"\{[^}]+\}", NIL_ID, path.replace("{project_id}", project_id))
+
+
+async def _user_count(db_session) -> int:
+    return (await db_session.execute(text("SELECT count(*) FROM users"))).scalar_one()
+
+
+def _admin_family_routes(role_app):
+    return [
+        (method, endpoint, next(iter(policies_of(endpoint))))
+        for method, endpoint in api_routes(role_app)
+        if policies_of(endpoint) & {"admin", "admin_project"}
+    ]
+
+
+async def test_every_admin_route_refuses_everyone_who_is_not_an_active_administrator(
+    role_app, role_client, make_person, mint_token, db_session
+):
+    """Employee: 403 ``forbidden`` on a route with no project id, 404 ``not_found`` on a route that
+    names one. Suspended administrator, uninvited person, anonymous caller: 403 / 403 / 401 on both
+    (they are refused before any role or project is looked at)."""
+    employee = await make_person(role="employee")
+    suspended_admin = await make_person(role="admin", status="suspended")
+    uninvited = {"Authorization": f"Bearer {mint_token()}"}
+    users_before = await _user_count(db_session)
+
+    routes = _admin_family_routes(role_app)
+    assert len(routes) >= 35
+
+    failures: list[str] = []
+    for method, endpoint, policy in routes:
+        url = _concrete(endpoint.path)
+        employee_wants = (403, "forbidden") if policy == "admin" else (404, "not_found")
+        for who, headers, status, code in (
+            ("employee", employee.headers, *employee_wants),
+            ("suspended admin", suspended_admin.headers, 403, "account_inactive"),
+            ("uninvited", uninvited, 403, "not_invited"),
+            ("anonymous", {}, 401, "unauthorized"),
+        ):
+            response = await role_client.request(method, url, headers=headers)
+            body = response.json() if response.content else {}
+            got = (response.status_code, body.get("error", {}).get("code"))
+            if got != (status, code):
+                failures.append(f"{who}: {method} {url} -> {got}, wanted {(status, code)}")
+
+    assert failures == []
+    # The uninvited person's many attempts created no account.
+    assert await _user_count(db_session) == users_before
+
+
+async def test_an_employee_gets_403_on_the_project_list_and_create_routes(role_client, make_person):
+    employee = await make_person(role="employee")
+
+    listing = await role_client.get("/v1/projects", headers=employee.headers)
+    create = await role_client.post(
+        "/v1/projects",
+        json={"title": "Sneaky", "source_type": "pdf"},
+        headers={**employee.headers, "Idempotency-Key": "employee-create-1"},
+    )
+
+    for response in (listing, create):
+        assert response.status_code == 403
+        assert response.json()["error"]["code"] == "forbidden"
+
+
+async def test_an_employee_gets_404_on_a_project_id_route_and_it_reveals_nothing(
+    role_app, role_client, make_person
+):
+    """The same status and body (apart from the id echoed back) whether the project exists, belongs
+    to an administrator, or does not exist at all - on every route that names a project."""
+    admin = await make_person(role="admin")
+    employee = await make_person(role="employee")
+    created = await role_client.post(
+        "/v1/projects",
+        json={"title": "Secret plan", "source_type": "pdf"},
+        headers={**admin.headers, "Idempotency-Key": "admin-create-1"},
+    )
+    assert created.status_code == 201
+    real_id = created.json()["id"]
+
+    def normalised(response, project_id: str):
+        return response.status_code, response.text.replace(project_id, "<project>")
+
+    differences: list[str] = []
+    checked = 0
+    for method, endpoint, policy in _admin_family_routes(role_app):
+        if policy != "admin_project":
+            continue
+        existing = await role_client.request(
+            method, _concrete(endpoint.path, real_id), headers=employee.headers
+        )
+        absent = await role_client.request(
+            method, _concrete(endpoint.path, NIL_ID), headers=employee.headers
+        )
+        checked += 1
+        got_existing, got_absent = normalised(existing, real_id), normalised(absent, NIL_ID)
+        if got_existing != got_absent or got_existing[0] != 404:
+            differences.append(f"{method} {endpoint.path}: {got_existing} vs {got_absent}")
+        assert "Secret plan" not in existing.text
+
+    assert checked >= 30
+    assert differences == []
+
+    # What the employee sent changed nothing: the project is still there, untouched.
+    still = await role_client.get(f"/v1/projects/{real_id}", headers=admin.headers)
+    assert still.status_code == 200 and still.json()["title"] == "Secret plan"
+
+
+async def test_the_employees_404_is_the_one_an_administrator_gets_for_a_missing_project(
+    role_client, make_person
+):
+    employee = await make_person(role="employee")
+    admin = await make_person(role="admin")
+
+    from_employee = await role_client.get(f"/v1/projects/{NIL_ID}", headers=employee.headers)
+    from_admin = await role_client.get(f"/v1/projects/{NIL_ID}", headers=admin.headers)
+
+    assert from_employee.status_code == from_admin.status_code == 404
+    assert from_employee.json() == from_admin.json()
+
+
+async def test_an_employee_cannot_patch_or_delete_a_project_and_it_survives(
+    role_client, make_person
+):
+    admin = await make_person(role="admin")
+    employee = await make_person(role="employee")
+    created = await role_client.post(
+        "/v1/projects",
+        json={"title": "Keep me", "source_type": "pdf"},
+        headers={**admin.headers, "Idempotency-Key": "admin-create-2"},
+    )
+    project_id = created.json()["id"]
+
+    patch = await role_client.patch(
+        f"/v1/projects/{project_id}",
+        json={"title": "Hijacked"},
+        headers={**employee.headers, "Idempotency-Key": "employee-patch-1"},
+    )
+    delete = await role_client.delete(
+        f"/v1/projects/{project_id}",
+        headers={**employee.headers, "Idempotency-Key": "employee-delete-1"},
+    )
+    after = await role_client.get(f"/v1/projects/{project_id}", headers=admin.headers)
+
+    assert patch.status_code == delete.status_code == 404
+    assert after.status_code == 200 and after.json()["title"] == "Keep me"
+
+
+async def test_a_malformed_project_id_is_the_same_422_for_everyone(role_client, make_person):
+    """A malformed id can never name a project, so a validation error leaks nothing."""
+    employee = await make_person(role="employee")
+    admin = await make_person(role="admin")
+
+    from_employee = await role_client.get("/v1/projects/not-a-uuid", headers=employee.headers)
+    from_admin = await role_client.get("/v1/projects/not-a-uuid", headers=admin.headers)
+
+    assert from_employee.status_code == from_admin.status_code == 422
+
+
+async def test_an_admin_passes_the_role_gate_on_the_admin_routes_we_can_call_blind(
+    role_client, make_person
+):
+    admin = await make_person(role="admin")
+
+    assert (await role_client.get("/v1/projects", headers=admin.headers)).status_code == 200
+    assert (await role_client.get("/v1/admin/users", headers=admin.headers)).status_code == 200
+    assert (
+        await role_client.get("/v1/admin/invitations", headers=admin.headers)
+    ).status_code == 200
+
+
+async def test_an_employee_can_reach_me_and_is_told_their_role(role_client, make_person):
+    employee = await make_person(role="employee")
+
+    response = await role_client.get("/v1/auth/me", headers=employee.headers)
+
+    assert response.status_code == 200
+    assert response.json()["role"] == "employee"

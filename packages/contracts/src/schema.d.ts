@@ -38,6 +38,75 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/admin/invitations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Invitations */
+        get: operations["list_invitations_v1_admin_invitations_get"];
+        put?: never;
+        /** Create Invitation */
+        post: operations["create_invitation_v1_admin_invitations_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/invitations/{invitation_id}/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Revoke Invitation */
+        post: operations["revoke_invitation_v1_admin_invitations__invitation_id__revoke_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/users": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Users */
+        get: operations["list_users_v1_admin_users_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/users/{user_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Update User */
+        patch: operations["update_user_v1_admin_users__user_id__patch"];
+        trace?: never;
+    };
     "/v1/projects": {
         parameters: {
             query?: never;
@@ -585,6 +654,104 @@ export interface components {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
         };
+        /** InvitationCreateRequest */
+        InvitationCreateRequest: {
+            /** Email */
+            email: string;
+            /**
+             * Role
+             * @default employee
+             * @enum {string}
+             */
+            role: "admin" | "employee";
+            /** Display Name */
+            display_name?: string | null;
+        };
+        /**
+         * InvitationCreatedResponse
+         * @description ``delivery``: ``sent`` (Clerk was asked to email it), ``not_configured`` (no
+         *     ``CLERK_SECRET_KEY`` - pass the sign-up link on yourself) or ``failed`` (Clerk could not be
+         *     reached or refused; the invitation exists - revoke and re-create it to try again).
+         */
+        InvitationCreatedResponse: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Email */
+            email: string;
+            /** Display Name */
+            display_name: string | null;
+            /**
+             * Role
+             * @enum {string}
+             */
+            role: "admin" | "employee";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "pending" | "accepted" | "revoked";
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /** Accepted At */
+            accepted_at: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Delivery
+             * @enum {string}
+             */
+            delivery: "sent" | "not_configured" | "failed";
+        };
+        /** InvitationListResponse */
+        InvitationListResponse: {
+            /** Items */
+            items: components["schemas"]["InvitationResponse"][];
+            /** Next Cursor */
+            next_cursor: string | null;
+        };
+        /** InvitationResponse */
+        InvitationResponse: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Email */
+            email: string;
+            /** Display Name */
+            display_name: string | null;
+            /**
+             * Role
+             * @enum {string}
+             */
+            role: "admin" | "employee";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "pending" | "accepted" | "revoked";
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /** Accepted At */
+            accepted_at: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+        };
         /** JobListResponse */
         JobListResponse: {
             /** Items */
@@ -649,6 +816,23 @@ export interface components {
              * Format: date-time
              */
             updated_at: string;
+        };
+        /** MeResponse */
+        MeResponse: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Email */
+            email: string;
+            /** Display Name */
+            display_name: string | null;
+            /**
+             * Role
+             * @enum {string}
+             */
+            role: "admin" | "employee";
         };
         /** ProjectCreateRequest */
         ProjectCreateRequest: {
@@ -1443,6 +1627,49 @@ export interface components {
             /** Cache Read Input Tokens */
             cache_read_input_tokens: number | null;
         };
+        /** UserListResponse */
+        UserListResponse: {
+            /** Items */
+            items: components["schemas"]["UserResponse"][];
+            /** Next Cursor */
+            next_cursor: string | null;
+        };
+        /** UserResponse */
+        UserResponse: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Email */
+            email: string;
+            /** Display Name */
+            display_name: string | null;
+            /**
+             * Role
+             * @enum {string}
+             */
+            role: "admin" | "employee";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "active" | "suspended" | "deleted";
+            /** Has Signed In */
+            has_signed_in: boolean;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+        };
+        /** UserUpdateRequest */
+        UserUpdateRequest: {
+            /** Role */
+            role?: ("admin" | "employee") | null;
+            /** Status */
+            status?: ("active" | "suspended") | null;
+        };
         /** ValidationError */
         ValidationError: {
             /** Location */
@@ -1509,9 +1736,184 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: string;
-                    };
+                    "application/json": components["schemas"]["MeResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_invitations_v1_admin_invitations_get: {
+        parameters: {
+            query?: {
+                status?: ("pending" | "accepted" | "revoked") | null;
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvitationListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_invitation_v1_admin_invitations_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "idempotency-key": string;
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InvitationCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvitationCreatedResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    revoke_invitation_v1_admin_invitations__invitation_id__revoke_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "idempotency-key": string;
+                authorization?: string | null;
+            };
+            path: {
+                invitation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvitationResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_users_v1_admin_users_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_user_v1_admin_users__user_id__patch: {
+        parameters: {
+            query?: never;
+            header: {
+                "idempotency-key": string;
+                authorization?: string | null;
+            };
+            path: {
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UserUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserResponse"];
                 };
             };
             /** @description Validation Error */

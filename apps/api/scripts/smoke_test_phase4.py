@@ -95,6 +95,7 @@ async def main() -> None:
             user = await users_service.create_user(
                 session,
                 email=f"smoke-test-{uuid4()}@example.com",
+                role="admin",
                 clerk_user_id=f"smoke_test_{uuid4()}",
                 display_name="Phase 4 Smoke Test",
             )

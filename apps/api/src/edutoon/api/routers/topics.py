@@ -37,6 +37,7 @@ from fastapi import APIRouter, Depends, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from edutoon.api.dependencies import IdempotencyKey, RedisDep, get_current_user
+from edutoon.api.policies import require_admin_for_project
 from edutoon.api.schemas.jobs import JobResponse
 from edutoon.api.schemas.topics import (
     TopicExtractionRequest,
@@ -51,7 +52,11 @@ from edutoon.services import project_topics as project_topics_service
 from edutoon.services import topic_extraction as topic_extraction_service
 from edutoon.services.users import UserRecord
 
-router = APIRouter(prefix="/projects/{project_id}/topics", tags=["topics"])
+router = APIRouter(
+    prefix="/projects/{project_id}/topics",
+    tags=["topics"],
+    dependencies=[Depends(require_admin_for_project)],
+)
 
 CurrentUser = Annotated[UserRecord, Depends(get_current_user)]
 Session = Annotated[AsyncSession, Depends(get_session)]

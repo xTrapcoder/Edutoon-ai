@@ -40,6 +40,30 @@ class UnauthorizedError(AppError):
     code = "unauthorized"
 
 
+class ForbiddenError(AppError):
+    """The caller is who they say they are, but this account or role may not do this.
+
+    Only for *capabilities* - a route that needs another role, an account that is suspended,
+    an identity nobody invited. A resource the caller merely does not own is still
+    :class:`NotFoundError` (rule 9): never use this to say "that exists but is not yours".
+    """
+
+    status_code = status.HTTP_403_FORBIDDEN
+    code = "forbidden"
+
+
+class NotInvitedError(ForbiddenError):
+    """A valid identity that no administrator invited. No account is created for it."""
+
+    code = "not_invited"
+
+
+class AccountInactiveError(ForbiddenError):
+    """The account exists but is suspended (or deleted)."""
+
+    code = "account_inactive"
+
+
 class NotFoundError(AppError):
     """A resource does not exist, or the caller does not own it (rule 9: never 403)."""
 

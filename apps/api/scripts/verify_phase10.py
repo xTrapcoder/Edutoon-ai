@@ -347,6 +347,7 @@ async def make_project(
             user = await users_service.create_user(
                 session,
                 email=f"verify-{uuid4()}@example.com",
+                role="admin",
                 clerk_user_id=f"verify_{uuid4()}",
                 display_name="Phase 10 verification",
             )

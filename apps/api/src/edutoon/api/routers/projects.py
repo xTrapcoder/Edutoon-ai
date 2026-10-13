@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from edutoon.api.dependencies import IdempotencyKey, RedisDep, StorageDep, get_current_user
+from edutoon.api.policies import require_admin, require_admin_for_project
 from edutoon.api.schemas.projects import (
     ProjectCreateRequest,
     ProjectListResponse,
@@ -33,13 +34,17 @@ from edutoon.services import projects as projects_service
 from edutoon.services.projects import StorageLocation
 from edutoon.services.users import UserRecord
 
+# No router-level policy: the two collection routes (list, create) name no project and answer a
+# non-administrator 403 (``require_admin``); every route with a ``{project_id}`` answers a
+# non-administrator 404, the same whether or not the project exists
+# (``require_admin_for_project``).
 router = APIRouter(prefix="/projects", tags=["projects"])
 
 CurrentUser = Annotated[UserRecord, Depends(get_current_user)]
 Session = Annotated[AsyncSession, Depends(get_session)]
 
 
-@router.post("", status_code=status.HTTP_201_CREATED)
+@router.post("", status_code=status.HTTP_201_CREATED, dependencies=[Depends(require_admin)])
 async def create_project(
     request: Request,
     body: ProjectCreateRequest,
@@ -75,7 +80,7 @@ async def create_project(
     return ProjectResponse.model_validate(response_body)
 
 
-@router.get("")
+@router.get("", dependencies=[Depends(require_admin)])
 async def list_projects(
     current_user: CurrentUser,
     session: Session,
@@ -91,7 +96,7 @@ async def list_projects(
     )
 
 
-@router.get("/{project_id}")
+@router.get("/{project_id}", dependencies=[Depends(require_admin_for_project)])
 async def get_project(
     project_id: UUID, current_user: CurrentUser, session: Session
 ) -> ProjectResponse:
@@ -101,7 +106,7 @@ async def get_project(
     return ProjectResponse.from_record(project)
 
 
-@router.patch("/{project_id}")
+@router.patch("/{project_id}", dependencies=[Depends(require_admin_for_project)])
 async def update_project(
     request: Request,
     project_id: UUID,
@@ -131,7 +136,11 @@ async def update_project(
     return ProjectResponse.model_validate(response_body)
 
 
-@router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/{project_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_admin_for_project)],
+)
 async def delete_project(
     request: Request,
     project_id: UUID,

@@ -51,6 +51,7 @@ pythonpath = ["src"]
 addopts = "--strict-markers"
 markers = [
     "requires_ffmpeg: needs the real ffmpeg and ffprobe executables (Phase 10 rendering); skipped where they are not installed.",
+    "real_auth: the test exercises the real invitation / role / suspended-account logic. Without it, the legacy shim in conftest.py applies: an unknown Clerk identity is provisioned as an administrator and users_repo.create defaults to role admin, so tests written before roles existed keep working. The shim exists only in tests; production has no default role and provisions nobody.",
     "provider_mocked: stands in for an external AI provider (OpenAI / Anthropic) with a fake client, a patched network call or a simulated error. Proves how our code handles a response, never how a real provider behaves.",
 ]
 

@@ -30,6 +30,24 @@ users = sa.Table(
     sa.Column("email", sa.Text, nullable=False),
     sa.Column("display_name", sa.Text),
     sa.Column("status", sa.Text, nullable=False),
+    sa.Column("role", sa.Text, nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+)
+
+invitations = sa.Table(
+    "invitations",
+    metadata,
+    sa.Column("id", UUID(as_uuid=True), primary_key=True, server_default=sa.FetchedValue()),
+    sa.Column("email", sa.Text, nullable=False),
+    sa.Column("display_name", sa.Text),
+    sa.Column("role", sa.Text, nullable=False),
+    sa.Column("status", sa.Text, nullable=False),
+    sa.Column("invited_by", UUID(as_uuid=True), nullable=False),
+    sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("accepted_user_id", UUID(as_uuid=True)),
+    sa.Column("accepted_at", sa.DateTime(timezone=True)),
+    sa.Column("clerk_invitation_id", sa.Text),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
 )

@@ -35,6 +35,7 @@ from fastapi import APIRouter, Depends, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from edutoon.api.dependencies import IdempotencyKey, RedisDep, ScriptLLMDep, get_current_user
+from edutoon.api.policies import require_admin_for_project
 from edutoon.api.schemas.scripts import (
     ScriptDetailResponse,
     ScriptGenerateRequest,
@@ -48,7 +49,11 @@ from edutoon.services import projects as projects_service
 from edutoon.services import scripts as scripts_service
 from edutoon.services.users import UserRecord
 
-router = APIRouter(prefix="/projects/{project_id}/scripts", tags=["scripts"])
+router = APIRouter(
+    prefix="/projects/{project_id}/scripts",
+    tags=["scripts"],
+    dependencies=[Depends(require_admin_for_project)],
+)
 
 CurrentUser = Annotated[UserRecord, Depends(get_current_user)]
 Session = Annotated[AsyncSession, Depends(get_session)]

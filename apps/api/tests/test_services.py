@@ -15,7 +15,9 @@ async def test_get_user_or_404_raises_when_missing(db_session):
 
 
 async def test_get_user_or_404_returns_the_user_when_present(db_session):
-    created = await users_service.create_user(db_session, email=f"{uuid4()}@example.com")
+    created = await users_service.create_user(
+        db_session, email=f"{uuid4()}@example.com", role="employee"
+    )
 
     fetched = await users_service.get_user_or_404(db_session, created.id)
 

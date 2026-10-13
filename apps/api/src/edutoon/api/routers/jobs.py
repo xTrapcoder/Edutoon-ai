@@ -17,6 +17,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from edutoon.api.dependencies import get_current_user
+from edutoon.api.policies import require_admin_for_project
 from edutoon.api.schemas.jobs import JobListResponse, JobResponse, ProjectUsageResponse
 from edutoon.core.pagination import DEFAULT_PAGE_SIZE
 from edutoon.db.session import get_session
@@ -24,7 +25,11 @@ from edutoon.services import jobs as jobs_service
 from edutoon.services import projects as projects_service
 from edutoon.services.users import UserRecord
 
-router = APIRouter(prefix="/projects/{project_id}/jobs", tags=["jobs"])
+router = APIRouter(
+    prefix="/projects/{project_id}/jobs",
+    tags=["jobs"],
+    dependencies=[Depends(require_admin_for_project)],
+)
 
 CurrentUser = Annotated[UserRecord, Depends(get_current_user)]
 Session = Annotated[AsyncSession, Depends(get_session)]

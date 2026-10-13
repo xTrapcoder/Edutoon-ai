@@ -35,6 +35,7 @@ from edutoon.api.dependencies import (
     RedisDep,
     get_current_user,
 )
+from edutoon.api.policies import require_admin_for_project
 from edutoon.api.schemas.claim_verifications import (
     ClaimExtractionRequest,
     ClaimVerificationListResponse,
@@ -51,7 +52,8 @@ from edutoon.services import projects as projects_service
 from edutoon.services.users import UserRecord
 
 router = APIRouter(
-    prefix="/projects/{project_id}/claim-verifications", tags=["claim-verifications"]
+    prefix="/projects/{project_id}/claim-verifications", tags=["claim-verifications"],
+    dependencies=[Depends(require_admin_for_project)],
 )
 
 CurrentUser = Annotated[UserRecord, Depends(get_current_user)]

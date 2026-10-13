@@ -287,6 +287,19 @@ until 2026-10-07) while the model keeps 1-60 minutes; a live
 job is never reclaimed as stale and a reclaimed worker stops. Not settled: H.264/AAC/x264/Piper licensing,
 long-video (over thirty minutes) work, cleanup of superseded scripts' audio and videos.
 
+**Training platform, Step 1 - roles and sign-in (2026-10-12; design in `docs/training-platform-design.md`).**
+Migration **0019**: `users.role` (`admin` | `employee`, NOT NULL, no default - the database is the only
+authority, never a token claim) and `invitations`. Nobody becomes a user by signing in: a new identity
+needs a verified email plus a pending invitation (or to be the first administrator named in
+`ADMIN_BOOTSTRAP_EMAILS` while none exists), otherwise 403 `not_invited` and no row is written; a
+suspended user is 403 `account_inactive` on every request. Every route declares exactly one role policy
+(`api/policies.py`; all existing project routes are administrator-only: an employee gets 404 on any route
+naming a project, identical whether or not it exists, and 403 on `GET`/`POST /v1/projects` and `/v1/admin`)
+and `tests/test_route_policies.py` fails for any route that does not. The backfill made existing users employees except explicitly named
+addresses (`scripts/grant_admin.py` promotes later). Tests written before roles use a conftest shim
+(`real_auth` marker opts out). **Unverified:** real Clerk sign-in, real Clerk invitation emails and the
+`email_verified` claim (placeholder keys). Steps 2+ (courses, modules, assessments) have not started.
+
 **Phase 12 has not started and needs the owner's explicit approval.**
 
 ## Commands
@@ -317,7 +330,7 @@ apps/
   api/        FastAPI service (uv, src/edutoon)
     src/edutoon/          api/ (routers, schemas) · services/ · domain/ (pure; deck*.py = the deck engine) ·
                           repositories/ · providers/ · worker/ · db/ · core/
-    alembic/              migration environment + versions/0001..0018
+    alembic/              migration environment + versions/0001..0019
   parser/     PDF/topic parser — not yet initialised
   render/     placeholder - the renderer lives in apps/api/src/edutoon/providers/renderer
 packages/

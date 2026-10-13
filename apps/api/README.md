@@ -28,6 +28,74 @@ and a replay of one - always means the change is stored, and a commit that fails
 nothing cached. `tests/test_idempotent_routes_contract.py` fails for any mutating route
 that loses either guarantee.
 
+## Roles, invitations and sign-in
+
+Step 1 of the training platform (`docs/training-platform-design.md`; migration **0019**).
+
+**Roles.** `users.role` is `admin` or `employee`, NOT NULL with no default. The database is the
+only authority: a role is never read from a token claim, a header or a request body (a `role` claim
+in a Clerk token is ignored, and `tests/test_provisioning_and_suspension.py` proves it).
+
+**Who can use the API.** Nobody becomes a user by signing in. `get_current_user`
+(`api/dependencies.py`) verifies the token, then `services.auth.resolve_user`:
+
+1. an identity already linked to a user is returned as it is;
+2. a new identity becomes a user **only if its email is verified** (`email_verified: true` in the
+   token) and either a *pending, unexpired invitation* names that address - the user gets the
+   invitation's role - or the address is on `ADMIN_BOOTSTRAP_EMAILS` **and no active administrator
+   exists** (the first administrator; the list is spent once one does);
+3. anything else is `403 not_invited` and **writes nothing**.
+
+Then a user whose `status` is not `active` is `403 account_inactive` - on every request, so a
+suspension takes effect at once (`PATCH /v1/admin/users/{id}` with `{"status": "suspended"}`).
+Unauthenticated is still `401`. A 403 means a capability is missing (role, invitation, suspension);
+a project, or any resource, the caller does not own is still `404` (rule 9).
+
+**Every route declares a role policy** (`api/policies.py`): `require_admin`,
+`require_admin_for_project`, `require_employee`, `require_authenticated`, or `public_route`
+(`/health` only). All existing project-generation routes are administrator-only, and an employee is
+answered like this:
+
+* a route that **names a project** (anything under `/v1/projects/{project_id}`) is
+  `require_admin_for_project`: an employee gets **`404 not_found`**, with the same body an
+  administrator gets for a project that does not exist, whether or not the project exists - so
+  nothing about which projects exist can be learned, and nothing the employee sends is acted on;
+* a route that names **no** project (`GET` / `POST /v1/projects`, everything under `/v1/admin`) is
+  `require_admin`: an employee gets **`403 forbidden`**.
+
+`tests/test_route_policies.py` walks every route of the real application and fails if one declares
+none or several, pins which policy each route has (a `{project_id}` in the path must mean
+`require_admin_for_project`), then calls every administrator route as an employee, a suspended
+administrator, an uninvited person and an anonymous caller, and compares an employee's responses for
+an existing project and a missing one. Adding a route without a policy fails the suite.
+
+**Invitations** (admin only, `Idempotency-Key` required): `POST /v1/admin/invitations`
+(`{email, role?, display_name?}`; role defaults to `employee`), `GET /v1/admin/invitations`,
+`POST /v1/admin/invitations/{id}/revoke`. Expiry is `INVITATION_TTL_DAYS` (default 7). If
+`CLERK_SECRET_KEY` is set the API asks Clerk to email the invitation (stdlib HTTP, no new
+dependency; only the address is sent, never a role) and the response says `delivery: "sent"`;
+otherwise `"not_configured"` (pass the sign-up link on yourself) or `"failed"`. The invitation row is
+the authority either way. **The Clerk call is not verified against a real Clerk instance.**
+
+**Users** (admin only): `GET /v1/admin/users`, `PATCH /v1/admin/users/{id}` (`role`, `status`:
+`active` | `suspended`). The last active administrator can be neither demoted nor suspended (409).
+`GET /v1/auth/me` returns `{id, email, display_name, role}` for any active user.
+
+**Migration 0019 backfill is least-privilege.** Every existing user becomes an `employee`; only
+addresses on `ADMIN_BOOTSTRAP_EMAILS` *at migration time* become `admin`. If that list is empty the
+migration says so and nobody is promoted. To promote someone afterwards, deliberately, on the
+server: `uv run python scripts/grant_admin.py --email someone@company.example` (audited as a
+`system` action). Downgrading drops the role column and the invitations table and loses the roles.
+
+**Dev QA.** `scripts/dev_qa_api.py` accepts two stand-in tokens, `ui-qa-token` (administrator) and
+`ui-qa-employee-token` (employee), and creates those two local users if they are missing.
+
+**Tests written before roles existed.** `tests/conftest.py` has an autouse fixture that, for any
+test not marked `@pytest.mark.real_auth`, makes `users_repo.create` default to `admin` and provisions
+an unknown Clerk identity as an administrator. It exists only in tests; production has no default
+role. A test of roles, invitations or suspension carries `real_auth` and must give every user an
+explicit role. The suspended-account check is never shimmed.
+
 ## Project generation settings
 
 A project carries three settings that later phases (scene planning, narration,
@@ -1446,14 +1514,22 @@ both), so set them up before running `make dev`.
    [dashboard.clerk.com](https://dashboard.clerk.com), click **Create
    application**, and give it any name (a free "Development" instance is
    enough for local work).
-2. **Include `email` in the session token.** By default Clerk's session
-   token only carries `sub`; this API's Clerk provider
-   (`src/edutoon/providers/clerk.py`) also requires an `email` claim to
-   provision a `users` row. In the dashboard, go to **Sessions > Customize
-   session token** and add:
+2. **Include `email` (and its verification) in the session token.** By default
+   Clerk's session token only carries `sub`; this API's Clerk provider
+   (`src/edutoon/providers/clerk.py`) requires an `email` claim, and a *first* sign-in
+   (accepting an invitation, or the first administrator) additionally requires
+   `email_verified: true`, because the address must be proven to belong to the person.
+   In the dashboard, go to **Sessions > Customize session token** and add:
    ```json
-   { "email": "{{user.primary_email_address}}" }
+   {
+     "email": "{{user.primary_email_address}}",
+     "email_verified": "{{user.email_verified}}"
+   }
    ```
+   **Unverified:** the exact shortcode for the second claim and whether Clerk emits it as a
+   JSON boolean (the API accepts only a literal `true`) have not been checked against a real
+   Clerk instance. Users who are already linked are unaffected. For invitation-only sign-up,
+   also set the instance's sign-up mode to **Restricted** in the dashboard.
 3. **Find `CLERK_ISSUER`.** In **Configure > API Keys**, copy the
    **Frontend API URL** (looks like `https://your-app-name-12.clerk.accounts.dev`,
    or `https://clerk.<your-domain>` on a production instance with a custom

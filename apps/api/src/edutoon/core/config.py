@@ -48,6 +48,23 @@ class Settings(BaseSettings):
     API_BASE_URL: str = "http://localhost:8000"
     MAX_UPLOAD_BYTES: int = 104_857_600
 
+    # Roles and invitations (migration 0019). Nobody becomes a user by signing in: an identity
+    # needs a pending invitation, or to be the first administrator below.
+    #
+    # ADMIN_BOOTSTRAP_EMAILS is a comma-separated allow-list that does exactly two things: the
+    # migration promotes the *existing* users with these addresses to administrator (everyone else
+    # becomes an employee), and, while the organisation has no active administrator at all, a
+    # verified sign-in with one of these addresses is provisioned as the first one. It is never
+    # consulted once an administrator exists. Leave it empty after the first administrator is in.
+    ADMIN_BOOTSTRAP_EMAILS: str = ""
+    # Used only to ask Clerk to email an invitation. Optional: without it an invitation is still
+    # recorded and the administrator passes on the sign-up link themselves. Never logged.
+    CLERK_SECRET_KEY: str = ""
+    CLERK_API_BASE_URL: str = "https://api.clerk.com"
+    # Where Clerk sends an invited person to sign up; empty means APP_BASE_URL + "/sign-up".
+    CLERK_INVITATION_REDIRECT_URL: str = ""
+    INVITATION_TTL_DAYS: int = Field(default=7, ge=1, le=60)
+
     # Keyword-only projects (``source_type: topic``, or a topic extraction with keywords and no
     # parsed material) are switched off: with nothing to verify against, the evidence pipeline
     # cannot produce a verified script from keywords alone, and the product's promise is that

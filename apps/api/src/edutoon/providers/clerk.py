@@ -13,6 +13,10 @@ it, since that would pull in more than authentication infrastructure.
 
 from __future__ import annotations
 
+import asyncio
+import json
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from typing import Any
 
@@ -34,6 +38,11 @@ class ClerkTokenError(Exception):
 class ClerkClaims:
     clerk_user_id: str
     email: str
+    # True only when the token carries ``email_verified: true``. Clerk's default session token has
+    # no such claim; it has to be added to the JWT template. Without it an identity can still
+    # sign in as a user that already exists, but can never be *provisioned* (accept an invitation
+    # or become the first administrator), because the address is not proven to be theirs.
+    email_verified: bool = False
 
 
 def _get_jwk_client() -> PyJWKClient:
@@ -83,8 +92,72 @@ def verify_token(token: str) -> ClerkClaims:
     clerk_user_id = payload.get("sub")
     email = payload.get("email")
     if not clerk_user_id or not email:
-        raise ClerkTokenError(
-            "Token is missing required claims ('sub' and/or 'email')."
-        )
+        raise ClerkTokenError("Token is missing required claims ('sub' and/or 'email').")
 
-    return ClerkClaims(clerk_user_id=clerk_user_id, email=email)
+    return ClerkClaims(
+        clerk_user_id=clerk_user_id,
+        email=email,
+        email_verified=payload.get("email_verified") is True,
+    )
+
+
+# --- invitations (Clerk Backend API) ---------------------------------------------------------
+
+_INVITATION_TIMEOUT_SECONDS = 10
+
+
+class ClerkInvitationError(Exception):
+    """Clerk could not be asked to send an invitation (not configured, rejected or unreachable)."""
+
+
+def invitations_configured() -> bool:
+    return bool(get_settings().CLERK_SECRET_KEY)
+
+
+def _post_invitation(url: str, secret_key: str, payload: dict[str, Any]) -> dict[str, Any]:
+    request = urllib.request.Request(  # noqa: S310 - the scheme is fixed by configuration
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {secret_key}",
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=_INVITATION_TIMEOUT_SECONDS) as response:  # noqa: S310
+            body = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        # Status only: the response body may echo the address, and the key is never shown.
+        raise ClerkInvitationError(f"Clerk refused the invitation (HTTP {exc.code}).") from exc
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+        raise ClerkInvitationError("Clerk could not be reached to send the invitation.") from exc
+    if not isinstance(body, dict):
+        raise ClerkInvitationError("Clerk answered the invitation with an unexpected body.")
+    return body
+
+
+async def send_invitation(*, email: str) -> str:
+    """Ask Clerk to email ``email`` an invitation to sign up; return Clerk's invitation id.
+
+    Carries no role: roles live only in our database, never in anything Clerk holds. Raises
+    :class:`ClerkInvitationError` if Clerk is not configured, refuses, or cannot be reached.
+    UNVERIFIED against a real Clerk instance - the request shape follows Clerk's documented
+    ``POST /v1/invitations`` and is exercised in tests with the network call replaced.
+    """
+    settings = get_settings()
+    if not settings.CLERK_SECRET_KEY:
+        raise ClerkInvitationError("CLERK_SECRET_KEY is not configured.")
+    redirect_url = settings.CLERK_INVITATION_REDIRECT_URL or (
+        settings.APP_BASE_URL.rstrip("/") + "/sign-up"
+    )
+    body = await asyncio.to_thread(
+        _post_invitation,
+        settings.CLERK_API_BASE_URL.rstrip("/") + "/v1/invitations",
+        settings.CLERK_SECRET_KEY,
+        {"email_address": email, "redirect_url": redirect_url, "ignore_existing": True},
+    )
+    invitation_id = body.get("id")
+    if not isinstance(invitation_id, str) or not invitation_id:
+        raise ClerkInvitationError("Clerk answered the invitation without an id.")
+    return invitation_id

@@ -22,7 +22,6 @@ from edutoon.db.session import get_session
 from edutoon.main import create_app
 from edutoon.providers import clerk
 from edutoon.providers.clerk import ClerkClaims
-from edutoon.services import auth as auth_service
 
 TEST_ISSUER = "https://test.clerk.accounts.dev"
 
@@ -123,35 +122,6 @@ def test_verify_token_rejects_a_malformed_token(monkeypatch, rsa_keypair):
 
     with pytest.raises(clerk.ClerkTokenError):
         clerk.verify_token("not-a-real-jwt")
-
-
-# --- services/auth.py: provisioning ---------------------------------------------
-
-
-async def test_first_login_provisions_a_new_user(db_session):
-    claims = ClerkClaims(clerk_user_id=f"clerk_{uuid4()}", email="new.user@example.com")
-
-    user = await auth_service.get_or_provision_user(db_session, claims)
-
-    assert user.clerk_user_id == claims.clerk_user_id
-    assert user.email == "new.user@example.com"
-
-
-async def test_existing_user_is_reused_not_duplicated(db_session):
-    claims = ClerkClaims(clerk_user_id=f"clerk_{uuid4()}", email="same.user@example.com")
-
-    first = await auth_service.get_or_provision_user(db_session, claims)
-    second = await auth_service.get_or_provision_user(db_session, claims)
-
-    assert first.id == second.id
-
-
-async def test_provisioned_email_is_normalised_to_lowercase(db_session):
-    claims = ClerkClaims(clerk_user_id=f"clerk_{uuid4()}", email="Mixed.Case@Example.com")
-
-    user = await auth_service.get_or_provision_user(db_session, claims)
-
-    assert user.email == "mixed.case@example.com"
 
 
 # --- api/dependencies.py + /v1/auth/me: end-to-end over real HTTP --------------

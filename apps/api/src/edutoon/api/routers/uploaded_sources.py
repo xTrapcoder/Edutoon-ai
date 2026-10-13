@@ -26,6 +26,7 @@ from fastapi.exceptions import RequestValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from edutoon.api.dependencies import IdempotencyKey, RedisDep, StorageDep, get_current_user
+from edutoon.api.policies import require_admin_for_project
 from edutoon.api.schemas.jobs import JobResponse
 from edutoon.api.schemas.source_chunks import SourceChunkListResponse, SourceChunkResponse
 from edutoon.api.schemas.uploaded_sources import (
@@ -43,7 +44,11 @@ from edutoon.services import source_chunks as source_chunks_service
 from edutoon.services import uploaded_sources as uploaded_sources_service
 from edutoon.services.users import UserRecord
 
-router = APIRouter(prefix="/projects/{project_id}/sources", tags=["uploaded-sources"])
+router = APIRouter(
+    prefix="/projects/{project_id}/sources",
+    tags=["uploaded-sources"],
+    dependencies=[Depends(require_admin_for_project)],
+)
 
 CurrentUser = Annotated[UserRecord, Depends(get_current_user)]
 Session = Annotated[AsyncSession, Depends(get_session)]

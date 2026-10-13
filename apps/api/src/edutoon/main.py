@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 import structlog
-from fastapi import FastAPI, Request, Response
+from fastapi import Depends, FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from edutoon import __version__
 from edutoon.api import v1_router
 from edutoon.api.middleware import MULTIPART_OVERHEAD_BYTES, BodySizeLimitMiddleware
+from edutoon.api.policies import public_route
 from edutoon.core.config import Settings, get_settings
 from edutoon.core.context import bind_request_id
 from edutoon.core.errors import register_exception_handlers
@@ -99,7 +100,7 @@ def create_app() -> FastAPI:
         response.headers[REQUEST_ID_HEADER] = request_id
         return response
 
-    @app.get("/health")
+    @app.get("/health", dependencies=[Depends(public_route)])
     async def health(request: Request) -> dict[str, Any]:
         database = await _check_database(request.app.state.engine)
         redis_status = await _check_redis(request.app.state.redis)
