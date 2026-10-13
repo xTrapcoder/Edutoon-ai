@@ -300,6 +300,19 @@ addresses (`scripts/grant_admin.py` promotes later). Tests written before roles 
 (`real_auth` marker opts out). **Unverified:** real Clerk sign-in, real Clerk invitation emails and the
 `email_verified` claim (placeholder keys). Steps 2+ (courses, modules, assessments) have not started.
 
+**Training platform, Step 2 - courses, modules and enrolments (in progress, 2026-10-13).** Piece 1 (migration
+**0020**, local only until applied): `training_courses`, `training_modules`, `course_enrolments`; the domain
+(`domain/training.py`, `training_access.py`, `training_storage.py`) and the fail-closed seam
+`services/training_access.passed_module_ids`. A module belongs to exactly one course (NOT NULL, cascade), owns
+its video under `training/modules/{module_id}/...` (a CHECK ties the key to the module id, so it is never in a
+project's prefix) and snapshots its size, duration and resolution; `source_render_output_id` is provenance only
+(`ON DELETE SET NULL`). One access rule decides everything: "not found", "not enrolled", "withdrawn", "course or
+module not published" are a **single** outcome (so one identical 404); an enrolled employee is "locked" until every
+earlier published module is passed, and until Step 3 nobody has passed anything, so only module 1 opens. **Step 3
+must make a course with learner history undeletable** (its assessment tables reference modules with RESTRICT) -
+**archive it instead**. Publishing, the admin routes, enrolments and the employee routes are Pieces 2 and 3 and are
+not built yet. Clerk `email_verified` and invitation-email delivery are still **unverified**.
+
 **Phase 12 has not started and needs the owner's explicit approval.**
 
 ## Commands
@@ -330,7 +343,7 @@ apps/
   api/        FastAPI service (uv, src/edutoon)
     src/edutoon/          api/ (routers, schemas) · services/ · domain/ (pure; deck*.py = the deck engine) ·
                           repositories/ · providers/ · worker/ · db/ · core/
-    alembic/              migration environment + versions/0001..0019
+    alembic/              migration environment + versions/0001..0020
   parser/     PDF/topic parser — not yet initialised
   render/     placeholder - the renderer lives in apps/api/src/edutoon/providers/renderer
 packages/

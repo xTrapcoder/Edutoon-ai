@@ -23,6 +23,16 @@ Not done in Step 1 and still unverified: a real Clerk sign-in, a real Clerk invi
 `email_verified` token claim (the Clerk keys are placeholders). Courses, modules, assessments and
 video publishing are Steps 2 onward and have not been started.
 
+## Step 2 status (started 2026-10-13)
+
+Piece 1 (migration 0020, the access rule, storage keys, the fail-closed pass seam) is built and tested locally;
+publishing, the admin routes, enrolments and employee access follow. Differences from section 2.2 above: a
+module is `published` | `unpublished` (unpublishing deletes its file and keeps its descriptive snapshot as
+history); `published_by` / `published_at` are kept; there is no `draft` module - publishing a render *is*
+creating the module. **Lifecycle once Step 3 exists:** assessment attempts reference modules with `RESTRICT`, so a
+course whose modules have learner history cannot be deleted - it is **archived**. Deleting a course is for
+courses nobody has taken.
+
 ## 0. Pending quality gate (separate from this design — not done)
 
 > **A human must watch the generated sample video and listen to the four voice samples before the

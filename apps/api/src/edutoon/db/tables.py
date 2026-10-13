@@ -357,3 +357,52 @@ render_output_scenes = sa.Table(
     sa.Column("scene_index", sa.Integer, nullable=False),
     sa.Column("chunk_hash", sa.Text, nullable=False),
 )
+
+training_courses = sa.Table(
+    "training_courses",
+    metadata,
+    sa.Column("id", UUID(as_uuid=True), primary_key=True, server_default=sa.FetchedValue()),
+    sa.Column("title", sa.Text, nullable=False),
+    sa.Column("description", sa.Text),
+    sa.Column("status", sa.Text, nullable=False),
+    sa.Column("created_by", UUID(as_uuid=True), nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+)
+
+training_modules = sa.Table(
+    "training_modules",
+    metadata,
+    sa.Column("id", UUID(as_uuid=True), primary_key=True, server_default=sa.FetchedValue()),
+    sa.Column("course_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("position", sa.Integer, nullable=False),
+    sa.Column("title", sa.Text, nullable=False),
+    sa.Column("description", sa.Text),
+    sa.Column("status", sa.Text, nullable=False),
+    sa.Column("source_render_output_id", UUID(as_uuid=True)),
+    sa.Column("video_bucket", sa.Text),
+    sa.Column("video_key", sa.Text),
+    sa.Column("video_byte_size", sa.BigInteger, nullable=False),
+    sa.Column("video_duration_ms", sa.BigInteger, nullable=False),
+    sa.Column("video_width", sa.Integer, nullable=False),
+    sa.Column("video_height", sa.Integer, nullable=False),
+    sa.Column("video_fps", sa.Integer, nullable=False),
+    sa.Column("video_output_hash", sa.Text, nullable=False),
+    sa.Column("published_by", UUID(as_uuid=True), nullable=False),
+    sa.Column("published_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("unpublished_at", sa.DateTime(timezone=True)),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+)
+
+course_enrolments = sa.Table(
+    "course_enrolments",
+    metadata,
+    sa.Column("id", UUID(as_uuid=True), primary_key=True, server_default=sa.FetchedValue()),
+    sa.Column("course_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("user_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("status", sa.Text, nullable=False),
+    sa.Column("assigned_by", UUID(as_uuid=True), nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+)
