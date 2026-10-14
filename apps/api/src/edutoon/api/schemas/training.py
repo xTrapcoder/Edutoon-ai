@@ -22,7 +22,7 @@ from edutoon.domain.training import (
     CourseStatus,
     ModuleStatus,
 )
-from edutoon.repositories.training import CourseRecord, ModuleRecord
+from edutoon.repositories.training import CourseRecord, EnrolmentRecord, ModuleRecord
 
 Title = Annotated[str, Field(min_length=1, max_length=TITLE_MAX_CHARS)]
 Description = Annotated[str, Field(max_length=DESCRIPTION_MAX_CHARS)]
@@ -182,3 +182,53 @@ class ModuleListResponse(BaseModel):
 
 
 CourseStatusFilter = Literal["draft", "published", "archived"]
+
+
+# --- enrolments --------------------------------------------------------------------------
+
+
+EnrolmentStatusFilter = Literal["active", "withdrawn"]
+
+
+class EnrolmentCreateRequest(BaseModel):
+    """Enrol this user in the course. If they were enrolled before and withdrawn, that same
+    enrolment becomes active again."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    user_id: UUID
+
+
+class EnrolmentResponse(BaseModel):
+    id: UUID
+    course_id: UUID
+    course_title: str
+    course_status: CourseStatus
+    user_id: UUID
+    user_email: str
+    user_display_name: str | None
+    status: EnrolmentStatusFilter
+    assigned_by: UUID
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def from_record(cls, enrolment: EnrolmentRecord) -> EnrolmentResponse:
+        return cls(
+            id=enrolment.id,
+            course_id=enrolment.course_id,
+            course_title=enrolment.course_title,
+            course_status=enrolment.course_status,  # type: ignore[arg-type]
+            user_id=enrolment.user_id,
+            user_email=enrolment.user_email,
+            user_display_name=enrolment.user_display_name,
+            status=enrolment.status,  # type: ignore[arg-type]
+            assigned_by=enrolment.assigned_by,
+            created_at=enrolment.created_at,
+            updated_at=enrolment.updated_at,
+        )
+
+
+class EnrolmentListResponse(BaseModel):
+    items: list[EnrolmentResponse]
+    next_cursor: str | None

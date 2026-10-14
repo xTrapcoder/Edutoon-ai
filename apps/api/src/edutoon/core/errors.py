@@ -24,9 +24,13 @@ class AppError(Exception):
     status_code: int = status.HTTP_500_INTERNAL_SERVER_ERROR
     code: str = "internal_error"
 
-    def __init__(self, message: str | None = None) -> None:
+    def __init__(
+        self, message: str | None = None, *, details: dict[str, Any] | None = None
+    ) -> None:
         super().__init__(message or self.code)
         self.message = message or self.code
+        self.details = details
+        """Optional machine-readable facts for the client, sent as ``error.details``."""
 
 
 class UnauthorizedError(AppError):
@@ -52,6 +56,17 @@ class ForbiddenError(AppError):
     code = "forbidden"
 
 
+class ModuleLockedError(ForbiddenError):
+    """An enrolled employee asked for a training module that an earlier module still blocks.
+
+    The one 403 about a *resource* (rule 9 otherwise says 404): it is allowed because the module is
+    already in the caller's own course listing, so nothing is revealed by saying it is locked.
+    ``details`` names the blocking module so the screen can say what to finish first.
+    """
+
+    code = "module_locked"
+
+
 class NotInvitedError(ForbiddenError):
     """A valid identity that no administrator invited. No account is created for it."""
 
@@ -69,6 +84,15 @@ class NotFoundError(AppError):
 
     status_code = status.HTTP_404_NOT_FOUND
     code = "not_found"
+
+
+class UnprocessableError(AppError):
+    """The request is well formed but names something the rules refuse (e.g. enrolling an
+    administrator in a course). A 422, like a body that fails validation, but raised by a
+    service."""
+
+    status_code = status.HTTP_422_UNPROCESSABLE_CONTENT
+    code = "unprocessable"
 
 
 class ConflictError(AppError):
@@ -233,8 +257,13 @@ def raise_conflict_from_integrity_error(exc: IntegrityError) -> NoReturn:
     raise ConflictError(message) from exc
 
 
-def _error_body(code: str, message: str) -> dict[str, dict[str, str]]:
-    return {"error": {"code": code, "message": message}}
+def _error_body(
+    code: str, message: str, details: dict[str, Any] | None = None
+) -> dict[str, dict[str, Any]]:
+    body: dict[str, Any] = {"code": code, "message": message}
+    if details is not None:
+        body["details"] = details
+    return {"error": body}
 
 
 def _validation_error_body(exc: RequestValidationError) -> dict[str, Any]:
@@ -262,7 +291,7 @@ def register_exception_handlers(app: FastAPI) -> None:
     async def _handle_app_error(request: Request, exc: AppError) -> JSONResponse:
         return JSONResponse(
             status_code=exc.status_code,
-            content=_error_body(exc.code, exc.message),
+            content=_error_body(exc.code, exc.message, exc.details),
         )
 
     @app.exception_handler(RequestValidationError)

@@ -27,13 +27,83 @@ video publishing are Steps 2 onward and have not been started.
 
 Piece 1 (migration 0020, the access rule, storage keys, the fail-closed pass seam) is built and tested locally.
 Piece 2 (2026-10-14: administrator course and module routes, publish by snapshot, `Storage.copy_object`) is built
-and tested locally - see `apps/api/README.md`, "Training courses and modules". Enrolments and employee access
-follow (Piece 3). Differences from section 2.2 above: a
+and tested locally - see `apps/api/README.md`, "Training courses, modules and enrolments". Piece 3
+(enrolments and employee access) is below. Differences from section 2.2 above: a
 module is `published` | `unpublished` (unpublishing deletes its file and keeps its descriptive snapshot as
 history); `published_by` / `published_at` are kept; there is no `draft` module - publishing a render *is*
 creating the module. **Lifecycle once Step 3 exists:** assessment attempts reference modules with `RESTRICT`, so a
 course whose modules have learner history cannot be deleted - it is **archived**. Deleting a course is for
 courses nobody has taken.
+
+### Step 2, Piece 3 (2026-10-14): enrolments and employee access
+
+Built and tested locally; no migration (head stays 0020). Full behaviour: `apps/api/README.md`,
+"Enrolments and employee access (Piece 3)".
+
+**Route inventory (6 new routes; policy name from `api/policies.py`).** The five administrator
+capabilities are four routes - re-enrolling a withdrawn user is the enrol `POST` (it reactivates the
+same row), not a separate route.
+
+| Method and path | Policy | Employee gets |
+|---|---|---|
+| `POST /v1/admin/training/courses/{course_id}/enrolments` | `admin_course` | fixed 404 `Course not found.` |
+| `GET  /v1/admin/training/courses/{course_id}/enrolments` | `admin_course` | fixed 404 |
+| `POST /v1/admin/training/courses/{course_id}/enrolments/{user_id}/withdraw` | `admin_course` | fixed 404 |
+| `GET  /v1/admin/training/enrolments?user_id=` | `admin` | 403 (names no resource in its path) |
+| `GET  /v1/training/courses` | `employee` | (administrator: 403) |
+| `GET  /v1/training/modules/{module_id}/video` | `employee_module` | (non-employee: the module 404) |
+
+No assessment, attempt, progress or pass-gate route exists; a test fails if one appears under the
+training namespaces.
+
+**404 versus locked 403 (decision D4 as built).** For an employee asking for a module the rule gives
+three outcomes. *Allowed*: stream it. *Not found*: one identical 404 (status, body and headers
+byte for byte) for "no such module", "not enrolled", "enrolment withdrawn", "course not published",
+"module not published" - and for an administrator calling the employee route - so none of them can be
+told apart, and none is listed. *Locked*: the employee is enrolled, the course and module are
+published, an earlier published module is not passed -> **403 `module_locked`** with
+`details = {blocking_module_id, blocking_module_position, blocking_module_title}`. Locked is the only
+403 about a resource, and it is safe to say because the module is already in the employee's own
+`GET /v1/training/courses` listing with `locked: true` and a `lock` object. A nested collection is as
+resource-dependent as the resource: `GET /courses/{course_id}/modules` answers an employee the course
+404, and the route-policy test looks for the identifier *anywhere* in the path.
+
+**Why `passed_module_ids` still returns the empty set.** Passing is defined by an assessment attempt
+(Step 3) and none exists, so nothing can honestly be called passed. The empty set is the fail-closed
+answer: the first published module of an enrolled employee's course (no predecessor) opens, every later
+one is locked. There is deliberately no bypass, flag or test-only unlock; the tests prove the lock is
+*because of* that seam (a test substitutes the seam, nothing else) and fail visibly when Step 3 replaces
+it.
+
+**Step 3 foreign keys must be `ON DELETE RESTRICT`.** When Step 3 adds attempt, answer, progress or
+assessment tables that reference `training_modules` (or `training_courses`), those foreign keys must
+be `ON DELETE RESTRICT`, never `CASCADE`. Reason: deleting a module must not silently destroy an
+employee's training history, and the 409 "unpublish / archive it instead" responses
+(`COURSE_DELETE_REFUSED`, the module-delete refusal) only exist because the database refuses the
+delete. Precedent: **migration 0018** corrected foreign keys on `claim_citations.source_chunk_id` and
+`script_segment_claims.claim_verification_id` from `RESTRICT` to `CASCADE` because `RESTRICT` made
+deleting any project with claims fail; the lesson is that a foreign key's delete rule is a product
+decision about whether history may disappear, and must be chosen deliberately per relationship - for
+learner history, it must be `RESTRICT`. (Nothing in the project-delete chain may be `RESTRICT` -
+finding F9 - and the training tables are outside that chain: a module's source render link is
+`SET NULL`, and a project's deletion never reaches a module.) The tables are not created in Piece 3.
+
+**Audit-log isolation (test strategy).** `audit_logs` is append-only (a trigger rejects deleting a
+row), so a test that really commits writes rows nothing can remove; QA and mutation runs had grown the
+development table from 301 to 1,336 rows. Decision: **a scratch database**, not QA markers. Tests that
+commit run on a database created for the test session, migrated by `alembic upgrade head` and dropped
+afterwards (`conftest.committed_database_url`); the ordinary tests roll back. A marker approach would
+have left permanent QA rows in a table whose reports must be trustworthy. Existing rows were not
+touched. Limits: only tests that use the fixture are protected (the committed-test `world` fixture
+asserts it is not the development database), and Redis / MinIO remain shared, so those tests clean up
+exactly what they made.
+
+**Known limitation, deferred: a published render may not be current.** Publishing does not check that
+the render matches the latest narration and storyboard (the workspace shows staleness, publishing does
+not stop it). Snapshotting still guarantees the published video cannot change afterwards, and the
+administrator's preview plays exactly the snapshot employees will receive. The improvement is to show
+the script and storyboard version in the publish response so a stale render can be recognised. It does
+not block Piece 3.
 
 ## 0. Pending quality gate (separate from this design — not done)
 

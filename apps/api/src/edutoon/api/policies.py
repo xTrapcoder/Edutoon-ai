@@ -10,7 +10,9 @@ router inherits it, or on the route itself:
 * :func:`require_admin_for_course` / :func:`require_admin_for_module` - the same for a route that
   names a training course or module (anyone else: the fixed 404 an administrator gets for one that
   does not exist);
-* :func:`require_employee` - an active employee;
+* :func:`require_employee` - an active employee (anyone else: 403);
+* :func:`require_employee_for_module` - the same for a route that names a training module (anyone
+  else: the fixed 404 an employee gets for a module they may not open);
 * :func:`require_authenticated` - any active user, whatever the role;
 * :func:`public_route` - nobody is authenticated (``/health`` only).
 
@@ -96,6 +98,21 @@ async def require_employee(user: Annotated[UserRecord, Depends(get_current_user)
     return user
 
 
+async def require_employee_for_module(
+    module_id: UUID, user: Annotated[UserRecord, Depends(get_current_user)]
+) -> UserRecord:
+    """Employees only - and to anyone else the training module simply does not exist.
+
+    For the employee routes that name a module. A non-employee gets the very 404 an employee gets
+    for a module they may not open (no such module, not enrolled, withdrawn, course or module not
+    published): the fixed ``MODULE_NOT_FOUND``. Whether the caller *may* open this module is then
+    decided by ``services.training_access.require_module_access`` - never here.
+    """
+    if user.role != ROLE_EMPLOYEE:
+        raise NotFoundError(MODULE_NOT_FOUND)
+    return user
+
+
 POLICY_NAMES: Final = {
     public_route: "public",
     require_authenticated: "authenticated",
@@ -104,5 +121,6 @@ POLICY_NAMES: Final = {
     require_admin_for_course: "admin_course",
     require_admin_for_module: "admin_module",
     require_employee: "employee",
+    require_employee_for_module: "employee_module",
 }
 """Every policy dependency and its short name; the route-policy test reads this."""

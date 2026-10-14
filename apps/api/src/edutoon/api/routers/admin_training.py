@@ -19,7 +19,6 @@ from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, Query, Request, Response, status
-from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from edutoon.api.dependencies import IdempotencyKey, RedisDep, StorageDep
@@ -34,16 +33,22 @@ from edutoon.api.schemas.training import (
     CourseResponse,
     CourseStatusFilter,
     CourseUpdateRequest,
+    EnrolmentCreateRequest,
+    EnrolmentListResponse,
+    EnrolmentResponse,
+    EnrolmentStatusFilter,
     ModuleListResponse,
     ModuleOrderRequest,
     ModulePublishRequest,
     ModuleRepublishRequest,
     ModuleResponse,
 )
+from edutoon.api.video_response import serve_module_video
 from edutoon.core.pagination import DEFAULT_PAGE_SIZE
 from edutoon.db.session import get_session
 from edutoon.services import idempotency as idempotency_service
 from edutoon.services import training as training_service
+from edutoon.services import training_enrolments as enrolment_service
 from edutoon.services.training import RenderSource
 from edutoon.services.users import UserRecord
 
@@ -306,6 +311,110 @@ async def reorder_modules(
     return ModuleListResponse.model_validate(response_body)
 
 
+# --- enrolments --------------------------------------------------------------------------------
+
+
+@router.post("/courses/{course_id}/enrolments", status_code=status.HTTP_201_CREATED)
+async def enrol_user(
+    request: Request,
+    response: Response,
+    course_id: UUID,
+    body: EnrolmentCreateRequest,
+    admin: CourseAdmin,
+    session: Session,
+    redis: RedisDep,
+    idempotency_key: IdempotencyKey,
+) -> EnrolmentResponse:
+    """Enrol an employee: 201 for a new enrolment, 200 when their withdrawn enrolment is made
+    active again (the same row), 409 if they are already enrolled, 422 if the account is not an
+    employee's."""
+
+    async def _execute() -> tuple[int, Any]:
+        outcome = await enrolment_service.enrol_user(
+            session, actor_id=admin.id, course_id=course_id, user_id=body.user_id
+        )
+        code = status.HTTP_201_CREATED if outcome.action == "create" else status.HTTP_200_OK
+        return code, EnrolmentResponse.from_record(outcome.enrolment).model_dump(mode="json")
+
+    code, response_body = await idempotency_service.run_with_idempotency(
+        redis,
+        owner_id=admin.id,
+        method="POST",
+        path=request.url.path,
+        idempotency_key=idempotency_key,
+        handler=_execute,
+        commit=session.commit,
+    )
+    response.status_code = code
+    return EnrolmentResponse.model_validate(response_body)
+
+
+@router.get("/courses/{course_id}/enrolments")
+async def list_course_enrolments(
+    course_id: UUID,
+    admin: CourseAdmin,
+    session: Session,
+    enrolment_status: Annotated[EnrolmentStatusFilter | None, Query(alias="status")] = None,
+    limit: Annotated[int, Query()] = DEFAULT_PAGE_SIZE,
+    cursor: Annotated[str | None, Query()] = None,
+) -> EnrolmentListResponse:
+    page = await enrolment_service.list_course_enrolments(
+        session, course_id=course_id, status=enrolment_status, limit=limit, cursor=cursor
+    )
+    return EnrolmentListResponse(
+        items=[EnrolmentResponse.from_record(e) for e in page.items], next_cursor=page.next_cursor
+    )
+
+
+@router.post("/courses/{course_id}/enrolments/{user_id}/withdraw")
+async def withdraw_enrolment(
+    request: Request,
+    course_id: UUID,
+    user_id: UUID,
+    admin: CourseAdmin,
+    session: Session,
+    redis: RedisDep,
+    idempotency_key: IdempotencyKey,
+) -> EnrolmentResponse:
+    """End an employee's access to the course. The enrolment row is kept (status ``withdrawn``)."""
+
+    async def _execute() -> tuple[int, Any]:
+        enrolment = await enrolment_service.withdraw_user(
+            session, actor_id=admin.id, course_id=course_id, user_id=user_id
+        )
+        return status.HTTP_200_OK, EnrolmentResponse.from_record(enrolment).model_dump(mode="json")
+
+    _, response_body = await idempotency_service.run_with_idempotency(
+        redis,
+        owner_id=admin.id,
+        method="POST",
+        path=request.url.path,
+        idempotency_key=idempotency_key,
+        handler=_execute,
+        commit=session.commit,
+    )
+    return EnrolmentResponse.model_validate(response_body)
+
+
+@router.get("/enrolments")
+async def list_user_enrolments(
+    admin: Admin,
+    session: Session,
+    user_id: Annotated[UUID, Query()],
+    enrolment_status: Annotated[EnrolmentStatusFilter | None, Query(alias="status")] = None,
+    limit: Annotated[int, Query()] = DEFAULT_PAGE_SIZE,
+    cursor: Annotated[str | None, Query()] = None,
+) -> EnrolmentListResponse:
+    """One user's enrolments across every course. ``user_id`` is a query parameter, so this is a
+    collection route: an employee's 403 cannot depend on whether that user exists."""
+    page = await enrolment_service.list_user_enrolments(
+        session, user_id=user_id, status=enrolment_status, limit=limit, cursor=cursor
+    )
+    return EnrolmentListResponse(
+        items=[EnrolmentResponse.from_record(e) for e in page.items], next_cursor=page.next_cursor
+    )
+
+
 # --- one module ----------------------------------------------------------------------------
 
 
@@ -425,25 +534,8 @@ async def stream_module_video(
     range: Annotated[str | None, Header()] = None,  # noqa: A002 - the HTTP header's real name
 ) -> Response:
     """The administrator's preview of a published module's stored video, with HTTP ``Range``
-    support. It plays the module's own snapshot, through the same service function the employee
-    route will use."""
-    opened = await training_service.open_module_video(
-        session, storage, module_id=module_id, range_header=range
-    )
-    if opened.stream is None:
-        return Response(
-            status_code=status.HTTP_416_RANGE_NOT_SATISFIABLE,
-            headers={"Content-Range": f"bytes */{opened.unsatisfiable_size}"},
-        )
-    stream = opened.stream
-    headers = {"Accept-Ranges": "bytes", "Content-Length": str(stream.content_length)}
-    if stream.content_range:
-        headers["Content-Range"] = stream.content_range
-    if download:
-        headers["Content-Disposition"] = f'attachment; filename="module-{module_id}.mp4"'
-    return StreamingResponse(
-        stream.iter_chunks(),
-        status_code=stream.status_code,
-        media_type="video/mp4",
-        headers=headers,
+    support. It plays the module's own snapshot through ``serve_module_video`` - the one function
+    the employee route (``routers/training.py``) serves it with too."""
+    return await serve_module_video(
+        session, storage, module_id=module_id, range_header=range, download=download
     )

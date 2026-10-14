@@ -16,12 +16,14 @@ from edutoon.api.routers.script_audio import router as script_audio_router
 from edutoon.api.routers.scripts import router as scripts_router
 from edutoon.api.routers.storyboard import router as storyboard_router
 from edutoon.api.routers.topics import router as topics_router
+from edutoon.api.routers.training import router as training_router
 from edutoon.api.routers.uploaded_sources import router as uploaded_sources_router
 
 v1_router = APIRouter(prefix="/v1")
 v1_router.include_router(auth_router)
 v1_router.include_router(admin_users_router)
 v1_router.include_router(admin_training_router)
+v1_router.include_router(training_router)
 v1_router.include_router(projects_router)
 v1_router.include_router(uploaded_sources_router)
 v1_router.include_router(topics_router)

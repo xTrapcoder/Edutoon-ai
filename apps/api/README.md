@@ -96,12 +96,13 @@ an unknown Clerk identity as an administrator. It exists only in tests; producti
 role. A test of roles, invitations or suspension carries `real_auth` and must give every user an
 explicit role. The suspended-account check is never shimmed.
 
-## Training courses and modules (administrator)
+## Training courses, modules and enrolments
 
-Step 2, Piece 2 of the training platform (`docs/training-platform-design.md`; schema from migration
-**0020**). Everything is under `/v1/admin/training`, administrators only; employee routes and
-enrolment endpoints are Piece 3 and do not exist yet. Every mutating route needs an
-`Idempotency-Key`, request bodies reject unknown fields (422), durations are integer milliseconds.
+Step 2 of the training platform (`docs/training-platform-design.md`; schema from migration
+**0020**). Pieces 2 and 3 (below): the administrator's routes are under `/v1/admin/training`; the
+employee's two routes are under `/v1/training` ("Enrolments and employee access (Piece 3)"). Every
+mutating route needs an `Idempotency-Key`, request bodies reject unknown fields (422), durations are
+integer milliseconds.
 
 | Route | Does |
 |---|---|
@@ -109,7 +110,7 @@ enrolment endpoints are Piece 3 and do not exist yet. Every mutating route needs
 | `GET` / `PATCH /courses/{course_id}` | read / edit title and description (archived: 409) |
 | `POST /courses/{course_id}/publish` | draft -> published; needs at least one published module (else 409) |
 | `POST /courses/{course_id}/archive` | hide and freeze a course, keeping everything |
-| `DELETE /courses/{course_id}` | 204; **409** once anyone was enrolled (any status) or, from Step 3, has other learner history (a RESTRICT foreign key): archive instead |
+| `DELETE /courses/{course_id}` | 204; **409** once anyone was enrolled (any status, a withdrawn enrolment included) or, from Step 3, has other learner history (a RESTRICT foreign key): the message says to **archive it instead** |
 | `GET /courses/{course_id}/modules` | every module, published and unpublished, in order |
 | `POST /courses/{course_id}/modules` | **publish a render as a new module**, last in order (below) |
 | `PUT /courses/{course_id}/modules/order` | `{module_ids}`: every module once, in the new order |
@@ -153,8 +154,82 @@ bytes an administrator gets for an id that does not exist, with no id echoed. Th
 (`GET`/`POST /courses`) answer an employee 403. Modules are addressed by their own id so a route never
 names two resources. `tests/test_route_policies.py` pins every training route's policy and compares
 the bytes. The tests that need a real `COMMIT` (re-render, source deletion, rollback, clean-up
-failure, reorder, constraint) are `tests/test_training_committed.py`; they create `qa-training-*`
-users and projects and remove exactly those (the append-only `audit_logs` rows they cause remain).
+failure, reorder, constraint, and the enrolment races) are `tests/test_training_committed.py` and
+`tests/test_training_enrolments_committed.py`; they create `qa-training-*` users and projects and
+remove exactly those, and they run on a **scratch database** (below).
+
+**A nested collection is as resource-dependent as the resource.** `GET /courses/{course_id}/modules`
+and `GET /courses/{course_id}/enrolments` do not end in an identifier, but what they answer depends on
+whether that course exists, so they carry `require_admin_for_course` and an employee gets the same
+fixed `Course not found.` 404 for a real course and a made-up one. The route-policy test decides by
+the presence of `{course_id}` / `{module_id}` / `{project_id}` *anywhere* in the path, and pins every
+training route by name.
+
+### Enrolments and employee access (Piece 3)
+
+Administrator routes (all under `/v1/admin/training`; policy in brackets - `admin_course` = an
+employee gets the fixed course 404, `admin` = a collection, an employee gets 403):
+
+| Route | Does |
+|---|---|
+| `POST /courses/{course_id}/enrolments` `{user_id}` (`admin_course`) | **enrol, or re-enrol**: 201 new, **200 when the user's withdrawn enrolment is made active again** (same row), 409 already enrolled / course archived, 422 not an employee, 404 unknown user or course |
+| `GET /courses/{course_id}/enrolments` (`admin_course`) | a course's enrolments (`?status=active\|withdrawn`, paginated) |
+| `POST /courses/{course_id}/enrolments/{user_id}/withdraw` (`admin_course`) | 200, the row is kept with status `withdrawn`; 409 already withdrawn; 404 no such enrolment |
+| `GET /enrolments?user_id=` (`admin`) | one user's enrolments across courses; `user_id` is a **query** parameter so the route names no resource in its path |
+
+The five administrator capabilities (enrol, list a course's, list a user's, withdraw, re-enrol) are four
+routes: re-enrolling is enrolling someone who has a withdrawn row, so it is the same `POST` rather than a
+second route with the same effect.
+
+Employee routes (`/v1/training`, read-only, no `Idempotency-Key`):
+
+| Route | Does |
+|---|---|
+| `GET /courses` (`employee`; an administrator gets 403) | the caller's own published, actively-enrolled courses, each with its **published** modules and for every module `locked` plus `lock` (`reason`, `blocking_module_id`, `blocking_module_position`, `blocking_module_title`). No user id is accepted: the caller is the token |
+| `GET /modules/{module_id}/video` (`employee_module`) | streams the module's **own snapshot** with `Range`, through `api.video_response.serve_module_video` |
+
+**Enrolment rules.** Only a user whose `role` is `employee` can be enrolled (422 otherwise, checked in
+the service - a CHECK cannot see another table - and nothing is written). One row per `(course, user)`
+for ever: withdrawing sets `status = 'withdrawn'` in place, re-enrolling sets it back to `active` in
+place (same id, same `created_at`, `assigned_by` becomes the re-enrolling administrator; the audit
+trail keeps who did what: `training.enrolment.created` / `.withdrawn` / `.reactivated`). The row is
+created by `INSERT ... ON CONFLICT DO NOTHING` on `uq_course_enrolments_course_id_user_id`, so the
+database decides a race, never a prior look: of N simultaneous enrolments of one person exactly one is
+201 and the rest are 409 (`tests/test_training_enrolments_committed.py`, real concurrent
+transactions). Enrolling holds a shared lock on the course row, so it cannot interleave with an archive
+or a delete of the course. There is no deferred constraint in enrolment, and the unique conflict is
+absorbed by `ON CONFLICT`, so no `IntegrityError` can surface at the commit that the idempotency
+wrapper makes after the handler; a commit that fails for any other reason releases the key and writes
+nothing (tested). An enrolment that is already true is a **409** under a *different* key (a replay of
+the same key returns the first result).
+
+**404 versus locked 403.** Five causes give one identical 404 (status, body bytes and headers; `Module
+not found.`), tested byte for byte: no such module, not enrolled, enrolment withdrawn, course not
+published (draft or archived), module not published - and an administrator calling the employee route.
+None of them is listed in `GET /courses`. The one 403 about a resource is **`module_locked`**: the
+employee *is* enrolled, the course and module are published, and an earlier published module has not
+been passed. It is allowed to say so because the module is already in their own listing; the body is
+`{"error": {"code": "module_locked", "message": ..., "details": {"blocking_module_id",
+"blocking_module_position", "blocking_module_title"}}}`. Access is decided by one pure function
+(`domain.training_access.decide_module_access`) applied by `services.training_access`, for both the
+listing and the stream, so they cannot disagree. **`passed_module_ids` still returns the empty set**
+(no assessment exists), so an enrolled employee can open module 1 and every later module is locked;
+`tests/test_employee_training_api.py` pins that and fails visibly when Step 3 changes it.
+
+**One serving function.** The preview and the employee stream both end in
+`api.video_response.serve_module_video` (snapshot lookup, `Range` parsing, 206 / 416, `Accept-Ranges`,
+`Content-Range`, the 404 for a module with nothing to play). The Range suite is the preview's, run
+once; a structural test proves neither route serves by itself. Revocation is checked per request: a
+withdrawal stops the next request, a download already in flight finishes.
+
+**Test isolation: the scratch database.** `audit_logs` is append-only by design (a trigger rejects
+`DELETE`), so any test that really commits writes audit rows that nothing can remove. Those tests grew
+the development database's `audit_logs` from 301 to 1,336 rows. They now use
+`conftest.committed_database_url`: a database created for the test session, migrated by the real
+`alembic upgrade head`, and dropped at its end. The ordinary `db_session` tests roll back and write
+nothing. Limits: it protects only tests that use the fixture (`world` asserts it is not the
+development database); the Redis and MinIO instances are still shared, so those tests keep to their own
+keys and remove exactly what they made; existing audit rows were left alone.
 
 ## Project generation settings
 

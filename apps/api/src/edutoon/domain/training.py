@@ -16,6 +16,8 @@ from collections.abc import Sequence
 from typing import Final, Literal, get_args
 from uuid import UUID
 
+from edutoon.domain.roles import ROLE_EMPLOYEE
+
 CourseStatus = Literal["draft", "published", "archived"]
 """Only a ``published`` course is visible to employees. A course that has learner history is
 *archived*, never deleted (Step 3's assessment tables reference its modules with RESTRICT)."""
@@ -51,6 +53,21 @@ Deliberately free of the requested id: an administrator asking for a course that
 a non-administrator asking for one that does get **byte-identical** 404 bodies, so nothing about
 which courses and modules exist leaks through the wording."""
 
+COURSE_DELETE_REFUSED: Final = (
+    "This course cannot be deleted because it has enrolment history (withdrawn enrolments are "
+    "kept as history too). Archive it instead: archiving hides the course from employees and "
+    "keeps every module, enrolment and record."
+)
+"""The 409 for deleting a course that anyone has ever been enrolled in, or (from Step 3) that has
+learner history. It says what to do instead, which is the point of the refusal."""
+
+ENROLMENT_NOT_FOUND: Final = "Enrolment not found."
+USER_NOT_FOUND: Final = "User not found."
+
+ENROLLABLE_ROLE: Final = ROLE_EMPLOYEE
+"""Only an employee takes a course. The database cannot check a column of another table, so the
+service enforces this before writing anything (an administrator is refused with a 422)."""
+
 TITLE_MAX_CHARS: Final = 200
 DESCRIPTION_MAX_CHARS: Final = 4000
 
@@ -63,3 +80,37 @@ def reorder_mismatch(current_ids: Sequence[UUID], requested_ids: Sequence[UUID])
     stranger in them, so it is refused whole.
     """
     return len(requested_ids) != len(current_ids) or set(requested_ids) != set(current_ids)
+
+
+EnrolAction = Literal["create", "reactivate", "already_active"]
+WithdrawAction = Literal["withdraw", "already_withdrawn", "not_found"]
+
+
+def can_enrol(role: str) -> bool:
+    """Whether an account with this role may be enrolled in a course."""
+    return role == ENROLLABLE_ROLE
+
+
+def decide_enrolment(existing_status: str | None) -> EnrolAction:
+    """What enrolling a user must do, given the status of the enrolment row they already have.
+
+    * no row -> ``create`` one;
+    * a ``withdrawn`` row -> ``reactivate`` that same row (never a second row: the pair
+      ``(course, user)`` is unique, and the row is the learner's history);
+    * an ``active`` row -> ``already_active`` (the service answers 409);
+    * any status this code does not know -> ``already_active``, i.e. refuse and change nothing.
+    """
+    if existing_status is None:
+        return "create"
+    if existing_status == ENROLMENT_WITHDRAWN:
+        return "reactivate"
+    return "already_active"
+
+
+def decide_withdrawal(existing_status: str | None) -> WithdrawAction:
+    """What withdrawing a user must do, given the status of the enrolment row they have."""
+    if existing_status is None:
+        return "not_found"
+    if existing_status == ENROLMENT_ACTIVE:
+        return "withdraw"
+    return "already_withdrawn"

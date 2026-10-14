@@ -4,8 +4,13 @@ The other API tests run inside a rolled-back transaction, which cannot show thre
 piece depends on: that a **deferred** unique constraint holds at a real ``COMMIT``, that a file is
 removed only **after** the rows are visible to another connection, and that a failed commit leaves
 the file in place. So these tests use their own engine, create their own QA user and project
-(``qa-training-*@example.test``), and :func:`purge_qa` removes exactly what they made. Nothing that
-was already in the development database is read for its content, changed or deleted.
+(``qa-training-*@example.test``), and :func:`purge_qa` removes exactly what they made.
+
+**They run on a scratch database, never the development one** (``conftest.committed_database_url``:
+created and migrated for the test session, dropped at its end). What they commit includes
+``audit_logs`` rows, which are append-only and cannot be removed afterwards; on the development
+database that grew the table from 301 to 1,336 rows. Nothing in the development database is read,
+changed or deleted, and the stored videos they create are removed by :func:`purge_qa`.
 
 Source videos are small stand-in objects, except where the test is about a *re-render*
 (``test_a_rerender_of_the_source_does_not_touch_the_published_module``): that one drives the real
@@ -23,6 +28,7 @@ from uuid import UUID, uuid4
 import httpx
 import pytest
 from sqlalchemy import event, text
+from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -188,9 +194,14 @@ async def _make_person(
 
 
 @pytest.fixture
-async def world(mint_token) -> AsyncIterator[World]:
+async def world(mint_token, committed_database_url) -> AsyncIterator[World]:
     settings = get_settings()
-    engine = create_async_engine(settings.DATABASE_DIRECT_URL)
+    # These tests commit, and what they commit includes append-only audit rows, so they run on a
+    # database of their own (conftest.committed_database_url) - never on the development one.
+    assert make_url(committed_database_url).database != make_url(
+        settings.DATABASE_DIRECT_URL
+    ).database, "committed tests must not run against the development database"
+    engine = create_async_engine(committed_database_url)
     sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
     registry = QaRegistry()
     real_storage = get_storage_client(
@@ -320,16 +331,18 @@ async def test_a_publish_whose_commit_fails_removes_the_copy_it_made(world):
     async with world.client(raise_app_exceptions=False) as client:
         await world.fake_render()
         course = await world.make_course(client)
-        before = await list_keys(world.storage, BUCKET, "training/modules/")
 
         world.fail_commit = True
         response = await world.publish(client, course)
         world.fail_commit = False
 
     assert response.status_code == 500
-    assert await list_keys(world.storage, BUCKET, "training/modules/") == before
+    # Scoped to what this request made: the one copy it wrote is gone (a listing of the whole
+    # ``training/modules/`` prefix would also see anything else running against the bucket).
+    [copied_key] = world.spy.copies
+    assert not await object_exists(world.storage, BUCKET, copied_key)
     assert await world.positions(course) == []
-    assert len(world.spy.deletions) == 1  # exactly the one new copy
+    assert [key for key, _ in world.spy.deletions] == [copied_key]  # exactly the one new copy
 
 
 async def test_a_republish_whose_commit_fails_keeps_the_old_file_and_removes_the_new_copy(world):
@@ -738,7 +751,7 @@ async def test_a_duplicate_publish_that_gets_past_the_service_check_is_still_a_4
         await world.fake_render()
         course = await world.make_course(client)
         first = (await world.publish(client, course)).json()
-        before = await list_keys(world.storage, BUCKET, "training/modules/")
+        copies_before = len(world.spy.copies)
 
         async def no_precheck(*args: Any, **kwargs: Any) -> None:
             return None
@@ -748,7 +761,9 @@ async def test_a_duplicate_publish_that_gets_past_the_service_check_is_still_a_4
 
     assert second.status_code == 409
     assert "already published in this course" in second.json()["error"]["message"]
-    assert await list_keys(world.storage, BUCKET, "training/modules/") == before
+    # The database caught it after the copy was made, and the extra copy was removed again.
+    [extra_copy] = world.spy.copies[copies_before:]
+    assert not await object_exists(world.storage, BUCKET, extra_copy)
     assert [m for m, _ in await world.positions(course)] == [first["id"]]
 
 
@@ -770,7 +785,6 @@ async def test_a_copy_that_comes_out_the_wrong_size_is_refused_and_removed(world
     async with world.client() as client:
         await world.fake_render()
         course = await world.make_course(client)
-        before = await list_keys(world.storage, BUCKET, "training/modules/")
 
         world.spy.truncate_copies = True
         response = await world.publish(client, course)
@@ -778,5 +792,6 @@ async def test_a_copy_that_comes_out_the_wrong_size_is_refused_and_removed(world
 
     assert response.status_code == 409
     assert "could not be copied completely" in response.json()["error"]["message"]
-    assert await list_keys(world.storage, BUCKET, "training/modules/") == before
+    [short_copy] = world.spy.copies  # this request's own copy, removed because it came out short
+    assert not await object_exists(world.storage, BUCKET, short_copy)
     assert await world.positions(course) == []

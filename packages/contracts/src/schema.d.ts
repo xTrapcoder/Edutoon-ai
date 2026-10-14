@@ -213,6 +213,70 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/admin/training/courses/{course_id}/enrolments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Course Enrolments */
+        get: operations["list_course_enrolments_v1_admin_training_courses__course_id__enrolments_get"];
+        put?: never;
+        /**
+         * Enrol User
+         * @description Enrol an employee: 201 for a new enrolment, 200 when their withdrawn enrolment is made
+         *     active again (the same row), 409 if they are already enrolled, 422 if the account is not an
+         *     employee's.
+         */
+        post: operations["enrol_user_v1_admin_training_courses__course_id__enrolments_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/training/courses/{course_id}/enrolments/{user_id}/withdraw": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Withdraw Enrolment
+         * @description End an employee's access to the course. The enrolment row is kept (status ``withdrawn``).
+         */
+        post: operations["withdraw_enrolment_v1_admin_training_courses__course_id__enrolments__user_id__withdraw_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/training/enrolments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List User Enrolments
+         * @description One user's enrolments across every course. ``user_id`` is a query parameter, so this is a
+         *     collection route: an employee's 403 cannot depend on whether that user exists.
+         */
+        get: operations["list_user_enrolments_v1_admin_training_enrolments_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/admin/training/modules/{module_id}": {
         parameters: {
             query?: never;
@@ -275,10 +339,44 @@ export interface paths {
         /**
          * Stream Module Video
          * @description The administrator's preview of a published module's stored video, with HTTP ``Range``
-         *     support. It plays the module's own snapshot, through the same service function the employee
-         *     route will use.
+         *     support. It plays the module's own snapshot through ``serve_module_video`` - the one function
+         *     the employee route (``routers/training.py``) serves it with too.
          */
         get: operations["stream_module_video_v1_admin_training_modules__module_id__video_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/training/courses": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List My Courses */
+        get: operations["list_my_courses_v1_training_courses_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/training/modules/{module_id}/video": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Stream Module Video */
+        get: operations["stream_module_video_v1_training_modules__module_id__video_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -889,6 +987,74 @@ export interface components {
             /** Description */
             description?: string | null;
         };
+        /**
+         * EnrolmentCreateRequest
+         * @description Enrol this user in the course. If they were enrolled before and withdrawn, that same
+         *     enrolment becomes active again.
+         */
+        EnrolmentCreateRequest: {
+            /**
+             * User Id
+             * Format: uuid
+             */
+            user_id: string;
+        };
+        /** EnrolmentListResponse */
+        EnrolmentListResponse: {
+            /** Items */
+            items: components["schemas"]["EnrolmentResponse"][];
+            /** Next Cursor */
+            next_cursor: string | null;
+        };
+        /** EnrolmentResponse */
+        EnrolmentResponse: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Course Id
+             * Format: uuid
+             */
+            course_id: string;
+            /** Course Title */
+            course_title: string;
+            /**
+             * Course Status
+             * @enum {string}
+             */
+            course_status: "draft" | "published" | "archived";
+            /**
+             * User Id
+             * Format: uuid
+             */
+            user_id: string;
+            /** User Email */
+            user_email: string;
+            /** User Display Name */
+            user_display_name: string | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "active" | "withdrawn";
+            /**
+             * Assigned By
+             * Format: uuid
+             */
+            assigned_by: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -1079,6 +1245,23 @@ export interface components {
             /** Items */
             items: components["schemas"]["ModuleResponse"][];
         };
+        /** ModuleLockResponse */
+        ModuleLockResponse: {
+            /**
+             * Reason
+             * @constant
+             */
+            reason: "earlier_module_not_passed";
+            /**
+             * Blocking Module Id
+             * Format: uuid
+             */
+            blocking_module_id: string;
+            /** Blocking Module Position */
+            blocking_module_position: number;
+            /** Blocking Module Title */
+            blocking_module_title: string;
+        };
         /**
          * ModuleOrderRequest
          * @description Every module of the course, once, in the new order.
@@ -1202,6 +1385,48 @@ export interface components {
              * Format: date-time
              */
             updated_at: string;
+        };
+        /** MyCourseListResponse */
+        MyCourseListResponse: {
+            /** Items */
+            items: components["schemas"]["MyCourseResponse"][];
+        };
+        /** MyCourseResponse */
+        MyCourseResponse: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Title */
+            title: string;
+            /** Description */
+            description: string | null;
+            /** Modules */
+            modules: components["schemas"]["MyModuleResponse"][];
+        };
+        /** MyModuleResponse */
+        MyModuleResponse: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Position */
+            position: number;
+            /** Title */
+            title: string;
+            /** Description */
+            description: string | null;
+            /** Duration Ms */
+            duration_ms: number;
+            /** Width */
+            width: number;
+            /** Height */
+            height: number;
+            /** Locked */
+            locked: boolean;
+            lock: components["schemas"]["ModuleLockResponse"] | null;
         };
         /** ProjectCreateRequest */
         ProjectCreateRequest: {
@@ -2647,6 +2872,152 @@ export interface operations {
             };
         };
     };
+    list_course_enrolments_v1_admin_training_courses__course_id__enrolments_get: {
+        parameters: {
+            query?: {
+                status?: ("active" | "withdrawn") | null;
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                course_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EnrolmentListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    enrol_user_v1_admin_training_courses__course_id__enrolments_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "idempotency-key": string;
+                authorization?: string | null;
+            };
+            path: {
+                course_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EnrolmentCreateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EnrolmentResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    withdraw_enrolment_v1_admin_training_courses__course_id__enrolments__user_id__withdraw_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "idempotency-key": string;
+                authorization?: string | null;
+            };
+            path: {
+                course_id: string;
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EnrolmentResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_user_enrolments_v1_admin_training_enrolments_get: {
+        parameters: {
+            query: {
+                user_id: string;
+                status?: ("active" | "withdrawn") | null;
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EnrolmentListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_module_v1_admin_training_modules__module_id__get: {
         parameters: {
             query?: never;
@@ -2808,6 +3179,85 @@ export interface operations {
                 content: {
                     "application/json": unknown;
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_my_courses_v1_training_courses_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MyCourseListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    stream_module_video_v1_training_modules__module_id__video_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                range?: string | null;
+                authorization?: string | null;
+            };
+            path: {
+                module_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description The module is locked: an earlier module has not been completed. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such module, or it is not available to this employee. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {

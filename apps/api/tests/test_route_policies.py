@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from uuid import uuid4
 
 import pytest
 from fastapi import APIRouter, Depends, FastAPI
@@ -29,12 +30,25 @@ pytestmark = pytest.mark.real_auth
 # Starlette's own documentation routes (not APIRoute); nothing else may be served outside APIRoute.
 FRAMEWORK_PATHS = {"/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc"}
 
-# Routes whose policy is not "admin". Everything else must be admin - until a later step adds the
-# employee area, at which point its routes are added here deliberately, in the same change.
+# Routes whose policy is not in the admin family. Everything else must be in it - and every route
+# of the employee area is listed here by name, deliberately, in the change that adds it.
 EXPECTED_NON_ADMIN = {
     ("GET", "/health"): "public",
     ("GET", "/v1/auth/me"): "authenticated",
+    ("GET", "/v1/training/courses"): "employee",
+    ("GET", "/v1/training/modules/{module_id}/video"): "employee_module",
 }
+
+# Which policy a route that names a resource must carry, whatever the resource's *position* in the
+# path. A nested collection such as ``/courses/{course_id}/modules`` does not end in an identifier,
+# yet its answer depends on whether that course exists, so it must answer an employee with the same
+# 404 as the course route itself - never a 403 that would tell them the route is real but the
+# course is not theirs. Order matters: the first parameter present wins.
+RESOURCE_POLICY_BY_PATH_PARAMETER = (
+    ("{project_id}", "admin_project"),
+    ("{course_id}", "admin_course"),
+    ("{module_id}", "admin_module"),
+)
 
 
 @dataclass(frozen=True)
@@ -168,14 +182,11 @@ def test_a_route_mounted_outside_apiroute_is_flagged():
 def _expected_policy(method: str, path: str) -> str:
     if (method, path) in EXPECTED_NON_ADMIN:
         return EXPECTED_NON_ADMIN[(method, path)]
-    # A route that names a project, course or module answers a non-administrator 404; every
-    # other admin route 403.
-    if "{project_id}" in path:
-        return "admin_project"
-    if "{course_id}" in path:
-        return "admin_course"
-    if "{module_id}" in path:
-        return "admin_module"
+    # A route that names a project, course or module *anywhere in its path* answers a
+    # non-administrator 404; every other admin route 403.
+    for parameter, policy in RESOURCE_POLICY_BY_PATH_PARAMETER:
+        if parameter in path:
+            return policy
     return "admin"
 
 
@@ -215,8 +226,15 @@ def _concrete(path: str, project_id: str = NIL_ID) -> str:
     return re.sub(r"\{[^}]+\}", NIL_ID, path.replace("{project_id}", project_id))
 
 
-async def _user_count(db_session) -> int:
-    return (await db_session.execute(text("SELECT count(*) FROM users"))).scalar_one()
+async def _users_with_email(db_session, email: str) -> int:
+    """Accounts with this one address - scoped to the test's own identity, so users that other
+    tests or the running application hold in the shared database cannot disturb the assertion."""
+    return (
+        await db_session.execute(
+            text("SELECT count(*) FROM users WHERE lower(email) = lower(:email)"),
+            {"email": email},
+        )
+    ).scalar_one()
 
 
 ADMIN_FAMILY = {"admin", "admin_project", "admin_course", "admin_module"}
@@ -239,8 +257,9 @@ async def test_every_admin_route_refuses_everyone_who_is_not_an_active_administr
     (they are refused before any role or project is looked at)."""
     employee = await make_person(role="employee")
     suspended_admin = await make_person(role="admin", status="suspended")
-    uninvited = {"Authorization": f"Bearer {mint_token()}"}
-    users_before = await _user_count(db_session)
+    uninvited_email = f"uninvited-{uuid4().hex}@example.com"
+    uninvited = {"Authorization": f"Bearer {mint_token(email=uninvited_email)}"}
+    assert await _users_with_email(db_session, uninvited_email) == 0
 
     routes = _admin_family_routes(role_app)
     assert len(routes) >= 50
@@ -263,7 +282,7 @@ async def test_every_admin_route_refuses_everyone_who_is_not_an_active_administr
 
     assert failures == []
     # The uninvited person's many attempts created no account.
-    assert await _user_count(db_session) == users_before
+    assert await _users_with_email(db_session, uninvited_email) == 0
 
 
 async def test_an_employee_gets_403_on_the_project_list_and_create_routes(role_client, make_person):
@@ -414,6 +433,21 @@ TRAINING_ROUTES = {
     ("POST", "/v1/admin/training/modules/{module_id}/republish"): "admin_module",
     ("POST", "/v1/admin/training/modules/{module_id}/unpublish"): "admin_module",
     ("GET", "/v1/admin/training/modules/{module_id}/video"): "admin_module",
+    # Piece 3: enrolments. Three name a course (404 for an employee); the per-user listing takes
+    # ``user_id`` as a query parameter, names no resource in its path, and so is a collection (403).
+    ("POST", "/v1/admin/training/courses/{course_id}/enrolments"): "admin_course",
+    ("GET", "/v1/admin/training/courses/{course_id}/enrolments"): "admin_course",
+    (
+        "POST",
+        "/v1/admin/training/courses/{course_id}/enrolments/{user_id}/withdraw",
+    ): "admin_course",
+    ("GET", "/v1/admin/training/enrolments"): "admin",
+}
+
+# The employee area: exactly these two routes, and no assessment, progress or pass-gate route.
+EMPLOYEE_TRAINING_ROUTES = {
+    ("GET", "/v1/training/courses"): "employee",
+    ("GET", "/v1/training/modules/{module_id}/video"): "employee_module",
 }
 
 RENDER_BODY = {
@@ -428,20 +462,59 @@ TRAINING_BODIES = {
     ("POST", "/v1/admin/training/courses/{course_id}/modules"): RENDER_BODY,
     ("PUT", "/v1/admin/training/courses/{course_id}/modules/order"): {"module_ids": [NIL_ID]},
     ("POST", "/v1/admin/training/modules/{module_id}/republish"): RENDER_BODY,
+    ("POST", "/v1/admin/training/courses/{course_id}/enrolments"): {"user_id": NIL_ID},
 }
 
 
-def _training_endpoints(app):
+def _training_endpoints(app, prefix: str = "/v1/admin/training"):
     return {
         (method, endpoint.path): next(iter(policies_of(endpoint)))
         for method, endpoint in api_routes(app)
-        if endpoint.path.startswith("/v1/admin/training")
+        if endpoint.path == prefix or endpoint.path.startswith(prefix + "/")
     }
 
 
 def test_every_training_route_has_exactly_the_pinned_policy():
     """No route is added, removed or re-gated without this list changing in the same commit."""
     assert _training_endpoints(create_app()) == TRAINING_ROUTES
+
+
+def test_the_employee_training_area_is_exactly_the_two_pinned_routes():
+    """Adds nothing for assessments, attempts, progress or a pass gate (Step 3): any route under
+    ``/v1/training`` outside this list fails here."""
+    assert _training_endpoints(create_app(), "/v1/training") == EMPLOYEE_TRAINING_ROUTES
+
+
+def test_a_route_naming_a_resource_anywhere_in_its_path_is_not_a_plain_admin_route():
+    """Nested collections too: whatever carries ``{course_id}`` / ``{module_id}`` /
+    ``{project_id}`` - at the end of the path or in the middle of it - is resource-dependent and so
+    must carry the matching 404 policy, never the plain 403 ``admin`` one."""
+    wrong = []
+    for (method, path), policy in _training_endpoints(create_app()).items():
+        for parameter, wanted in RESOURCE_POLICY_BY_PATH_PARAMETER:
+            if parameter in path and policy != wanted:
+                wrong.append((method, path, policy))
+    assert wrong == []
+
+
+def test_the_pinned_expectations_name_only_routes_that_exist():
+    """A stale entry (a route that was removed or renamed) would otherwise sit there unchecked."""
+    actual = {key for key in _training_endpoints(create_app())}
+    actual |= {key for key in _training_endpoints(create_app(), "/v1/training")}
+    pinned = set(TRAINING_ROUTES) | set(EMPLOYEE_TRAINING_ROUTES)
+    assert pinned == actual
+    served = {
+        (method, endpoint.path) for method, endpoint in api_routes(create_app())
+    }
+    assert set(EXPECTED_NON_ADMIN) <= served
+
+
+def test_the_nested_course_modules_listing_has_the_course_404_policy():
+    """``GET /courses/{course_id}/modules`` does not end in an identifier but its answer depends on
+    whether that course exists - the policy is the course one, not the plain admin 403."""
+    policies = _training_endpoints(create_app())
+    assert policies[("GET", "/v1/admin/training/courses/{course_id}/modules")] == "admin_course"
+    assert policies[("GET", "/v1/admin/training/courses/{course_id}/enrolments")] == "admin_course"
 
 
 def test_a_training_route_with_a_missing_or_doubled_policy_is_flagged():
@@ -480,7 +553,7 @@ async def test_an_employee_gets_the_same_404_bytes_as_an_admin_for_a_missing_tra
         assert employee_response.content == admin_response.content, (method, template)
         assert NIL_ID not in employee_response.text
         checked += 1
-    assert checked == 13  # 8 course routes + 5 module routes
+    assert checked == 16  # 11 course routes + 5 module routes
 
 
 async def test_employee_is_forbidden_on_the_training_collection_routes(role_client, make_person):

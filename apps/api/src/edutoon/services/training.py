@@ -51,6 +51,7 @@ from edutoon.core.pagination import Page
 from edutoon.domain.source_storage import belongs_to_project
 from edutoon.domain.training import (
     COURSE_ARCHIVED,
+    COURSE_DELETE_REFUSED,
     COURSE_DRAFT,
     COURSE_NOT_FOUND,
     COURSE_PUBLISHED,
@@ -320,17 +321,16 @@ async def archive_course(session: AsyncSession, *, actor_id: UUID, course_id: UU
 async def delete_course(
     session: AsyncSession, effects: StorageEffects, *, actor_id: UUID, course_id: UUID
 ) -> None:
-    """Delete a course and its modules. Refused (409) once anyone has been enrolled in it - or,
-    from Step 3, has any other learner history, which the database enforces with ``RESTRICT``
-    foreign keys that surface here the same way: such a course is *archived*, not deleted.
+    """Delete a course and its modules. Refused (409, ``COURSE_DELETE_REFUSED``) once anyone has
+    been enrolled in it - a **withdrawn** enrolment counts, it is history - or, from Step 3, has any
+    other learner history, which the database enforces with ``RESTRICT`` foreign keys that surface
+    here the same way: such a course is *archived*, not deleted.
 
     Its modules' videos are queued for removal after the commit.
     """
     await _course_or_404(session, course_id, for_update=True)
     if await training_repo.count_enrolments(session, course_id) > 0:
-        raise ConflictError(
-            "This course has enrolments, so it cannot be deleted. Archive it instead."
-        )
+        raise ConflictError(COURSE_DELETE_REFUSED)
     objects = [
         obj for obj in map(_object_of, await training_repo.list_modules(session, course_id)) if obj
     ]
@@ -339,9 +339,7 @@ async def delete_course(
             await training_repo.delete_course(session, course_id)
     except IntegrityError as exc:
         if training_repo.is_foreign_key_violation(exc):
-            raise ConflictError(
-                "This course has learner history, so it cannot be deleted. Archive it instead."
-            ) from exc
+            raise ConflictError(COURSE_DELETE_REFUSED) from exc
         raise
     await _audit(
         session,

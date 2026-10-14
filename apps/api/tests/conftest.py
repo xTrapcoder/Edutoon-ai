@@ -41,7 +41,7 @@ for key, value in _TEST_ENV.items():
     os.environ.setdefault(key, value)
 
 import time  # noqa: E402
-from collections.abc import AsyncIterator, Callable  # noqa: E402
+from collections.abc import AsyncIterator, Callable, Iterator  # noqa: E402
 from uuid import uuid4  # noqa: E402
 
 import httpx  # noqa: E402
@@ -139,6 +139,61 @@ def _legacy_roles_and_provisioning(request, monkeypatch):
 
     monkeypatch.setattr(_users_repo, "create", create_defaulting_to_admin)
     monkeypatch.setattr(dependencies, "resolve_user", provision_as_admin)
+
+
+@pytest.fixture(scope="session")
+def committed_database_url() -> Iterator[str]:
+    """A database of its own, migrated to head, for every test that really **commits**.
+
+    ``audit_logs`` is append-only (a trigger rejects deleting a row), so a test that commits through
+    the application writes audit rows that nothing can take back. Run against the shared
+    development database, such tests grew it from 301 to 1,336 audit rows. They use this database
+    instead: it is created for the test session, migrated by the real ``alembic upgrade head``,
+    and dropped when the session ends, so what they commit - audit rows included - disappears with
+    it and the development database is not written to at all. (The ordinary ``db_session`` tests
+    roll back and need none.)
+    """
+    from tests.migration_helpers import run_alembic, scratch_database
+
+    with scratch_database() as url:
+        run_alembic(url, "upgrade", "head")
+        yield url
+
+
+@pytest.fixture(autouse=True)
+def _scratch_url_for_engine_modules(request) -> str | None:
+    """The scratch database's URL for a test module that reaches the application's process-wide
+    engine (``get_engine`` / ``get_sessionmaker``), else ``None``. A plain (not async) fixture so
+    the database is built outside the event loop. Module-level detection means a new such test is
+    covered without being edited; one that never touches the engine builds no scratch database."""
+    if not ({"get_engine", "get_sessionmaker"} & vars(request.module).keys()):
+        return None
+    return request.getfixturevalue("committed_database_url")  # type: ignore[no-any-return]
+
+
+@pytest.fixture(autouse=True)
+async def _process_wide_engine_on_scratch(_scratch_url_for_engine_modules, monkeypatch):
+    """Point the process-wide engine at the scratch database for those modules - the tests of the
+    worker, the stale-job recoveries and the services that really commit. They wrote audit rows to
+    the development database too (one ``script.generation_enqueued`` per full run, found when the
+    suite was run for Piece 3)."""
+    url = _scratch_url_for_engine_modules
+    if url is None:
+        yield
+        return
+    import edutoon.db.database as database
+    import edutoon.db.session as session_module
+
+    real_new_engine = database.new_engine
+    await database.dispose_engine()
+    session_module._sessionmaker = None
+    # A test may dispose the engine and ask for a new one: that one must be the scratch one too.
+    monkeypatch.setattr(
+        database, "new_engine", lambda explicit_url=None: real_new_engine(explicit_url or url)
+    )
+    yield
+    await database.dispose_engine()
+    session_module._sessionmaker = None
 
 
 # --- fixtures for the tests of roles, invitations and suspended accounts ---------------------

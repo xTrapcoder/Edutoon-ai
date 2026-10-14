@@ -325,6 +325,26 @@ own 404). `passed_module_ids` is still the empty fail-closed seam. Migration hea
 published render is current. **Still pending a human:** watching the sample MP4 and listening to the four voice
 samples before any employee rollout.
 
+**Step 2, Piece 3 (2026-10-14) - enrolments and employee access (no migration; head stays 0020).** Four
+administrator routes (`POST`/`GET /v1/admin/training/courses/{course_id}/enrolments`, `POST
+.../enrolments/{user_id}/withdraw`, `GET /v1/admin/training/enrolments?user_id=`; re-enrolling a withdrawn
+user is the same enrol `POST` and reactivates the **same row**, 200 not 201, never a second row) and two
+employee routes (`GET /v1/training/courses` with per-module `locked` + `lock`, `GET
+/v1/training/modules/{module_id}/video`). Only role `employee` can be enrolled (service check, 422);
+enrolment is `INSERT ... ON CONFLICT DO NOTHING` so the database decides races. **Five causes give one
+byte-identical 404** (no module / not enrolled / withdrawn / course not published / module not published)
+while an enrolled employee's later module is **403 `module_locked`** (blocking module named) - because
+`services.training_access.passed_module_ids` still returns the empty set; do not change it before Step 3.
+Preview and employee stream both end in `api/video_response.serve_module_video`. Review fixes: nested
+`.../modules` listing is a course-404 route (policy test looks for `{course_id}` anywhere in the path),
+the course-delete 409 says to archive, `close_position_gap` checks its precondition, and **tests that
+really commit now run on a scratch database** (`conftest.committed_database_url`) - the append-only
+`audit_logs` had grown 301 -> 1,336 on the dev database. **Step 3's tables that reference
+`training_modules` must use `ON DELETE RESTRICT`** (precedent: migration 0018). Mutation runner:
+`scripts/mutation_check_training.py`. Not built: assessments, progress, the pass gate; render-currency
+check on publish (deferred); the human review of the sample MP4 and the four voice samples is still
+pending and blocks any employee rollout.
+
 **Phase 12 has not started and needs the owner's explicit approval.**
 
 ## Commands

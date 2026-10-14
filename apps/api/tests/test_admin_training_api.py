@@ -48,6 +48,24 @@ def storage() -> Storage:
     )
 
 
+@pytest.fixture
+def copies(role_app, monkeypatch) -> list[str]:
+    """The keys this test's requests copied a video to, recorded as they happen.
+
+    Used instead of listing the whole ``training/modules/`` prefix before and after: a listing also
+    sees whatever else is running against the bucket, a record sees only this test's own copies.
+    """
+    made: list[str] = []
+    real_copy = role_app.state.storage.copy_object
+
+    async def recording_copy(**kwargs):
+        made.append(kwargs["dest_key"])
+        return await real_copy(**kwargs)
+
+    monkeypatch.setattr(role_app.state.storage, "copy_object", recording_copy)
+    return made
+
+
 @dataclass
 class Tracker:
     storage: Storage
@@ -411,12 +429,11 @@ async def test_each_publication_uses_a_fresh_key_and_modules_are_appended_in_ord
 
 
 async def test_publishing_the_same_render_twice_into_a_course_is_a_409_and_copies_nothing(
-    role_client, admin, source, track, storage
+    role_client, admin, source, track, storage, copies
 ):
     course = await make_course(role_client, admin)
     first = track.module(await publish(role_client, track, admin, course["id"], source))
-    bucket = get_settings().BUCKET_OUTPUTS
-    before = await list_keys(storage, bucket, "training/modules/")
+    assert len(copies) == 1  # the first publication's own copy
 
     second = await publish(role_client, track, admin, course["id"], source)
 
@@ -425,7 +442,7 @@ async def test_publishing_the_same_render_twice_into_a_course_is_a_409_and_copie
         second.json()["error"]["message"]
         == "This rendered video is already published in this course."
     )
-    assert await list_keys(storage, bucket, "training/modules/") == before
+    assert len(copies) == 1  # the refused request copied nothing
     listing = await positions(role_client, admin, course["id"])
     assert [m[0] for m in listing] == [first["id"]]
 
@@ -494,24 +511,21 @@ async def test_publishing_somebody_elses_render_is_a_404(
 
 
 async def test_publishing_a_render_that_does_not_exist_is_a_404_and_copies_nothing(
-    role_client, admin, source, track, storage
+    role_client, admin, source, track, storage, copies
 ):
     course = await make_course(role_client, admin)
-    bucket = get_settings().BUCKET_OUTPUTS
-    before = await list_keys(storage, bucket, "training/modules/")
 
     response = await publish(role_client, track, admin, course["id"], source, quality="high")
 
     assert response.status_code == 404
-    assert await list_keys(storage, bucket, "training/modules/") == before
+    assert copies == []
 
 
 async def test_publishing_when_the_source_file_is_missing_or_the_wrong_size_is_refused(
-    role_client, admin, source, track, storage, db_session
+    role_client, admin, source, track, storage, db_session, copies
 ):
     course = await make_course(role_client, admin)
     bucket = get_settings().BUCKET_OUTPUTS
-    before = await list_keys(storage, bucket, "training/modules/")
 
     await db_session.execute(
         text("UPDATE render_outputs SET byte_size = byte_size + 1 WHERE id = :i"),
@@ -525,7 +539,7 @@ async def test_publishing_when_the_source_file_is_missing_or_the_wrong_size_is_r
     await storage.delete_object(bucket=bucket, key=source.output.storage_key)
     missing = await publish(role_client, track, admin, course["id"], source)
     assert missing.status_code == 404
-    assert await list_keys(storage, bucket, "training/modules/") == before
+    assert copies == []  # both refusals came before any copy was made
 
 
 async def test_a_publish_body_rejects_unknown_fields_and_bad_values(role_client, admin, source):
@@ -545,17 +559,15 @@ async def test_a_publish_body_rejects_unknown_fields_and_bad_values(role_client,
 
 
 async def test_nothing_can_be_published_into_an_archived_course(
-    role_client, admin, source, track, storage
+    role_client, admin, source, track, storage, copies
 ):
     course = await make_course(role_client, admin)
     await role_client.post(f"{BASE}/courses/{course['id']}/archive", headers=h(admin))
-    bucket = get_settings().BUCKET_OUTPUTS
-    before = await list_keys(storage, bucket, "training/modules/")
 
     response = await publish(role_client, track, admin, course["id"], source)
 
     assert response.status_code == 409
-    assert await list_keys(storage, bucket, "training/modules/") == before
+    assert copies == []
 
 
 # --- listing, reading, previewing ---
