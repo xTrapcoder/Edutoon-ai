@@ -310,8 +310,20 @@ project's prefix) and snapshots its size, duration and resolution; `source_rende
 module not published" are a **single** outcome (so one identical 404); an enrolled employee is "locked" until every
 earlier published module is passed, and until Step 3 nobody has passed anything, so only module 1 opens. **Step 3
 must make a course with learner history undeletable** (its assessment tables reference modules with RESTRICT) -
-**archive it instead**. Publishing, the admin routes, enrolments and the employee routes are Pieces 2 and 3 and are
-not built yet. Clerk `email_verified` and invitation-email delivery are still **unverified**.
+**archive it instead**. Clerk `email_verified` and invitation-email delivery are still **unverified**.
+
+**Step 2, Piece 2 (2026-10-14) - administrator course and module routes, publish by snapshot.** `/v1/admin/training`
+(`api/routers/admin_training.py`, `services/training.py`, `repositories/training.py`): courses (create, list, read,
+edit, publish, archive, delete) and modules (publish a render, republish, unpublish, delete, reorder, list, read, and
+an admin-only `Range` preview of the module's **own** copy). Publishing copies the MP4 with the new
+`Storage.copy_object` to `training/modules/{module_id}/{fresh uuid}.mp4` and records the snapshot; nothing serves
+the render row or the render's key. Files are removed only **after** the commit that stops needing them
+(`storage_effects`); a removal failure is logged, never fatal. Reorder is one `UPDATE` on the deferrable unique
+constraint. New 404 policies `require_admin_for_course` / `_module` (fixed messages, byte-identical to the admin's
+own 404). `passed_module_ids` is still the empty fail-closed seam. Migration head 0020 (applied to the dev DB
+2026-10-14). **Not built:** employee routes, enrolment endpoints (Piece 3), assessments. **Not enforced:** that a
+published render is current. **Still pending a human:** watching the sample MP4 and listening to the four voice
+samples before any employee rollout.
 
 **Phase 12 has not started and needs the owner's explicit approval.**
 

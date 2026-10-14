@@ -197,6 +197,11 @@ _UNIQUE_CONSTRAINT_MESSAGES: dict[str, str] = {
     "uq_script_segment_claims_segment_verification": (
         "This claim is already cited by this script segment."
     ),
+    "uq_training_modules_course_source_render": (
+        "This rendered video is already published in this course."
+    ),
+    "uq_training_modules_video_key": "This module video location is already in use.",
+    "uq_training_modules_course_id_position": "A module already occupies this position.",
 }
 
 

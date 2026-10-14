@@ -5,6 +5,7 @@ The ``/v1`` router is the mount point for all versioned endpoints.
 
 from fastapi import APIRouter
 
+from edutoon.api.routers.admin_training import router as admin_training_router
 from edutoon.api.routers.admin_users import router as admin_users_router
 from edutoon.api.routers.auth import router as auth_router
 from edutoon.api.routers.claim_verifications import router as claim_verifications_router
@@ -20,6 +21,7 @@ from edutoon.api.routers.uploaded_sources import router as uploaded_sources_rout
 v1_router = APIRouter(prefix="/v1")
 v1_router.include_router(auth_router)
 v1_router.include_router(admin_users_router)
+v1_router.include_router(admin_training_router)
 v1_router.include_router(projects_router)
 v1_router.include_router(uploaded_sources_router)
 v1_router.include_router(topics_router)

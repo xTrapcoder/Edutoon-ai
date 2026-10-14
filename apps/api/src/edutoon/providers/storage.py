@@ -198,6 +198,37 @@ class Storage:
             status_code=206 if content_range else 200,
         )
 
+    async def copy_object(
+        self,
+        *,
+        source_bucket: str,
+        source_key: str,
+        dest_bucket: str,
+        dest_key: str,
+        content_type: str,
+    ) -> None:
+        """Copy an object inside the storage server - the bytes never pass through this process.
+
+        Uses boto3's managed copy, which is one request for a small object and a multipart copy
+        for a large one, so it is not limited to 5 GB. The destination is written under its own
+        key; an existing object at ``dest_key`` would be replaced, so callers pass a key nothing
+        else uses. The destination's content type is set explicitly rather than inherited.
+
+        Raises :class:`ObjectNotFoundError` if the source does not exist.
+        """
+        try:
+            await asyncio.to_thread(
+                self._client.copy,
+                {"Bucket": source_bucket, "Key": source_key},
+                dest_bucket,
+                dest_key,
+                ExtraArgs={"ContentType": content_type, "MetadataDirective": "REPLACE"},
+            )
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") in _NOT_FOUND_ERROR_CODES:
+                raise ObjectNotFoundError(f"{source_bucket}/{source_key} not found.") from exc
+            raise
+
     async def delete_object(self, *, bucket: str, key: str) -> None:
         await asyncio.to_thread(self._client.delete_object, Bucket=bucket, Key=key)
 

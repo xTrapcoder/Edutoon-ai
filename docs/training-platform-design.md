@@ -25,8 +25,10 @@ video publishing are Steps 2 onward and have not been started.
 
 ## Step 2 status (started 2026-10-13)
 
-Piece 1 (migration 0020, the access rule, storage keys, the fail-closed pass seam) is built and tested locally;
-publishing, the admin routes, enrolments and employee access follow. Differences from section 2.2 above: a
+Piece 1 (migration 0020, the access rule, storage keys, the fail-closed pass seam) is built and tested locally.
+Piece 2 (2026-10-14: administrator course and module routes, publish by snapshot, `Storage.copy_object`) is built
+and tested locally - see `apps/api/README.md`, "Training courses and modules". Enrolments and employee access
+follow (Piece 3). Differences from section 2.2 above: a
 module is `published` | `unpublished` (unpublishing deletes its file and keeps its descriptive snapshot as
 history); `published_by` / `published_at` are kept; there is no `draft` module - publishing a render *is*
 creating the module. **Lifecycle once Step 3 exists:** assessment attempts reference modules with `RESTRICT`, so a

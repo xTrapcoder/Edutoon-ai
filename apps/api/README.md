@@ -96,6 +96,66 @@ an unknown Clerk identity as an administrator. It exists only in tests; producti
 role. A test of roles, invitations or suspension carries `real_auth` and must give every user an
 explicit role. The suspended-account check is never shimmed.
 
+## Training courses and modules (administrator)
+
+Step 2, Piece 2 of the training platform (`docs/training-platform-design.md`; schema from migration
+**0020**). Everything is under `/v1/admin/training`, administrators only; employee routes and
+enrolment endpoints are Piece 3 and do not exist yet. Every mutating route needs an
+`Idempotency-Key`, request bodies reject unknown fields (422), durations are integer milliseconds.
+
+| Route | Does |
+|---|---|
+| `POST` / `GET /courses` | create (`{title, description?}`) / list (`?status=`, paginated) |
+| `GET` / `PATCH /courses/{course_id}` | read / edit title and description (archived: 409) |
+| `POST /courses/{course_id}/publish` | draft -> published; needs at least one published module (else 409) |
+| `POST /courses/{course_id}/archive` | hide and freeze a course, keeping everything |
+| `DELETE /courses/{course_id}` | 204; **409** once anyone was enrolled (any status) or, from Step 3, has other learner history (a RESTRICT foreign key): archive instead |
+| `GET /courses/{course_id}/modules` | every module, published and unpublished, in order |
+| `POST /courses/{course_id}/modules` | **publish a render as a new module**, last in order (below) |
+| `PUT /courses/{course_id}/modules/order` | `{module_ids}`: every module once, in the new order |
+| `GET /modules/{module_id}` | one module (snapshot description, never the storage key) |
+| `POST /modules/{module_id}/republish` | replace the module's video with a fresh snapshot (also re-publishes an unpublished one) |
+| `POST /modules/{module_id}/unpublish` | employees lose it, its file is removed, its place and description stay |
+| `DELETE /modules/{module_id}` | 204; closes the gap in the order; **409** if a RESTRICT foreign key (Step 3 history) refuses |
+| `GET /modules/{module_id}/video` | the administrator's preview: streams the module's **own** snapshot, with `Range` and `?download=true` |
+
+**Publish by snapshot.** `POST .../modules` takes `{project_id, script_id, orientation, quality,
+title?, description?}` - the identifiers the render API already uses, so the render API is unchanged.
+The project must be the caller's (404 otherwise), the script approved (409), the render present and
+its file the size recorded for it. The MP4 is copied inside the storage server
+(`Storage.copy_object`, added in this piece) to `training/modules/{module_id}/{publication_uuid}.mp4`
+- a fresh UUID every publication, so a key is written once and never overwritten - and the module
+records its own size, duration, resolution, frame rate and the render's fingerprint
+(`video_output_hash`). `source_render_output_id` is provenance only: serving a module never reads the
+render row or the render's key, so a re-render or deleting the project cannot change or remove a
+published video (it just becomes `NULL`). The same render twice in one course is a 409, decided by the
+service before anything is copied **and** enforced by `uq_training_modules_course_source_render`.
+Not checked: that the render is *current* against the latest narration/storyboard (an administrator
+publishing a stale render is not stopped); the workspace already shows when a video is stale.
+
+**Files and commits.** Object storage cannot be rolled back, so the order is: write the new object,
+change the rows, commit, and only then remove an object no longer needed (the replaced snapshot, an
+unpublished or deleted module's video). `services.training.storage_effects` wraps each such request:
+before the commit only the *new* object is removed on failure; after the commit only the *obsolete*
+ones are removed; a removal that fails never fails the request and is logged
+(`training.object_cleanup_failed`, `orphaned=True`, bucket and key). A key is only ever deleted if it
+lies inside its own module's prefix.
+
+**Order.** Positions are 1..n and contiguous. Appending, closing a gap and reordering all hold
+`SELECT ... FOR UPDATE` on the course row. A reorder is one `UPDATE ... FROM unnest(...) WITH
+ORDINALITY` that relies on the unique constraint being `DEFERRABLE INITIALLY DEFERRED` (no negative
+placeholders, no delete and re-insert); `SET CONSTRAINTS ... IMMEDIATE` then checks it inside the
+transaction.
+
+**404s.** A route naming a course or a module answers a non-administrator the fixed
+`Course not found.` / `Module not found.` (policies `require_admin_for_course` / `_module`) - the same
+bytes an administrator gets for an id that does not exist, with no id echoed. The collection routes
+(`GET`/`POST /courses`) answer an employee 403. Modules are addressed by their own id so a route never
+names two resources. `tests/test_route_policies.py` pins every training route's policy and compares
+the bytes. The tests that need a real `COMMIT` (re-render, source deletion, rollback, clean-up
+failure, reorder, constraint) are `tests/test_training_committed.py`; they create `qa-training-*`
+users and projects and remove exactly those (the append-only `audit_logs` rows they cause remain).
+
 ## Project generation settings
 
 A project carries three settings that later phases (scene planning, narration,

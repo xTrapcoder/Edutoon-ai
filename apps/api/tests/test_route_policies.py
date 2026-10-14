@@ -168,8 +168,15 @@ def test_a_route_mounted_outside_apiroute_is_flagged():
 def _expected_policy(method: str, path: str) -> str:
     if (method, path) in EXPECTED_NON_ADMIN:
         return EXPECTED_NON_ADMIN[(method, path)]
-    # A route that names a project answers a non-administrator 404; every other admin route 403.
-    return "admin_project" if "{project_id}" in path else "admin"
+    # A route that names a project, course or module answers a non-administrator 404; every
+    # other admin route 403.
+    if "{project_id}" in path:
+        return "admin_project"
+    if "{course_id}" in path:
+        return "admin_course"
+    if "{module_id}" in path:
+        return "admin_module"
+    return "admin"
 
 
 def test_the_policy_of_every_route_is_the_expected_one():
@@ -212,11 +219,15 @@ async def _user_count(db_session) -> int:
     return (await db_session.execute(text("SELECT count(*) FROM users"))).scalar_one()
 
 
+ADMIN_FAMILY = {"admin", "admin_project", "admin_course", "admin_module"}
+NOT_FOUND_POLICIES = {"admin_project", "admin_course", "admin_module"}
+
+
 def _admin_family_routes(role_app):
     return [
         (method, endpoint, next(iter(policies_of(endpoint))))
         for method, endpoint in api_routes(role_app)
-        if policies_of(endpoint) & {"admin", "admin_project"}
+        if policies_of(endpoint) & ADMIN_FAMILY
     ]
 
 
@@ -232,7 +243,7 @@ async def test_every_admin_route_refuses_everyone_who_is_not_an_active_administr
     users_before = await _user_count(db_session)
 
     routes = _admin_family_routes(role_app)
-    assert len(routes) >= 35
+    assert len(routes) >= 50
 
     failures: list[str] = []
     for method, endpoint, policy in routes:
@@ -383,3 +394,134 @@ async def test_an_employee_can_reach_me_and_is_told_their_role(role_client, make
 
     assert response.status_code == 200
     assert response.json()["role"] == "employee"
+
+
+# --- training courses and modules (Step 2, Piece 2) -----------------------------------------------
+
+TRAINING_ROUTES = {
+    ("POST", "/v1/admin/training/courses"): "admin",
+    ("GET", "/v1/admin/training/courses"): "admin",
+    ("GET", "/v1/admin/training/courses/{course_id}"): "admin_course",
+    ("PATCH", "/v1/admin/training/courses/{course_id}"): "admin_course",
+    ("DELETE", "/v1/admin/training/courses/{course_id}"): "admin_course",
+    ("POST", "/v1/admin/training/courses/{course_id}/publish"): "admin_course",
+    ("POST", "/v1/admin/training/courses/{course_id}/archive"): "admin_course",
+    ("GET", "/v1/admin/training/courses/{course_id}/modules"): "admin_course",
+    ("POST", "/v1/admin/training/courses/{course_id}/modules"): "admin_course",
+    ("PUT", "/v1/admin/training/courses/{course_id}/modules/order"): "admin_course",
+    ("GET", "/v1/admin/training/modules/{module_id}"): "admin_module",
+    ("DELETE", "/v1/admin/training/modules/{module_id}"): "admin_module",
+    ("POST", "/v1/admin/training/modules/{module_id}/republish"): "admin_module",
+    ("POST", "/v1/admin/training/modules/{module_id}/unpublish"): "admin_module",
+    ("GET", "/v1/admin/training/modules/{module_id}/video"): "admin_module",
+}
+
+RENDER_BODY = {
+    "project_id": NIL_ID,
+    "script_id": NIL_ID,
+    "orientation": "horizontal",
+    "quality": "low",
+}
+TRAINING_BODIES = {
+    ("POST", "/v1/admin/training/courses"): {"title": "Safety"},
+    ("PATCH", "/v1/admin/training/courses/{course_id}"): {"title": "Renamed"},
+    ("POST", "/v1/admin/training/courses/{course_id}/modules"): RENDER_BODY,
+    ("PUT", "/v1/admin/training/courses/{course_id}/modules/order"): {"module_ids": [NIL_ID]},
+    ("POST", "/v1/admin/training/modules/{module_id}/republish"): RENDER_BODY,
+}
+
+
+def _training_endpoints(app):
+    return {
+        (method, endpoint.path): next(iter(policies_of(endpoint)))
+        for method, endpoint in api_routes(app)
+        if endpoint.path.startswith("/v1/admin/training")
+    }
+
+
+def test_every_training_route_has_exactly_the_pinned_policy():
+    """No route is added, removed or re-gated without this list changing in the same commit."""
+    assert _training_endpoints(create_app()) == TRAINING_ROUTES
+
+
+def test_a_training_route_with_a_missing_or_doubled_policy_is_flagged():
+    app = FastAPI()
+    router = APIRouter(prefix="/v1/admin/training")
+
+    @router.get("/courses/{course_id}")
+    async def unguarded(course_id: str) -> dict[str, str]:
+        return {}
+
+    app.include_router(router)
+    assert any("no role policy" in problem for problem in policy_violations(app))
+
+
+async def test_an_employee_gets_the_same_404_bytes_as_an_admin_for_a_missing_training_resource(
+    role_client, make_person
+):
+    """On every route that names a course or a module, the employee's 404 is byte-identical to
+    the administrator's for an id that genuinely does not exist - same status, same body, no id."""
+    admin = await make_person(role="admin")
+    employee = await make_person(role="employee")
+    checked = 0
+    for (method, template), policy in TRAINING_ROUTES.items():
+        if policy not in {"admin_course", "admin_module"}:
+            continue
+        url = _concrete(template)
+        body = TRAINING_BODIES.get((method, template))
+        results = []
+        for who in (admin, employee):
+            headers = {**who.headers, "Idempotency-Key": f"bytes-{who.email}-{checked}"}
+            response = await role_client.request(method, url, json=body, headers=headers)
+            results.append(response)
+        admin_response, employee_response = results
+        assert admin_response.status_code == 404, (method, template, admin_response.text)
+        assert employee_response.status_code == 404, (method, template)
+        assert employee_response.content == admin_response.content, (method, template)
+        assert NIL_ID not in employee_response.text
+        checked += 1
+    assert checked == 13  # 8 course routes + 5 module routes
+
+
+async def test_employee_is_forbidden_on_the_training_collection_routes(role_client, make_person):
+    employee = await make_person(role="employee")
+    headers = {**employee.headers, "Idempotency-Key": "employee-course-1"}
+
+    created = await role_client.post(
+        "/v1/admin/training/courses", json={"title": "Sneaky"}, headers=headers
+    )
+    listed = await role_client.get("/v1/admin/training/courses", headers=employee.headers)
+
+    for response in (created, listed):
+        assert response.status_code == 403
+        assert response.json()["error"]["code"] == "forbidden"
+
+
+async def test_an_employee_cannot_reach_an_existing_course_or_module_and_learns_nothing(
+    role_client, make_person
+):
+    """A real course exists; the employee's answer to every course route is the fixed 404."""
+    admin = await make_person(role="admin")
+    employee = await make_person(role="employee")
+    created = await role_client.post(
+        "/v1/admin/training/courses",
+        json={"title": "Secret course"},
+        headers={**admin.headers, "Idempotency-Key": "admin-course-1"},
+    )
+    assert created.status_code == 201
+    course_id = created.json()["id"]
+
+    for method, template in [k for k, v in TRAINING_ROUTES.items() if v == "admin_course"]:
+        url = template.replace("{course_id}", course_id)
+        body = TRAINING_BODIES.get((method, template))
+        response = await role_client.request(
+            method,
+            url,
+            json=body,
+            headers={**employee.headers, "Idempotency-Key": f"emp-{method}-{len(template)}"},
+        )
+        assert response.status_code == 404, (method, template)
+        assert response.json() == {"error": {"code": "not_found", "message": "Course not found."}}
+
+    still = await role_client.get(f"/v1/admin/training/courses/{course_id}", headers=admin.headers)
+    assert still.status_code == 200 and still.json()["title"] == "Secret course"

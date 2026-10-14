@@ -7,6 +7,9 @@ router inherits it, or on the route itself:
 * :func:`require_admin` - an active administrator (anyone else: 403);
 * :func:`require_admin_for_project` - the same for a route that names a project (anyone else: 404,
   identical whether or not the project exists);
+* :func:`require_admin_for_course` / :func:`require_admin_for_module` - the same for a route that
+  names a training course or module (anyone else: the fixed 404 an administrator gets for one that
+  does not exist);
 * :func:`require_employee` - an active employee;
 * :func:`require_authenticated` - any active user, whatever the role;
 * :func:`public_route` - nobody is authenticated (``/health`` only).
@@ -29,6 +32,7 @@ from fastapi import Depends
 from edutoon.api.dependencies import get_current_user
 from edutoon.core.errors import ForbiddenError, NotFoundError
 from edutoon.domain.roles import ROLE_ADMIN, ROLE_EMPLOYEE
+from edutoon.domain.training import COURSE_NOT_FOUND, MODULE_NOT_FOUND
 from edutoon.services.users import UserRecord
 
 
@@ -64,6 +68,28 @@ async def require_admin_for_project(
     return user
 
 
+async def require_admin_for_course(
+    course_id: UUID, user: Annotated[UserRecord, Depends(get_current_user)]
+) -> UserRecord:
+    """Administrators only - and to anyone else the training course simply does not exist.
+
+    The message is the fixed ``COURSE_NOT_FOUND`` (no id echoed), the one an administrator gets for
+    a course that is missing, so a non-administrator's 404 is byte-identical to it.
+    """
+    if user.role != ROLE_ADMIN:
+        raise NotFoundError(COURSE_NOT_FOUND)
+    return user
+
+
+async def require_admin_for_module(
+    module_id: UUID, user: Annotated[UserRecord, Depends(get_current_user)]
+) -> UserRecord:
+    """As :func:`require_admin_for_course`, for a route naming a training module."""
+    if user.role != ROLE_ADMIN:
+        raise NotFoundError(MODULE_NOT_FOUND)
+    return user
+
+
 async def require_employee(user: Annotated[UserRecord, Depends(get_current_user)]) -> UserRecord:
     if user.role != ROLE_EMPLOYEE:
         raise ForbiddenError("This action is for employee accounts.")
@@ -75,6 +101,8 @@ POLICY_NAMES: Final = {
     require_authenticated: "authenticated",
     require_admin: "admin",
     require_admin_for_project: "admin_project",
+    require_admin_for_course: "admin_course",
+    require_admin_for_module: "admin_module",
     require_employee: "employee",
 }
 """Every policy dependency and its short name; the route-policy test reads this."""
