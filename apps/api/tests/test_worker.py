@@ -68,6 +68,7 @@ from edutoon.services import topic_extraction as topic_extraction_service
 from edutoon.worker.dispatch import JOB_HANDLERS, WorkerProviders
 from edutoon.worker.runner import process_one_job
 from tests.leaky_errors import assert_clean, leaky_anthropic, leaky_db_error
+from tests.storage_isolation import SEGMENTS_BUCKET, UPLOADS_BUCKET
 from tests.usage_helpers import usage_of
 
 # Stands in for an external provider (OpenAI / Anthropic): these tests prove how our code
@@ -248,7 +249,7 @@ async def _make_source_with_chunks(db_session: AsyncSession, project, num_chunks
         db_session,
         project_id=project.id,
         original_filename="notes.pdf",
-        storage_bucket="edutoon-uploads",
+        storage_bucket=UPLOADS_BUCKET,
         storage_key=f"{project.id}/{uuid4()}.pdf",
         byte_size=1024,
         checksum_sha256=uuid4().hex + uuid4().hex[:32],
@@ -278,7 +279,7 @@ async def _project_with_supported_claim(db_session: AsyncSession):
         db_session,
         project_id=project.id,
         original_filename="notes.pdf",
-        storage_bucket="edutoon-uploads",
+        storage_bucket=UPLOADS_BUCKET,
         storage_key=f"{project.id}/{uuid4()}.pdf",
         byte_size=1024,
         checksum_sha256=uuid4().hex + uuid4().hex[:32],
@@ -682,7 +683,7 @@ async def test_process_one_job_runs_the_generate_storyboard_handler(
         db_session,
         script_segment_id=segment.id,
         status="ready",
-        storage_bucket="edutoon-segments",
+        storage_bucket=SEGMENTS_BUCKET,
         storage_key=f"k/{segment.id}",
         format="wav",
         sample_rate=22_050,

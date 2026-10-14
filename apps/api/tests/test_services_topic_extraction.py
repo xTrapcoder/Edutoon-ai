@@ -49,6 +49,7 @@ from edutoon.services import job_errors
 from edutoon.services import topic_extraction as service
 from edutoon.services import uploaded_sources as uploaded_sources_service
 from tests.leaky_errors import assert_clean, leaky_anthropic, leaky_db_error
+from tests.storage_isolation import UPLOADS_BUCKET
 from tests.usage_helpers import NO_USAGE, usage_of
 
 # Stands in for an external provider (OpenAI / Anthropic): these tests prove how our code
@@ -140,7 +141,7 @@ async def _add_chunks(db_session, project, texts: list[str]):
         db_session,
         project_id=project.id,
         original_filename="notes.pdf",
-        storage_bucket="edutoon-uploads",
+        storage_bucket=UPLOADS_BUCKET,
         storage_key=f"{project.id}/{uuid4()}.pdf",
         byte_size=1024,
         checksum_sha256=uuid4().hex + uuid4().hex[:32],
@@ -404,7 +405,7 @@ async def test_a_source_that_yielded_no_text_counts_as_no_material(db_session):
         db_session,
         project_id=project.id,
         original_filename="scan.pdf",
-        storage_bucket="edutoon-uploads",
+        storage_bucket=UPLOADS_BUCKET,
         storage_key=f"{project.id}/scan.pdf",
         byte_size=10,
         checksum_sha256=uuid4().hex + uuid4().hex[:32],
@@ -1348,7 +1349,7 @@ async def test_uploading_a_pdf_still_indexes_it_but_never_starts_topic_extractio
         original_filename="notes.pdf",
         content_type="application/pdf",
         content=_pdf(["Photosynthesis makes food.", "Respiration releases energy."]),
-        bucket="edutoon-uploads",
+        bucket=UPLOADS_BUCKET,
         max_pages=50,
     )
 

@@ -15,18 +15,23 @@ What it does *around* each mutation:
 * proves the mutant was applied (the file changed and the new text is present);
 * restores the original **bytes** afterwards whatever happens (``finally``, SIGINT/SIGTERM handlers)
   and verifies the restored file is byte-identical to the backup it kept;
-* leaves the development database alone: the tests that commit run on a scratch database
-  (``tests/conftest.py::committed_database_url``); the script checks the development
-  ``audit_logs`` count is unchanged at the end;
-* removes only the stored videos this mutant's run created (keys under ``training/modules/`` that did
-  not exist before it started) - never anything else.
+* leaves the development database and the development buckets alone: the tests that commit run on
+  a scratch database (``tests/conftest.py::committed_database_url``) and every test session uses
+  scratch buckets (``tests/storage_isolation.py``). The script **never deletes from a development
+  bucket**; it snapshots the ``audit_logs`` count and a SHA-256 over the full listing (key, size,
+  ETag, last-modified) of all four protected buckets before the run, and compares after the
+  baseline, after *every* mutant and at the end - any difference is reported as a problem naming the
+  mutant that escaped the isolation;
+* the isolation mutants (``tests/storage_isolation.py`` itself) can leave scratch buckets behind
+  (that is the point of one of them); only buckets named ``edutoon-test-*`` that did not exist
+  before that mutant ran are removed afterwards - never a protected bucket.
 
     uv run python scripts/mutation_check_training.py                # baseline, then every mutation
     uv run python scripts/mutation_check_training.py enrol          # names or areas containing "enrol"
 
 Needs `make up` (Postgres, Redis, MinIO). Do not edit the mutated source files or the tests while it
 runs. Exit status is non-zero for any survivor that is not declared equivalent, any INVALID run, a
-baseline failure, a restore mismatch or a change in the development ``audit_logs`` count.
+baseline failure, a restore mismatch or any change in the development database count or buckets.
 """
 
 # ruff: noqa: E501 - mutation source strings are quoted verbatim and read best on one line.
@@ -79,6 +84,10 @@ T_EMPLOYEE = "tests/test_employee_training_api.py"
 T_SECURITY = "tests/test_training_route_security.py"
 T_ROUTES = "tests/test_route_policies.py"
 T_ADMIN = "tests/test_admin_training_api.py"
+T_ISOLATION = "tests/test_storage_isolation.py"
+T_SNAPSHOT = "tests/test_mutation_runner_snapshot.py"
+ISOLATION = "tests/storage_isolation.py"
+RUNNER = "scripts/mutation_check_training.py"
 
 ALL_TESTS = (
     T_DOMAIN,
@@ -90,6 +99,8 @@ ALL_TESTS = (
     T_SECURITY,
     T_ROUTES,
     T_ADMIN,
+    T_ISOLATION,
+    T_SNAPSHOT,
 )
 
 MUTATIONS: tuple[Mutation, ...] = (
@@ -451,6 +462,111 @@ MUTATIONS: tuple[Mutation, ...] = (
         'code = "forbidden"',
         (T_EMPLOYEE,),
     ),
+    # --- the test suite's storage isolation (tests/storage_isolation.py) -------------------------
+    Mutation(
+        "isolation: the guard lets everything through",
+        "storage isolation",
+        ISOLATION,
+        "    for bucket in _buckets_in(params):\n        if bucket not in SCRATCH_NAMES:",
+        "    for bucket in ():\n        if bucket not in SCRATCH_NAMES:",
+        (T_ISOLATION,),
+    ),
+    Mutation(
+        "isolation: the guard refuses protected buckets but allows unknown ones",
+        "storage isolation",
+        ISOLATION,
+        "        if bucket not in SCRATCH_NAMES:\n            kind =",
+        "        if bucket in PROTECTED:\n            kind =",
+        (T_ISOLATION,),
+    ),
+    Mutation(
+        "isolation: the guard is never installed on Storage",
+        "storage isolation",
+        ISOLATION,
+        "    Storage.__init__ = guarded_init  # type: ignore[method-assign]\n",
+        "    pass\n",
+        (T_ISOLATION,),
+    ),
+    Mutation(
+        "isolation: a copy's source bucket is not inspected",
+        "storage isolation",
+        ISOLATION,
+        '    if isinstance(source, dict) and isinstance(source.get("Bucket"), str):\n        found.add(source["Bucket"])\n',
+        "    if False:\n        pass\n",
+        (T_ISOLATION,),
+    ),
+    Mutation(
+        "isolation: the settings keep the development bucket names",
+        "storage isolation",
+        ISOLATION,
+        "        os.environ[setting] = name\n",
+        "        pass\n",
+        (T_ISOLATION,),
+    ),
+    Mutation(
+        "isolation: set-up/tear-down accept any bucket that has the scratch prefix",
+        "storage isolation",
+        ISOLATION,
+        "    if name in PROTECTED or not name.startswith(SCRATCH_PREFIX) or name not in SCRATCH_NAMES:\n",
+        "    if name in PROTECTED or not name.startswith(SCRATCH_PREFIX):\n",
+        (T_ISOLATION,),
+    ),
+    Mutation(
+        "isolation: the guard compares by prefix, not against the exact set of four names",
+        "storage isolation",
+        ISOLATION,
+        "        if bucket not in SCRATCH_NAMES:\n            kind =",
+        "        if not bucket.startswith(SCRATCH_PREFIX):\n            kind =",
+        (T_ISOLATION,),
+    ),
+    Mutation(
+        "isolation snapshot: the listing digest is count-only",
+        "storage isolation",
+        RUNNER,
+        "    return hashlib.sha256(repr(sorted(rows)).encode()).hexdigest()\n",
+        "    return str(len(rows))\n",
+        (T_SNAPSHOT,),
+    ),
+    Mutation(
+        "isolation snapshot: the digest ignores the last-modified time",
+        "storage isolation",
+        RUNNER,
+        "    return hashlib.sha256(repr(sorted(rows)).encode()).hexdigest()\n",
+        "    return hashlib.sha256(repr(sorted(r[:3] for r in rows)).encode()).hexdigest()\n",
+        (T_SNAPSHOT,),
+    ),
+    Mutation(
+        "isolation snapshot: the comparison looks at object counts only",
+        "storage isolation",
+        RUNNER,
+        "            if self.buckets[bucket] != other.buckets.get(bucket):\n",
+        "            if self.buckets[bucket][0] != other.buckets.get(bucket, (None, None))[0]:\n",
+        (T_SNAPSHOT,),
+    ),
+    Mutation(
+        "isolation snapshot: state equality looks at object counts only",
+        "storage isolation",
+        RUNNER,
+        "        return isinstance(other, DevState) and (self.audit, self.buckets) == (\n            other.audit,\n            other.buckets,\n        )\n",
+        "        return isinstance(other, DevState) and (self.audit, {b: v[0] for b, v in self.buckets.items()}) == (\n            other.audit,\n            {b: v[0] for b, v in other.buckets.items()},\n        )\n",
+        (T_SNAPSHOT,),
+    ),
+    Mutation(
+        "isolation snapshot: the runner's sweep drops the scratch-prefix requirement",
+        "storage isolation",
+        RUNNER,
+        "        if name.startswith(SCRATCH_PREFIX) and name not in protected\n",
+        "        if name not in protected\n",
+        (T_SNAPSHOT,),
+    ),
+    Mutation(
+        "isolation: the session end does not delete its scratch buckets",
+        "storage isolation",
+        ISOLATION,
+        "            client.delete_bucket(Bucket=name)\n",
+        "            pass\n",
+        (T_ISOLATION,),
+    ),
 )
 
 
@@ -505,79 +621,184 @@ def run_tests(tests: tuple[str, ...]) -> tuple[str, str, list[str]]:
     return "errored", str(summary), failing
 
 
-async def _dev_state() -> tuple[int, set[str]]:
-    """Development ``audit_logs`` row count, and the stored training videos that exist now."""
+class DevState:
+    """Everything the test suite must leave exactly as it found it: the development ``audit_logs``
+    count and a SHA-256 over the full listing (bucket, key, size, ETag, last-modified) of each
+    protected development bucket. Reading only."""
+
+    def __init__(self, audit: int, buckets: dict[str, tuple[int, str]]) -> None:
+        self.audit = audit
+        self.buckets = buckets
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, DevState) and (self.audit, self.buckets) == (
+            other.audit,
+            other.buckets,
+        )
+
+    def describe(self) -> str:
+        parts = ", ".join(f"{b}={n} objects/{h[:10]}" for b, (n, h) in sorted(self.buckets.items()))
+        return f"audit_logs={self.audit}; {parts}"
+
+    def differences(self, other: DevState) -> list[str]:
+        found = []
+        if self.audit != other.audit:
+            found.append(f"audit_logs {self.audit} -> {other.audit}")
+        for bucket in sorted(self.buckets):
+            if self.buckets[bucket] != other.buckets.get(bucket):
+                found.append(
+                    f"bucket {bucket}: {self.buckets[bucket]} -> {other.buckets.get(bucket)}"
+                )
+        return found
+
+
+def listing_digest(rows: list[tuple[str, int, str, str]]) -> str:
+    """SHA-256 over the complete, sorted listing - ``(key, size, ETag, last-modified)`` of every
+    object - so two listings with the same count but any different key, size, content or timestamp
+    have different digests. (Counts alone, or keys alone, would miss an overwrite.)"""
+    return hashlib.sha256(repr(sorted(rows)).encode()).hexdigest()
+
+
+async def _dev_state() -> DevState:
     from sqlalchemy import text
     from sqlalchemy.ext.asyncio import create_async_engine
 
     from edutoon.core.config import get_settings
     from edutoon.providers.storage import get_storage_client
 
-    settings = get_settings()
+    settings = (
+        get_settings()
+    )  # this process is not a test session: these are the development buckets
     engine = create_async_engine(settings.DATABASE_DIRECT_URL)
     try:
         async with engine.connect() as connection:
             audit = (await connection.execute(text("SELECT count(*) FROM audit_logs"))).scalar_one()
     finally:
         await engine.dispose()
-    storage = get_storage_client(
+    client = get_storage_client(
         endpoint_url=settings.STORAGE_ENDPOINT_URL,
         access_key_id=settings.STORAGE_ACCESS_KEY_ID,
         secret_access_key=settings.STORAGE_SECRET_ACCESS_KEY,
-    )
-    keys: set[str] = set()
-    paginator = storage._client.get_paginator("list_objects_v2")  # noqa: SLF001
-    for page in paginator.paginate(Bucket=settings.BUCKET_OUTPUTS, Prefix="training/modules/"):
-        keys.update(item["Key"] for item in page.get("Contents", []))
-    return int(audit), keys
+    )._client  # noqa: SLF001
+    buckets: dict[str, tuple[int, str]] = {}
+    for bucket in (
+        settings.BUCKET_UPLOADS,
+        settings.BUCKET_SEGMENTS,
+        settings.BUCKET_OUTPUTS,
+        settings.BUCKET_ASSETS,
+    ):
+        rows = []
+        for page in client.get_paginator("list_objects_v2").paginate(Bucket=bucket):
+            for item in page.get("Contents", []):
+                rows.append(
+                    (item["Key"], item["Size"], item["ETag"], item["LastModified"].isoformat())
+                )
+        buckets[bucket] = (len(rows), listing_digest(rows))
+    return DevState(int(audit), buckets)
 
 
-def _purge_new_videos(before: set[str]) -> int:
-    """Delete the training videos created since ``before`` (and only those)."""
+SCRATCH_PREFIX = "edutoon-test-"
+
+
+def _scratch_bucket_names() -> set[str]:
     from edutoon.core.config import get_settings
     from edutoon.providers.storage import get_storage_client
 
     settings = get_settings()
-    storage = get_storage_client(
+    client = get_storage_client(
         endpoint_url=settings.STORAGE_ENDPOINT_URL,
         access_key_id=settings.STORAGE_ACCESS_KEY_ID,
         secret_access_key=settings.STORAGE_SECRET_ACCESS_KEY,
+    )._client  # noqa: SLF001
+    return {
+        b["Name"] for b in client.list_buckets()["Buckets"] if b["Name"].startswith(SCRATCH_PREFIX)
+    }
+
+
+def sweepable_scratch_buckets(
+    present: set[str], before: set[str], protected: set[str]
+) -> list[str]:
+    """The only buckets the runner may remove: named ``edutoon-test-*``, absent before the mutant
+    ran, and never a protected development bucket."""
+    return sorted(
+        name
+        for name in present - before
+        if name.startswith(SCRATCH_PREFIX) and name not in protected
     )
+
+
+def _remove_scratch_buckets_created_since(before: set[str]) -> int:
+    """A mutant that breaks the isolation's own clean-up leaves scratch buckets behind. Remove
+    those - buckets named ``edutoon-test-*`` that did not exist before this mutant ran - and
+    nothing else: never a protected bucket, never one that existed before the run."""
+    from edutoon.core.config import get_settings
+    from edutoon.providers.storage import get_storage_client
+
+    settings = get_settings()
+    client = get_storage_client(
+        endpoint_url=settings.STORAGE_ENDPOINT_URL,
+        access_key_id=settings.STORAGE_ACCESS_KEY_ID,
+        secret_access_key=settings.STORAGE_SECRET_ACCESS_KEY,
+    )._client  # noqa: SLF001
+    protected = {
+        settings.BUCKET_UPLOADS,
+        settings.BUCKET_SEGMENTS,
+        settings.BUCKET_OUTPUTS,
+        settings.BUCKET_ASSETS,
+        "edutoon-uploads",
+        "edutoon-segments",
+        "edutoon-outputs",
+        "edutoon-assets",
+    }
     removed = 0
-    paginator = storage._client.get_paginator("list_objects_v2")  # noqa: SLF001
-    for page in paginator.paginate(Bucket=settings.BUCKET_OUTPUTS, Prefix="training/modules/"):
-        for item in page.get("Contents", []):
-            if item["Key"] not in before:
-                storage._client.delete_object(Bucket=settings.BUCKET_OUTPUTS, Key=item["Key"])  # noqa: SLF001
-                removed += 1
+    for name in sweepable_scratch_buckets(_scratch_bucket_names(), before, protected):
+        for page in client.get_paginator("list_objects_v2").paginate(Bucket=name):
+            keys = [{"Key": item["Key"]} for item in page.get("Contents", [])]
+            if keys:
+                client.delete_objects(Bucket=name, Delete={"Objects": keys, "Quiet": True})
+        client.delete_bucket(Bucket=name)
+        removed += 1
     return removed
+
+
+def _path_of(mutation: Mutation) -> Path:
+    if mutation.file.startswith(("tests/", "scripts/")):
+        return ROOT / mutation.file
+    return SRC / mutation.file
 
 
 def main(selected: str | None) -> int:
     signal.signal(signal.SIGINT, _on_signal)
     signal.signal(signal.SIGTERM, _on_signal)
     for mutation in MUTATIONS:
-        path = SRC / mutation.file
+        path = _path_of(mutation)
         BACKUPS.setdefault(path, path.read_bytes())
 
-    audit_before, videos_before = asyncio.run(_dev_state())
-    print(
-        f"development audit_logs before: {audit_before}; training videos stored: {len(videos_before)}"
-    )
+    state_before = asyncio.run(_dev_state())
+    scratch_before = _scratch_bucket_names()
+    print(f"development state before: {state_before.describe()}")
+    print(f"scratch buckets present before: {len(scratch_before)}")
 
     verdict, summary, _ = run_tests(ALL_TESTS)
     print(f"baseline (no mutation): {verdict}  {summary}")
     if verdict != "passed":
         print("The unmutated tests do not pass, so no mutation result would mean anything.")
         return 2
+    escaped = state_before.differences(asyncio.run(_dev_state()))
+    if escaped:
+        print(f"the unmutated baseline run changed the development state: {escaped}")
+        return 2
+    if _scratch_bucket_names() != scratch_before:
+        print("the unmutated baseline run left scratch buckets behind")
+        return 2
 
     results: list[tuple[str, str, str]] = []
     problems: list[str] = []
-    purged = 0
+    swept = 0
     for mutation in MUTATIONS:
         if selected and selected not in mutation.name and selected not in mutation.area:
             continue
-        path = SRC / mutation.file
+        path = _path_of(mutation)
         original = BACKUPS[path]
         text = original.decode("utf-8")
         newline = "\r\n" if "\r\n" in text else "\n"
@@ -591,7 +812,7 @@ def main(selected: str | None) -> int:
             continue
         mutated = normalised.replace(mutation.old, mutation.new, 1).replace("\n", newline)
         started = time.perf_counter()
-        before_videos = asyncio.run(_dev_state())[1]
+        scratch_now = _scratch_bucket_names()
         try:
             path.write_bytes(mutated.encode("utf-8"))
             if path.read_bytes() == original or mutation.old in path.read_bytes().decode().replace(
@@ -602,10 +823,13 @@ def main(selected: str | None) -> int:
         finally:
             path.write_bytes(original)
         restored = path.read_bytes() == original
-        purged += _purge_new_videos(before_videos)
+        swept += _remove_scratch_buckets_created_since(scratch_now)
         seconds = time.perf_counter() - started
         if not restored:
             problems.append(f"{mutation.name} (RESTORE MISMATCH)")
+        moved = state_before.differences(asyncio.run(_dev_state()))
+        if moved:
+            problems.append(f"{mutation.name} (CHANGED THE DEVELOPMENT STATE: {moved})")
         first = re.sub(r"^(FAILED|ERROR) ", "", failing[0])[:110] if failing else ""
         if verdict == "failed":
             outcome = "killed" if not mutation.equivalent else "KILLED (declared equivalent!)"
@@ -629,21 +853,23 @@ def main(selected: str | None) -> int:
     for path, original in BACKUPS.items():
         if sha(path.read_bytes()) != sha(original):
             problems.append(f"{path} is not byte-identical to its backup")
-    audit_after, videos_after = asyncio.run(_dev_state())
-    if audit_after != audit_before:
-        problems.append(f"development audit_logs changed: {audit_before} -> {audit_after}")
-    if videos_after != videos_before:
-        problems.append(
-            f"training videos differ from before the run: {len(videos_after - videos_before)} extra"
-        )
+    state_after = asyncio.run(_dev_state())
+    for difference in state_before.differences(state_after):
+        problems.append(f"development state changed over the run: {difference}")
+    leftover = _scratch_bucket_names() - scratch_before
+    if leftover:
+        problems.append(f"scratch buckets left behind after the run: {sorted(leftover)}")
 
     killed = sum(1 for _, outcome, _ in results if outcome == "killed")
     equivalent = sum(1 for _, outcome, _ in results if outcome == "EQUIVALENT")
     print(
         f"\n{len(results)} mutations: {killed} killed, {equivalent} equivalent, "
-        f"{len(problems)} problems; stray videos removed: {purged}; "
-        f"development audit_logs {audit_before} -> {audit_after}"
+        f"{len(problems)} problems; debris scratch buckets removed after broken-teardown mutants: "
+        f"{swept}"
     )
+    print(f"development state before: {state_before.describe()}")
+    print(f"development state after:  {state_after.describe()}")
+    print(f"development state identical: {state_before == state_after}")
     for problem in problems:
         print(f"  PROBLEM: {problem}")
     return 1 if problems else 0

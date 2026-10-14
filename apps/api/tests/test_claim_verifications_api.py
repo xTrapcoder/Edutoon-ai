@@ -39,6 +39,7 @@ from edutoon.repositories import source_chunks as source_chunks_repo
 from edutoon.repositories import uploaded_sources as uploaded_sources_repo
 from edutoon.repositories.source_chunks import NewSourceChunk
 from tests.idempotency_helpers import INVALID_KEYS, idempotency_status
+from tests.storage_isolation import UPLOADS_BUCKET
 
 # Stands in for an external provider (OpenAI / Anthropic): these tests prove how our code
 # handles a response, never how a real provider behaves. See "Provider-mocked tests"
@@ -209,7 +210,7 @@ async def _seed_indexed_chunk(
         db_session,
         project_id=project_id,
         original_filename="notes.pdf",
-        storage_bucket="edutoon-uploads",
+        storage_bucket=UPLOADS_BUCKET,
         storage_key=f"{project_id}/{uuid4()}.pdf",
         byte_size=1024,
         checksum_sha256=uuid4().hex + uuid4().hex[:32],

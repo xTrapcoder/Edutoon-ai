@@ -227,9 +227,27 @@ withdrawal stops the next request, a download already in flight finishes.
 the development database's `audit_logs` from 301 to 1,336 rows. They now use
 `conftest.committed_database_url`: a database created for the test session, migrated by the real
 `alembic upgrade head`, and dropped at its end. The ordinary `db_session` tests roll back and write
-nothing. Limits: it protects only tests that use the fixture (`world` asserts it is not the
-development database); the Redis and MinIO instances are still shared, so those tests keep to their own
-keys and remove exactly what they made; existing audit rows were left alone.
+nothing. The same applies to the other tests that reach the application's process-wide engine
+(worker, stale-job recovery, services that really commit): module-level detection points that engine
+at the scratch database. Limits: it protects only tests that reach the database through those paths
+(`world` asserts it is not the development database); Redis is still shared, so tests keep to their
+own keys; existing audit rows were left alone.
+
+**Test isolation: scratch object storage.** The development buckets (`edutoon-uploads`,
+`-segments`, `-outputs`, `-assets`) are never touched by a test session (`tests/storage_isolation.py`,
+regression test `tests/test_storage_isolation.py`). At import of `tests/conftest.py` the four `BUCKET_*`
+settings are *overwritten* (never defaulted: `.env` and the shell cannot win) with per-session scratch
+buckets `edutoon-test-<run id>-<purpose>`; `pytest_sessionstart` creates them and `pytest_sessionfinish`
+empties and deletes exactly those. Every `Storage` built in the process (`Storage.__init__` is wrapped)
+refuses, before any request is built, an operation whose `Bucket` or `CopySource` is not one of the four
+scratch buckets - protected, hard-coded or unknown alike - so a test cannot fall back to a development
+bucket by any route, including a raw `storage._client` call. Dedicated buckets rather than a key prefix:
+the storage layer addresses `(bucket, key)` everywhere and has no namespace, so a prefix could not be
+enforced in one place. Limits: a session killed hard leaves its `edutoon-test-*` buckets (empty or not)
+behind - harmless, and deliberately not swept by later sessions, because a session removes only what it
+created; `scripts/verify_phase10.py`, `verify_phase11.py` and `smoke_test_phase4.py` are manual
+verification scripts, not tests, and still use the development buckets. The upload path is unchanged:
+write the object, then insert the row.
 
 ## Project generation settings
 

@@ -17,6 +17,7 @@ from edutoon.repositories import source_chunks as source_chunks_repo
 from edutoon.repositories import uploaded_sources as uploaded_sources_repo
 from edutoon.repositories import users as users_repo
 from edutoon.repositories.source_chunks import NewSourceChunk
+from tests.storage_isolation import UPLOADS_BUCKET
 
 
 async def _make_project(db_session, *, source_type: str = "topic"):
@@ -58,7 +59,7 @@ async def test_duplicate_checksum_in_same_project_raises_conflict_error(db_sessi
         db_session,
         project_id=project.id,
         original_filename="a.pdf",
-        storage_bucket="edutoon-uploads",
+        storage_bucket=UPLOADS_BUCKET,
         storage_key=f"{project.id}/a.pdf",
         byte_size=10,
         checksum_sha256=checksum,
@@ -69,7 +70,7 @@ async def test_duplicate_checksum_in_same_project_raises_conflict_error(db_sessi
             db_session,
             project_id=project.id,
             original_filename="b.pdf",
-            storage_bucket="edutoon-uploads",
+            storage_bucket=UPLOADS_BUCKET,
             storage_key=f"{project.id}/b.pdf",
             byte_size=20,
             checksum_sha256=checksum,
@@ -103,7 +104,7 @@ async def test_duplicate_chunk_index_raises_conflict_error(db_session):
         db_session,
         project_id=project.id,
         original_filename="a.pdf",
-        storage_bucket="edutoon-uploads",
+        storage_bucket=UPLOADS_BUCKET,
         storage_key=f"{project.id}/a.pdf",
         byte_size=10,
         checksum_sha256=_sha256_hex(),

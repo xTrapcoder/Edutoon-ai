@@ -47,6 +47,7 @@ from edutoon.repositories.source_chunks import NewSourceChunk
 from edutoon.services import audit_logs as audit_logs_service
 from edutoon.services import topic_extraction as topic_extraction_service
 from tests.leaky_errors import assert_clean, leaky_anthropic
+from tests.storage_isolation import UPLOADS_BUCKET
 
 # Stands in for an external provider (OpenAI / Anthropic): these tests prove how our code
 # handles a response, never how a real provider behaves. See "Provider-mocked tests"
@@ -150,7 +151,7 @@ async def _add_chunks(db_session, project_id: str, texts: list[str]):
         db_session,
         project_id=pid,
         original_filename="notes.pdf",
-        storage_bucket="edutoon-uploads",
+        storage_bucket=UPLOADS_BUCKET,
         storage_key=f"{pid}/{uuid4()}.pdf",
         byte_size=1024,
         checksum_sha256=uuid4().hex + uuid4().hex[:32],

@@ -33,6 +33,7 @@ from edutoon.repositories import users as users_repo
 from edutoon.repositories.source_chunks import NewSourceChunk
 from edutoon.services import evidence as evidence_service
 from tests.leaky_errors import assert_clean, leaky_openai
+from tests.storage_isolation import UPLOADS_BUCKET
 
 # Stands in for an external provider (OpenAI): these tests prove how our code handles a response,
 # never how a real provider behaves. See "Provider-mocked tests" in apps/api/README.md.
@@ -95,7 +96,7 @@ async def _make_source(db_session: Any, num_chunks: int, *, project: Any = None)
         db_session,
         project_id=project.id,
         original_filename="notes.pdf",
-        storage_bucket="edutoon-uploads",
+        storage_bucket=UPLOADS_BUCKET,
         storage_key=f"{project.id}/{uuid4()}.pdf",
         byte_size=1024,
         checksum_sha256=uuid4().hex + uuid4().hex[:32],

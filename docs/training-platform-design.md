@@ -105,6 +105,49 @@ administrator's preview plays exactly the snapshot employees will receive. The i
 the script and storyboard version in the publish response so a stale render can be recognised. It does
 not block Piece 3.
 
+### Storage decisions (Step 3, Piece 0 - 2026-10-14)
+
+Prompted by an investigation of the development uploads bucket: 726 objects, of which 2 are referenced
+by the two live projects and 724 are not referenced by any database row and have no project row
+(plus 9 unreferenced objects in the segments bucket). Their origin is *consistent with* test runs
+(tiny generated PDFs, each written at the instant its project id was minted, mostly before
+object removal on project deletion existed or written by tests that never removed them) but is not
+proven. Decisions:
+
+**Upload ordering stays: write the object first, then insert its row.** A failed database operation
+after the write can leave an orphaned object, which is recoverable (it harms nobody and can be
+reconciled later). The reverse order would risk a committed row that points at bytes that do not
+exist - a row the application would trust and fail on, a more serious integrity failure. The
+production upload path is unchanged.
+
+**No bucket-listing orphan sweeper.** Any future reconciliation must start from **database rows** or a
+**durable record of failed cleanup operations** (for example, an outbox of `(bucket, key)` removals that
+did not succeed), never from deleting objects merely because a database query does not mention them.
+A listing-based sweeper races with in-flight uploads (the object exists a moment before its row is
+committed) and could delete legitimate user files; the project-deletion algorithm therefore keeps
+removing exactly the keys its rows name, after the database commit, and never a project prefix.
+
+**Cleanup is not yet observable.** `project.file_cleanup_failed` (and `training.object_cleanup_failed`)
+are log lines only. They should become observable through a monitoring/alerting mechanism
+(a counter with an alert, or the durable record above). Future work; no dashboard or logging redesign
+is part of this piece.
+
+**Audit backlog (small).** Project creation and project deletion are not audited today (there are no
+`project.*` rows in `audit_logs`), which is also why a deleted project's leftovers cannot be traced
+from the audit trail. Not changed here.
+
+**The test suite is isolated from the development buckets.** Every test session creates four scratch
+buckets (`edutoon-test-<run id>-uploads|segments|outputs|assets`), overwrites the `BUCKET_*` settings
+with them before the application reads its settings, guards every storage client so that it refuses
+any other bucket (protected development buckets and unknown ones alike) before a request is built,
+and deletes only its own scratch buckets at the end. Dedicated buckets were chosen over a key prefix
+because the storage layer addresses `(bucket, key)` everywhere and has no namespace concept, so a
+prefix could not be enforced in one place. Mutation runs inherit this (each spawns pytest sessions) and
+the runner snapshots the four development buckets and the audit count around every mutant.
+`tests/test_storage_isolation.py` is the regression test. Manual verification scripts
+(`scripts/verify_phase10.py`, `verify_phase11.py`, `smoke_test_phase4.py`) are not part of the test
+suite and still use the development buckets by design. Details: `apps/api/README.md`, "Test isolation".
+
 ## 0. Pending quality gate (separate from this design — not done)
 
 > **A human must watch the generated sample video and listen to the four voice samples before the

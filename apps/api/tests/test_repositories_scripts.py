@@ -25,6 +25,7 @@ from edutoon.repositories import users as users_repo
 from edutoon.repositories.claim_verifications import NewClaimCitation
 from edutoon.repositories.scripts import NewScriptSegment
 from edutoon.repositories.source_chunks import NewSourceChunk
+from tests.storage_isolation import UPLOADS_BUCKET
 
 MODEL = "claude-sonnet-5"
 
@@ -44,7 +45,7 @@ async def _make_verified_claim(db_session, project):
         db_session,
         project_id=project.id,
         original_filename="notes.pdf",
-        storage_bucket="edutoon-uploads",
+        storage_bucket=UPLOADS_BUCKET,
         storage_key=f"{project.id}/{uuid4()}.pdf",
         byte_size=1024,
         checksum_sha256=uuid4().hex + uuid4().hex[:32],

@@ -33,10 +33,11 @@ from edutoon.repositories import users as users_repo
 from edutoon.repositories.scripts import NewScriptSegment
 from edutoon.services import audit_logs as audit_logs_service
 from edutoon.services import storyboard as service
+from tests.storage_isolation import SEGMENTS_BUCKET
 
 KIND = "generate_storyboard"
 MODEL = "claude-sonnet-5"
-BUCKET = "edutoon-segments"
+BUCKET = SEGMENTS_BUCKET
 
 
 async def _approved_script_with_measured_audio(db_session):

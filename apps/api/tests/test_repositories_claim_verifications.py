@@ -22,6 +22,7 @@ from edutoon.repositories import uploaded_sources as uploaded_sources_repo
 from edutoon.repositories import users as users_repo
 from edutoon.repositories.claim_verifications import NewClaimCitation
 from edutoon.repositories.source_chunks import NewSourceChunk
+from tests.storage_isolation import UPLOADS_BUCKET
 
 
 async def _make_chunk(db_session):
@@ -33,7 +34,7 @@ async def _make_chunk(db_session):
         db_session,
         project_id=project.id,
         original_filename="notes.pdf",
-        storage_bucket="edutoon-uploads",
+        storage_bucket=UPLOADS_BUCKET,
         storage_key=f"{project.id}/notes.pdf",
         byte_size=1024,
         checksum_sha256=uuid4().hex + uuid4().hex[:32],

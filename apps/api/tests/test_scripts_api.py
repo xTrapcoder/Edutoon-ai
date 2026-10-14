@@ -52,6 +52,7 @@ from edutoon.repositories.claim_verifications import NewClaimCitation
 from edutoon.repositories.source_chunks import NewSourceChunk
 from edutoon.services import scripts as scripts_service
 from tests.idempotency_helpers import INVALID_KEYS, idempotency_status
+from tests.storage_isolation import UPLOADS_BUCKET
 
 # Stands in for an external provider (OpenAI / Anthropic): these tests prove how our code
 # handles a response, never how a real provider behaves. See "Provider-mocked tests"
@@ -189,7 +190,7 @@ async def _add_supported_claims(db_session, project_id: str | UUID, texts: list[
         db_session,
         project_id=project_id,
         original_filename="notes.pdf",
-        storage_bucket="edutoon-uploads",
+        storage_bucket=UPLOADS_BUCKET,
         storage_key=f"{project_id}/{uuid4()}.pdf",
         byte_size=1024,
         checksum_sha256=uuid4().hex + uuid4().hex[:32],

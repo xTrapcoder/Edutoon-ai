@@ -2,11 +2,19 @@
 
 Populates the required environment variables before the application is
 imported so that settings resolution succeeds without a real ``.env`` file.
+
+**Object storage is isolated** (``tests/storage_isolation.py``): the four ``BUCKET_*`` settings are
+overwritten with per-session scratch buckets before the application reads them, every storage client
+refuses any other bucket, and the scratch buckets are created at session start and deleted at its
+end. The development buckets are never addressed.
 """
 
 from __future__ import annotations
 
 import os
+
+# Imported first: it records the original BUCKET_* values before they are replaced below.
+from tests import storage_isolation
 
 _TEST_ENV = {
     "ENVIRONMENT": "test",
@@ -16,10 +24,7 @@ _TEST_ENV = {
     "STORAGE_ENDPOINT_URL": "http://localhost:9000",
     "STORAGE_ACCESS_KEY_ID": "edutoon",
     "STORAGE_SECRET_ACCESS_KEY": "edutoon123",
-    "BUCKET_UPLOADS": "edutoon-uploads",
-    "BUCKET_ASSETS": "edutoon-assets",
-    "BUCKET_SEGMENTS": "edutoon-segments",
-    "BUCKET_OUTPUTS": "edutoon-outputs",
+    # BUCKET_* are deliberately absent: they are overwritten with scratch buckets just below.
     "CLERK_JWKS_URL": "https://test.clerk.accounts.dev/.well-known/jwks.json",
     "CLERK_ISSUER": "https://test.clerk.accounts.dev",
     # Never a real key - every test that touches the OpenAI client
@@ -39,6 +44,9 @@ _TEST_ENV = {
 
 for key, value in _TEST_ENV.items():
     os.environ.setdefault(key, value)
+
+# Unconditional: a bucket named in the shell or in ``.env`` must never win in a test run.
+storage_isolation.point_settings_at_scratch_buckets()
 
 import time  # noqa: E402
 from collections.abc import AsyncIterator, Callable, Iterator  # noqa: E402
@@ -65,6 +73,41 @@ from edutoon.providers.cache import Redis, get_redis_client  # noqa: E402
 from edutoon.providers.storage import get_storage_client  # noqa: E402
 from edutoon.repositories import users as _users_repo  # noqa: E402
 from tests.role_fixtures import Person  # noqa: E402
+
+# From here every Storage built in this process refuses a bucket that is not a scratch one.
+storage_isolation.install_guard()
+
+_scratch_buckets_created = False
+
+
+def pytest_sessionstart(session: pytest.Session) -> None:
+    """Create this session's four scratch buckets. If storage is unreachable the session carries
+    on (tests that need it fail with their own error; the pure ones still run) - the guard still
+    stops anything from reaching a development bucket."""
+    global _scratch_buckets_created
+    try:
+        storage_isolation.create_scratch_buckets()
+        _scratch_buckets_created = True
+    except Exception as exc:  # noqa: BLE001
+        import warnings
+
+        warnings.warn(
+            f"scratch storage buckets were not created: {type(exc).__name__}: {exc}", stacklevel=2
+        )
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    """Empty and delete the scratch buckets this session created - and only those."""
+    if not _scratch_buckets_created:
+        return
+    failed = storage_isolation.delete_scratch_buckets()
+    if failed:
+        import warnings
+
+        warnings.warn(
+            f"scratch storage buckets left behind (harmless, edutoon-test-*): {failed}",
+            stacklevel=2,
+        )
 
 
 @pytest.fixture

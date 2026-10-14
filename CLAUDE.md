@@ -339,7 +339,12 @@ Preview and employee stream both end in `api/video_response.serve_module_video`.
 `.../modules` listing is a course-404 route (policy test looks for `{course_id}` anywhere in the path),
 the course-delete 409 says to archive, `close_position_gap` checks its precondition, and **tests that
 really commit now run on a scratch database** (`conftest.committed_database_url`) - the append-only
-`audit_logs` had grown 301 -> 1,336 on the dev database. **Step 3's tables that reference
+`audit_logs` had grown 301 -> 1,336 on the dev database. **Step 3, Piece 0 (2026-10-14): every test
+session also uses scratch MinIO buckets** (`tests/storage_isolation.py`; the four dev buckets are
+never addressed - a guard on every `Storage` refuses any other bucket), the uploads bucket holds ~724
+unreferenced objects of unproven (test-like) origin pending a reviewed one-time cleanup, and the
+upload order (object first, then row) is a deliberate decision - see the design doc's "Storage
+decisions". **Step 3's tables that reference
 `training_modules` must use `ON DELETE RESTRICT`** (precedent: migration 0018). Mutation runner:
 `scripts/mutation_check_training.py`. Not built: assessments, progress, the pass gate; render-currency
 check on publish (deferred); the human review of the sample MP4 and the four voice samples is still
