@@ -406,3 +406,72 @@ course_enrolments = sa.Table(
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
 )
+
+
+# --- training assessments (migration 0021) ---------------------------------------------------
+
+assessments = sa.Table(
+    "assessments",
+    metadata,
+    sa.Column("id", UUID(as_uuid=True), primary_key=True, server_default=sa.FetchedValue()),
+    sa.Column("module_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("threshold_percent", sa.Integer, nullable=False),
+    sa.Column("created_by", UUID(as_uuid=True), nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+)
+
+assessment_questions = sa.Table(
+    "assessment_questions",
+    metadata,
+    sa.Column("id", UUID(as_uuid=True), primary_key=True, server_default=sa.FetchedValue()),
+    sa.Column("assessment_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("position", sa.Integer, nullable=False),
+    sa.Column("prompt", sa.Text, nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+)
+
+assessment_options = sa.Table(
+    "assessment_options",
+    metadata,
+    sa.Column("id", UUID(as_uuid=True), primary_key=True, server_default=sa.FetchedValue()),
+    sa.Column("question_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("position", sa.Integer, nullable=False),
+    sa.Column("label", sa.Text, nullable=False),
+)
+
+assessment_answer_keys = sa.Table(
+    "assessment_answer_keys",
+    metadata,
+    sa.Column("question_id", UUID(as_uuid=True), primary_key=True),
+    sa.Column("correct_option_id", UUID(as_uuid=True), nullable=False),
+)
+
+assessment_attempts = sa.Table(
+    "assessment_attempts",
+    metadata,
+    sa.Column("id", UUID(as_uuid=True), primary_key=True, server_default=sa.FetchedValue()),
+    sa.Column("assessment_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("module_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("user_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("attempt_number", sa.Integer, nullable=False),
+    sa.Column("threshold_percent", sa.Integer, nullable=False),
+    sa.Column("correct_count", sa.Integer, nullable=False),
+    sa.Column("question_count", sa.Integer, nullable=False),
+    sa.Column("passed", sa.Boolean, nullable=False),
+    sa.Column("idempotency_key", sa.Text, nullable=False),
+    sa.Column("submitted_at", sa.DateTime(timezone=True), nullable=False),
+)
+
+assessment_attempt_answers = sa.Table(
+    "assessment_attempt_answers",
+    metadata,
+    sa.Column("attempt_id", UUID(as_uuid=True), primary_key=True),
+    sa.Column("position", sa.Integer, primary_key=True),
+    sa.Column("question_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("prompt", sa.Text, nullable=False),
+    sa.Column("options", JSONB, nullable=False),
+    sa.Column("correct_option_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("selected_option_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("is_correct", sa.Boolean, nullable=False),
+)

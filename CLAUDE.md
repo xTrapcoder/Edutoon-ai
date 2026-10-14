@@ -350,6 +350,23 @@ decisions". **Step 3's tables that reference
 check on publish (deferred); the human review of the sample MP4 and the four voice samples is still
 pending and blocks any employee rollout.
 
+**Training platform, Step 3 (2026-10-15) - assessments, the pass gate and progression (migration 0021;
+local, verified on scratch databases; design in `docs/training-platform-design.md` "Step 3", behaviour in
+`apps/api/README.md` "Training assessments").** One optional single-correct assessment per module; the
+threshold is stored on the assessment and every attempt records the exact question set, key and
+threshold it was graded with (no FK into the authoring tables). An attempt is inserted already graded
+and never changed (`reject_mutation` triggers, `passed` CHECKed against the integers, no UPDATE/DELETE
+in `src` - an architecture test); grading is integer-only (`correct * 100 >= threshold * total`);
+employee types structurally carry no answer. `passed_module_ids` now reads real attempts (sticky pass);
+a module with no assessment blocks nothing. Module delete and reorder are 409 once attempts exist; the
+history foreign keys are `ON DELETE RESTRICT`. Assessment routes share one 404 (seven causes,
+byte-identical); submission uses `Idempotency-Key` plus a unique `(user_id, idempotency_key)`. **The
+development database is still at 0020 until the owner runs `make migrate`.** The flaky
+`test_recovery_with_nothing_to_recover` was a module-level `NOW` read at import, not a global assertion;
+`tests/test_isolation_of_test_assertions.py` guards that class. The mutation runner's scratch-bucket
+sweeper must not run alongside any other test session (see the design doc). Not built: a front end for
+assessments, reporting, certificates, multi-select, a watched-video gate.
+
 **Phase 12 has not started and needs the owner's explicit approval.**
 
 ## Commands
@@ -380,7 +397,7 @@ apps/
   api/        FastAPI service (uv, src/edutoon)
     src/edutoon/          api/ (routers, schemas) · services/ · domain/ (pure; deck*.py = the deck engine) ·
                           repositories/ · providers/ · worker/ · db/ · core/
-    alembic/              migration environment + versions/0001..0020
+    alembic/              migration environment + versions/0001..0021
   parser/     PDF/topic parser — not yet initialised
   render/     placeholder - the renderer lives in apps/api/src/edutoon/providers/renderer
 packages/

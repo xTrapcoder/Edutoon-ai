@@ -88,6 +88,10 @@ T_ISOLATION = "tests/test_storage_isolation.py"
 T_SNAPSHOT = "tests/test_mutation_runner_snapshot.py"
 ISOLATION = "tests/storage_isolation.py"
 RUNNER = "scripts/mutation_check_training.py"
+T_ASSESS = "tests/test_assessments_api.py"
+T_ASSESS_DOMAIN = "tests/test_domain_training_assessment.py"
+T_MIG21 = "tests/test_migration_0021_upgrade_downgrade.py"
+T_ARCH = "tests/test_architecture_rules.py"
 
 ALL_TESTS = (
     T_DOMAIN,
@@ -101,6 +105,10 @@ ALL_TESTS = (
     T_ADMIN,
     T_ISOLATION,
     T_SNAPSHOT,
+    T_ASSESS,
+    T_ASSESS_DOMAIN,
+    T_MIG21,
+    T_ARCH,
 )
 
 MUTATIONS: tuple[Mutation, ...] = (
@@ -345,9 +353,9 @@ MUTATIONS: tuple[Mutation, ...] = (
         "seam: everything is considered passed",
         "access seam",
         ACCESS,
-        "    return frozenset()\n",
+        "    return await assessments_repo.passed_module_ids(session, user_id=user_id, module_ids=module_ids)\n",
         "    return frozenset(module_ids)\n",
-        (T_SEAM, T_EMPLOYEE),
+        (T_SEAM, T_EMPLOYEE, T_ASSESS),
     ),
     Mutation(
         "access: a locked module is reported as not found",
@@ -567,6 +575,265 @@ MUTATIONS: tuple[Mutation, ...] = (
         "            pass\n",
         (T_ISOLATION,),
     ),
+    Mutation(
+        "assessment: the gate is strict (correct*100 > threshold*total)",
+        "training assessments",
+        "domain/training_assessment.py",
+        "return total > 0 and correct * 100 >= threshold_percent * total",
+        "return total > 0 and correct * 100 > threshold_percent * total",
+        (
+            T_ASSESS_DOMAIN,
+            T_ASSESS,
+        ),
+    ),
+    Mutation(
+        "assessment: the gate uses float division",
+        "training assessments",
+        "domain/training_assessment.py",
+        "return total > 0 and correct * 100 >= threshold_percent * total",
+        "return total > 0 and correct / total * 100 >= threshold_percent",
+        (T_ASSESS_DOMAIN,),
+    ),
+    Mutation(
+        "assessment: an empty assessment passes",
+        "training assessments",
+        "domain/training_assessment.py",
+        "return total > 0 and correct * 100 >= threshold_percent * total",
+        "return correct * 100 >= threshold_percent * total",
+        (T_ASSESS_DOMAIN,),
+    ),
+    Mutation(
+        "assessment: the threshold is a constant 70, not the stored one",
+        "training assessments",
+        "services/assessments.py",
+        "grade(questions, answers, threshold_percent=assessment.threshold_percent)",
+        "grade(questions, answers, threshold_percent=70)",
+        (T_ASSESS,),
+    ),
+    Mutation(
+        "assessment: an unanswered question is accepted",
+        "training assessments",
+        "domain/training_assessment.py",
+        '    if seen != set(by_id):\n        return "Every question must be answered."\n',
+        '    if False:\n        return "Every question must be answered."\n',
+        (
+            T_ASSESS_DOMAIN,
+            T_ASSESS,
+        ),
+    ),
+    Mutation(
+        "assessment: an option of another question is accepted",
+        "training assessments",
+        "domain/training_assessment.py",
+        "        if answer.option_id not in {o.id for o in question.options}:\n",
+        "        if False:\n",
+        (
+            T_ASSESS_DOMAIN,
+            T_ASSESS,
+        ),
+    ),
+    Mutation(
+        "assessment: an authored question may have several correct options",
+        "training assessments",
+        "domain/training_assessment.py",
+        "        if sum(1 for option in question.options if option.is_correct) != 1:\n",
+        "        if sum(1 for option in question.options if option.is_correct) < 1:\n",
+        (
+            T_ASSESS_DOMAIN,
+            T_ASSESS,
+        ),
+    ),
+    Mutation(
+        "assessment: any attempt, passed or not, counts as passed",
+        "training assessments",
+        "repositories/assessments.py",
+        "            assessment_attempts.c.passed.is_(True),\n",
+        "",
+        (T_ASSESS,),
+    ),
+    Mutation(
+        "assessment: passing is not sticky (a later failed retake revokes it)",
+        "training assessments",
+        "services/training_access.py",
+        "    return await assessments_repo.passed_module_ids(session, user_id=user_id, module_ids=module_ids)",
+        "    passed = await assessments_repo.passed_module_ids(\n        session, user_id=user_id, module_ids=module_ids\n    )\n    return frozenset(\n        m\n        for m in passed\n        if (await assessments_repo.list_attempts(session, user_id=user_id, module_id=m))[-1].passed\n    )",
+        (T_ASSESS,),
+    ),
+    Mutation(
+        "assessment: a module without an assessment blocks the next one",
+        "training assessments",
+        "domain/training_access.py",
+        "        if requires_pass(predecessor.id, assessed_module_ids) and predecessor.id not in passed:",
+        "        if predecessor.id not in passed:",
+        (
+            T_ASSESS,
+            T_ASSESS_DOMAIN,
+        ),
+    ),
+    Mutation(
+        "assessment: not being told which modules have an assessment opens everything",
+        "training assessments",
+        "domain/training_assessment.py",
+        "    return assessed_module_ids is None or module_id in assessed_module_ids",
+        "    return assessed_module_ids is not None and module_id in assessed_module_ids",
+        (
+            T_ASSESS_DOMAIN,
+            T_SEAM,
+        ),
+    ),
+    Mutation(
+        "assessment: reordering is allowed after attempts",
+        "training assessments",
+        "services/training.py",
+        "    if await assessments_repo.has_attempts_in_course(session, course_id):\n",
+        "    if False:\n",
+        (T_ASSESS,),
+    ),
+    Mutation(
+        "assessment: deleting a module does not check for attempts first",
+        "training assessments",
+        "services/training.py",
+        "    if await assessments_repo.has_attempts_for_module(session, module_id):\n        raise ConflictError(MODULE_DELETE_REFUSED)\n",
+        "",
+        (T_ASSESS,),
+        "the RESTRICT foreign keys refuse the same delete inside the savepoint and the handler turns that into the very same 409, so the explicit check is a clearer message first, not a different outcome",
+    ),
+    Mutation(
+        "assessment: deleting an assessment with attempts is allowed",
+        "training assessments",
+        "services/assessments.py",
+        "    if await assessments_repo.has_attempts_for_module(session, module_id):\n        raise ConflictError(ASSESSMENT_DELETE_REFUSED)\n",
+        "",
+        (T_ASSESS,),
+    ),
+    Mutation(
+        "assessment: the employee option schema gains is_correct",
+        "training assessments",
+        "api/schemas/assessments.py",
+        "    id: UUID\n    position: int\n    label: str\n\n\nclass EmployeeQuestionResponse",
+        "    id: UUID\n    position: int\n    label: str\n    is_correct: bool = False\n\n\nclass EmployeeQuestionResponse",
+        (T_ASSESS,),
+    ),
+    Mutation(
+        "assessment: the attempt response gains the answer key",
+        "training assessments",
+        "api/schemas/assessments.py",
+        "    passed: bool\n    submitted_at: datetime\n\n    @classmethod\n    def from_record(cls, attempt: AttemptRecord)",
+        "    passed: bool\n    submitted_at: datetime\n    correct_option_ids: list[UUID] = []\n\n    @classmethod\n    def from_record(cls, attempt: AttemptRecord)",
+        (T_ASSESS,),
+    ),
+    Mutation(
+        "assessment: the employee read path reads the answer key",
+        "training assessments",
+        "repositories/assessments.py",
+        '    rows = await _question_rows(session, assessment_id)\n    options = await _options_by_question(session, [r["id"] for r in rows])\n    return [\n        EmployeeQuestion(',
+        '    rows = await _question_rows(session, assessment_id)\n    options = await _options_by_question(session, [r["id"] for r in rows])\n    _ = await _keys(session, [r["id"] for r in rows])\n    return [\n        EmployeeQuestion(',
+        (T_ASSESS,),
+    ),
+    Mutation(
+        "assessment: the module 404 shows through on an assessment route",
+        "training assessments",
+        "services/assessments.py",
+        "        raise NotFoundError(ASSESSMENT_NOT_FOUND) from exc",
+        "        raise",
+        (T_ASSESS,),
+    ),
+    Mutation(
+        "assessment: a non-employee gets the module 404 on an assessment route",
+        "training assessments",
+        "api/policies.py",
+        "    if user.role != ROLE_EMPLOYEE:\n        raise NotFoundError(ASSESSMENT_NOT_FOUND)\n    return user",
+        "    if user.role != ROLE_EMPLOYEE:\n        raise NotFoundError(MODULE_NOT_FOUND)\n    return user",
+        (T_ASSESS,),
+    ),
+    Mutation(
+        "assessment: a module with no assessment answers differently",
+        "training assessments",
+        "services/assessments.py",
+        "    assessment = await assessments_repo.get_by_module(session, module_id)\n    if assessment is None:\n        raise NotFoundError(ASSESSMENT_NOT_FOUND)\n    return EmployeeAssessmentView(",
+        '    assessment = await assessments_repo.get_by_module(session, module_id)\n    if assessment is None:\n        raise NotFoundError("No assessment for this module.")\n    return EmployeeAssessmentView(',
+        (T_ASSESS,),
+    ),
+    Mutation(
+        "assessment: a retried key is not looked up",
+        "training assessments",
+        "services/assessments.py",
+        "    if earlier is not None:\n        if earlier.module_id != module_id:",
+        "    if False:\n        if earlier.module_id != module_id:",
+        (T_ASSESS,),
+    ),
+    Mutation(
+        "assessment: a key reused for another module is replayed",
+        "training assessments",
+        "services/assessments.py",
+        '        if earlier.module_id != module_id:\n            raise ConflictError("This Idempotency-Key was already used for a different request.")\n',
+        "",
+        (T_ASSESS,),
+    ),
+    Mutation(
+        '"assessment: a repository function regrades a submitted attempt"',
+        "training assessments",
+        "repositories/assessments.py",
+        "        .where(training_modules.c.course_id == course_id)\n        .limit(1)\n    )\n    return (await session.execute(stmt)).first() is not None\n",
+        "        .where(training_modules.c.course_id == course_id)\n        .limit(1)\n    )\n    return (await session.execute(stmt)).first() is not None  # kept\n\n\nasync def regrade(session: AsyncSession, attempt_id: UUID) -> None:\n    from sqlalchemy import update\n\n    await session.execute(\n        update(assessment_attempts).where(assessment_attempts.c.id == attempt_id).values(passed=True)\n    )\n",
+        (T_ARCH,),
+    ),
+    Mutation(
+        "assessment: attempts cascade when their module is deleted",
+        "training assessments",
+        "../../alembic/versions/0021_training_assessments.py",
+        "            CONSTRAINT fk_assessment_attempts_module_id_training_modules\n                FOREIGN KEY (module_id) REFERENCES training_modules (id) ON DELETE RESTRICT,",
+        "            CONSTRAINT fk_assessment_attempts_module_id_training_modules\n                FOREIGN KEY (module_id) REFERENCES training_modules (id) ON DELETE CASCADE,",
+        (T_MIG21,),
+    ),
+    Mutation(
+        "assessment: attempts cascade when their user is deleted",
+        "training assessments",
+        "../../alembic/versions/0021_training_assessments.py",
+        "            CONSTRAINT fk_assessment_attempts_user_id_users\n                FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE RESTRICT,",
+        "            CONSTRAINT fk_assessment_attempts_user_id_users\n                FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,",
+        (T_MIG21,),
+    ),
+    Mutation(
+        "assessment: answers cascade when their attempt is deleted",
+        "training assessments",
+        "../../alembic/versions/0021_training_assessments.py",
+        "FOREIGN KEY (attempt_id) REFERENCES assessment_attempts (id) ON DELETE RESTRICT,",
+        "FOREIGN KEY (attempt_id) REFERENCES assessment_attempts (id) ON DELETE CASCADE,",
+        (T_MIG21,),
+    ),
+    Mutation(
+        "assessment: an attempt can be updated (the trigger fires on delete only)",
+        "training assessments",
+        "../../alembic/versions/0021_training_assessments.py",
+        "            BEFORE UPDATE OR DELETE ON assessment_attempts\n",
+        "            BEFORE DELETE ON assessment_attempts\n",
+        (T_MIG21,),
+    ),
+    Mutation(
+        "assessment: an answer can be updated (the trigger fires on delete only)",
+        "training assessments",
+        "../../alembic/versions/0021_training_assessments.py",
+        "            BEFORE UPDATE OR DELETE ON assessment_attempt_answers\n",
+        "            BEFORE DELETE ON assessment_attempt_answers\n",
+        (T_MIG21,),
+    ),
+    Mutation(
+        "assessment: the stored pass need not agree with the score",
+        "training assessments",
+        "../../alembic/versions/0021_training_assessments.py",
+        "                CHECK (passed = (correct_count * 100 >= threshold_percent * question_count))",
+        "                CHECK (true)",
+        (T_MIG21,),
+    ),
+    Mutation(
+        "assessment: a question may have no answer key row of its own (key not unique per question)",
+        "training assessments",
+        "../../alembic/versions/0021_training_assessments.py",
+        "            question_id       uuid PRIMARY KEY,\n            correct_option_id uuid NOT NULL,",
+        "            question_id       uuid NOT NULL,\n            correct_option_id uuid NOT NULL,",
+        (T_MIG21,),
+    ),
 )
 
 
@@ -764,7 +1031,7 @@ def _remove_scratch_buckets_created_since(before: set[str]) -> int:
 def _path_of(mutation: Mutation) -> Path:
     if mutation.file.startswith(("tests/", "scripts/")):
         return ROOT / mutation.file
-    return SRC / mutation.file
+    return (SRC / mutation.file).resolve()  # '../../alembic/...' reaches the migration files
 
 
 def main(selected: str | None) -> int:

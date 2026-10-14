@@ -183,14 +183,35 @@ async def test_an_employee_cannot_use_the_administrators_preview_of_a_real_modul
     assert real.status_code == 404 and comparable(real) == comparable(absent)
 
 
-def test_no_assessment_progress_or_pass_gate_route_exists():
-    """Piece 3 adds enrolments and the two employee routes only. (Scoped to the training
-    namespaces: the project render API has an unrelated ``/render/progress``.)"""
-    paths = {
-        endpoint.path
-        for _, endpoint in api_routes(create_app())
+# Pinned in Piece 3 as "no assessment, progress or pass-gate route exists"; since Step 3 it is the
+# complete table of the routes in the training namespaces that carry one of those words, with the
+# role policy (the scope guard) each must have. A route added, removed or re-gated changes this
+# table in the same commit - and a progress / quiz / score / pass route still fails here.
+SCOPE_WORDS = ("assessment", "attempt", "progress", "quiz", "question", "score", "pass")
+SCOPE_GUARDED_ROUTES = {
+    ("PUT", "/v1/admin/training/modules/{module_id}/assessment"): "admin_module",
+    ("GET", "/v1/admin/training/modules/{module_id}/assessment"): "admin_module",
+    ("DELETE", "/v1/admin/training/modules/{module_id}/assessment"): "admin_module",
+    ("GET", "/v1/training/modules/{module_id}/assessment"): "employee_assessment",
+    ("GET", "/v1/training/modules/{module_id}/assessment/attempts"): "employee_assessment",
+    ("POST", "/v1/training/modules/{module_id}/assessment/attempts"): "employee_assessment",
+}
+
+
+def test_the_assessment_scope_routes_are_exactly_the_pinned_table_with_their_guards():
+    """Scoped to the training namespaces (the project render API has an unrelated
+    ``/render/progress``). Every route in them that mentions assessments, attempts, progress,
+    quizzes, questions, scores or a pass gate is in the table, with exactly its policy; every
+    employee-facing one is guarded by the assessment 404 policy, every admin one by the
+    module 404 policy, and no other route in the namespaces carries such a word."""
+    found = {
+        (method, endpoint.path): next(iter(policies_of(endpoint)))
+        for method, endpoint in api_routes(create_app())
         if endpoint.path.startswith(("/v1/training", "/v1/admin/training"))
+        and any(word in endpoint.path.lower() for word in SCOPE_WORDS)
     }
-    forbidden = ("assessment", "attempt", "progress", "quiz", "question", "score", "pass")
-    assert len(paths) >= 10  # the scan found the training routes at all
-    assert [p for p in paths if any(word in p.lower() for word in forbidden)] == []
+    assert len(found) >= 1  # the scan found them at all
+    assert found == SCOPE_GUARDED_ROUTES
+    for (_, path), policy in found.items():
+        employee_side = path.startswith("/v1/training")
+        assert policy == ("employee_assessment" if employee_side else "admin_module")

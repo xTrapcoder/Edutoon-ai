@@ -19,7 +19,13 @@ from edutoon.repositories import projects as projects_repo
 from edutoon.repositories import uploaded_sources as uploaded_sources_repo
 from edutoon.repositories import users as users_repo
 
-NOW = datetime.now(UTC)
+
+def _now() -> datetime:
+    """The clock *when asked*. A module-level ``NOW`` was read at import, so on a long suite it was
+    hours old and the job ``test_recovery_with_nothing_to_recover`` made with ``started_at=NOW``
+    counted as stale (older than the recovery window): the flake. The guard is
+    ``test_isolation_of_test_assertions``."""
+    return datetime.now(UTC)
 
 
 async def _project(db_session):
@@ -123,13 +129,13 @@ async def test_the_project_stays_processing_until_every_job_has_ended(db_session
 async def test_retrying_a_failed_project_takes_it_back_through_processing_to_ready(db_session):
     project = await _project(db_session)
     failed = await jobs_repo.create(db_session, project_id=project.id, kind="extract_topics")
-    await _finish(db_session, failed, "failed", at=NOW - timedelta(minutes=10))
+    await _finish(db_session, failed, "failed", at=_now() - timedelta(minutes=10))
     assert await _status(db_session, project) == "failed"
 
     retry = await jobs_repo.create(db_session, project_id=project.id, kind="extract_topics")
     assert await _status(db_session, project) == "processing"
 
-    await _finish(db_session, retry, "succeeded", at=NOW)
+    await _finish(db_session, retry, "succeeded", at=_now())
     assert await _status(db_session, project) == "ready"
 
 
@@ -154,8 +160,8 @@ async def test_the_outcome_that_finished_last_decides_not_the_one_created_last(d
 
     # The later-created job finishes first (a failure); the earlier-created, slower one
     # finishes after it and succeeds. The project's latest outcome is that success.
-    await _finish(db_session, fast, "failed", at=NOW - timedelta(minutes=5))
-    await _finish(db_session, slow, "succeeded", at=NOW)
+    await _finish(db_session, fast, "failed", at=_now() - timedelta(minutes=5))
+    await _finish(db_session, slow, "succeeded", at=_now())
 
     assert await _status(db_session, project) == "ready"
 
@@ -165,8 +171,8 @@ async def test_a_failure_that_finishes_after_a_success_decides(db_session):
     ok = await jobs_repo.create(db_session, project_id=project.id, kind="build_evidence")
     bad = await jobs_repo.create(db_session, project_id=project.id, kind="extract_topics")
 
-    await _finish(db_session, ok, "succeeded", at=NOW - timedelta(minutes=5))
-    await _finish(db_session, bad, "failed", at=NOW)
+    await _finish(db_session, ok, "succeeded", at=_now() - timedelta(minutes=5))
+    await _finish(db_session, bad, "failed", at=_now())
 
     assert await _status(db_session, project) == "failed"
 
@@ -179,9 +185,9 @@ async def test_a_cancelled_job_is_not_an_outcome(db_session):
     assert await _status(db_session, project) == "draft"
 
     ok = await jobs_repo.create(db_session, project_id=project.id, kind="extract_topics")
-    await _finish(db_session, ok, "succeeded", at=NOW - timedelta(minutes=5))
+    await _finish(db_session, ok, "succeeded", at=_now() - timedelta(minutes=5))
     later = await jobs_repo.create(db_session, project_id=project.id, kind="generate_script")
-    await _finish(db_session, later, "cancelled", at=NOW)
+    await _finish(db_session, later, "cancelled", at=_now())
     assert await _status(db_session, project) == "ready"
 
 
@@ -239,7 +245,7 @@ async def test_a_later_success_supersedes_an_earlier_unreadable_pdf(db_session):
 async def test_an_unreadable_pdf_after_a_success_is_the_latest_outcome(db_session):
     project = await _project(db_session)
     job = await jobs_repo.create(db_session, project_id=project.id, kind="build_evidence")
-    await _finish(db_session, job, "succeeded", at=NOW - timedelta(minutes=5))
+    await _finish(db_session, job, "succeeded", at=_now() - timedelta(minutes=5))
     assert await _status(db_session, project) == "ready"
 
     bad = await _source(db_session, project)
@@ -279,7 +285,7 @@ async def test_a_job_failed_by_crash_recovery_fails_the_project(db_session):
 async def test_recovery_with_nothing_to_recover_changes_nothing(db_session):
     project = await _project(db_session)
     job = await jobs_repo.create(db_session, project_id=project.id, kind="extract_topics")
-    await jobs_repo.update(db_session, job_id=job.id, status="running", started_at=NOW)
+    await jobs_repo.update(db_session, job_id=job.id, status="running", started_at=_now())
 
     recovered = await jobs_repo.fail_stale_running(
         db_session,

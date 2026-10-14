@@ -329,6 +329,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/admin/training/modules/{module_id}/assessment": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Assessment */
+        get: operations["get_assessment_v1_admin_training_modules__module_id__assessment_get"];
+        /**
+         * Put Assessment
+         * @description Create the module's assessment or replace all of its questions and its threshold. Allowed
+         *     after attempts exist: attempts keep the questions and threshold they were graded with.
+         */
+        put: operations["put_assessment_v1_admin_training_modules__module_id__assessment_put"];
+        post?: never;
+        /** Delete Assessment */
+        delete: operations["delete_assessment_v1_admin_training_modules__module_id__assessment_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/admin/training/modules/{module_id}/video": {
         parameters: {
             query?: never;
@@ -379,6 +402,51 @@ export interface paths {
         get: operations["stream_module_video_v1_training_modules__module_id__video_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/training/modules/{module_id}/assessment": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Assessment
+         * @description The questions - never the answers.
+         */
+        get: operations["get_assessment_v1_training_modules__module_id__assessment_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/training/modules/{module_id}/assessment/attempts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Attempts
+         * @description The caller's own attempts at this module, oldest first.
+         */
+        get: operations["list_attempts_v1_training_modules__module_id__assessment_attempts_get"];
+        put?: never;
+        /**
+         * Submit Attempt
+         * @description Submit every answer at once. Graded and recorded in this request; a retry with the same
+         *     ``Idempotency-Key`` returns the same attempt and never creates another.
+         */
+        post: operations["submit_attempt_v1_training_modules__module_id__assessment_attempts_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -830,6 +898,146 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** AdminAssessmentResponse */
+        AdminAssessmentResponse: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Module Id
+             * Format: uuid
+             */
+            module_id: string;
+            /** Threshold Percent */
+            threshold_percent: number;
+            /** Question Count */
+            question_count: number;
+            /** Questions */
+            questions: components["schemas"]["AdminQuestionResponse"][];
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
+        /** AdminOptionResponse */
+        AdminOptionResponse: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Position */
+            position: number;
+            /** Label */
+            label: string;
+            /** Is Correct */
+            is_correct: boolean;
+        };
+        /** AdminQuestionResponse */
+        AdminQuestionResponse: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Position */
+            position: number;
+            /** Prompt */
+            prompt: string;
+            /** Options */
+            options: components["schemas"]["AdminOptionResponse"][];
+        };
+        /** AnswerInput */
+        AnswerInput: {
+            /**
+             * Question Id
+             * Format: uuid
+             */
+            question_id: string;
+            /**
+             * Option Id
+             * Format: uuid
+             */
+            option_id: string;
+        };
+        /** AssessmentOptionInput */
+        AssessmentOptionInput: {
+            /** Label */
+            label: string;
+            /**
+             * Is Correct
+             * @default false
+             */
+            is_correct: boolean;
+        };
+        /**
+         * AssessmentPutRequest
+         * @description The whole assessment, replaced at once. ``threshold_percent`` is stored on the assessment.
+         */
+        AssessmentPutRequest: {
+            /**
+             * Threshold Percent
+             * @default 70
+             */
+            threshold_percent: number;
+            /** Questions */
+            questions: components["schemas"]["AssessmentQuestionInput"][];
+        };
+        /** AssessmentQuestionInput */
+        AssessmentQuestionInput: {
+            /** Prompt */
+            prompt: string;
+            /** Options */
+            options: components["schemas"]["AssessmentOptionInput"][];
+        };
+        /** AttemptListResponse */
+        AttemptListResponse: {
+            /** Items */
+            items: components["schemas"]["AttemptResponse"][];
+        };
+        /**
+         * AttemptResponse
+         * @description A graded attempt: integer score, the threshold it was graded against, and the verdict.
+         *     Deliberately without the answers' correctness - the key is never sent to an employee.
+         */
+        AttemptResponse: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Module Id
+             * Format: uuid
+             */
+            module_id: string;
+            /** Attempt Number */
+            attempt_number: number;
+            /** Correct Count */
+            correct_count: number;
+            /** Question Count */
+            question_count: number;
+            /** Threshold Percent */
+            threshold_percent: number;
+            /** Passed */
+            passed: boolean;
+            /**
+             * Submitted At
+             * Format: date-time
+             */
+            submitted_at: string;
+        };
+        /**
+         * AttemptSubmitRequest
+         * @description Every question answered exactly once, in one request.
+         */
+        AttemptSubmitRequest: {
+            /** Answers */
+            answers: components["schemas"]["AnswerInput"][];
+        };
         /** Body_upload_source_v1_projects__project_id__sources_post */
         Body_upload_source_v1_projects__project_id__sources_post: {
             /** File */
@@ -986,6 +1194,49 @@ export interface components {
             title?: string | null;
             /** Description */
             description?: string | null;
+        };
+        /** EmployeeAssessmentResponse */
+        EmployeeAssessmentResponse: {
+            /**
+             * Module Id
+             * Format: uuid
+             */
+            module_id: string;
+            /** Threshold Percent */
+            threshold_percent: number;
+            /** Question Count */
+            question_count: number;
+            /** Questions */
+            questions: components["schemas"]["EmployeeQuestionResponse"][];
+        };
+        /**
+         * EmployeeOptionResponse
+         * @description What an employee sees of an option: its id, place and wording. Nothing else.
+         */
+        EmployeeOptionResponse: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Position */
+            position: number;
+            /** Label */
+            label: string;
+        };
+        /** EmployeeQuestionResponse */
+        EmployeeQuestionResponse: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Position */
+            position: number;
+            /** Prompt */
+            prompt: string;
+            /** Options */
+            options: components["schemas"]["EmployeeOptionResponse"][];
         };
         /**
          * EnrolmentCreateRequest
@@ -3155,6 +3406,109 @@ export interface operations {
             };
         };
     };
+    get_assessment_v1_admin_training_modules__module_id__assessment_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                module_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminAssessmentResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    put_assessment_v1_admin_training_modules__module_id__assessment_put: {
+        parameters: {
+            query?: never;
+            header: {
+                "idempotency-key": string;
+                authorization?: string | null;
+            };
+            path: {
+                module_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AssessmentPutRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminAssessmentResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_assessment_v1_admin_training_modules__module_id__assessment_delete: {
+        parameters: {
+            query?: never;
+            header: {
+                "idempotency-key": string;
+                authorization?: string | null;
+            };
+            path: {
+                module_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     stream_module_video_v1_admin_training_modules__module_id__video_get: {
         parameters: {
             query?: {
@@ -3267,6 +3621,150 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
+            };
+        };
+    };
+    get_assessment_v1_training_modules__module_id__assessment_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                module_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EmployeeAssessmentResponse"];
+                };
+            };
+            /** @description The module is locked: an earlier module has not been passed. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such assessment, or it is not available to this employee. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_attempts_v1_training_modules__module_id__assessment_attempts_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                module_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AttemptListResponse"];
+                };
+            };
+            /** @description The module is locked: an earlier module has not been passed. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such assessment, or it is not available to this employee. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    submit_attempt_v1_training_modules__module_id__assessment_attempts_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "idempotency-key": string;
+                authorization?: string | null;
+            };
+            path: {
+                module_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AttemptSubmitRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AttemptResponse"];
+                };
+            };
+            /** @description The module is locked: an earlier module has not been passed. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such assessment, or it is not available to this employee. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The answers cannot be graded. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

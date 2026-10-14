@@ -249,6 +249,44 @@ created; `scripts/verify_phase10.py`, `verify_phase11.py` and `smoke_test_phase4
 verification scripts, not tests, and still use the development buckets. The upload path is unchanged:
 write the object, then insert the row.
 
+### Training assessments (Step 3, migration 0021)
+
+One optional **assessment per module**: single-correct multiple choice, 1-50 questions of 2-6 options
+(`domain/training_assessment.py` holds every limit and the grading). Design and the list of decisions:
+`docs/training-platform-design.md`, "Step 3".
+
+- **Authoring** (administrators): `PUT /v1/admin/training/modules/{module_id}/assessment` replaces the
+  whole assessment (threshold 1-100, default 70, stored on the assessment) at any time - also after
+  attempts exist; `GET` returns it with `is_correct`; `DELETE` is 409 once it has attempts.
+- **Taking it** (employees): `GET /v1/training/modules/{module_id}/assessment` returns the questions with
+  no key; `POST .../assessment/attempts` (`Idempotency-Key`) submits **every** answer once, is graded in
+  that request and recorded; `GET .../assessment/attempts` lists the caller's own attempts. The
+  response is the integer score (`correct_count`, `question_count`), the `threshold_percent` it was
+  graded with and `passed` - never which answers were right.
+- **Grading** is integer-only: `passed <=> correct * 100 >= threshold_percent * question_count`
+  (7/10 and 70/100 pass a 70% gate; 69/100 and 2/3 do not). A submission with a missing, repeated,
+  unknown or foreign answer is a 422 and writes nothing.
+- **History is immutable.** An attempt is inserted already graded together with the question set,
+  options, key and threshold used (`assessment_attempt_answers` has no foreign key into the authoring
+  tables), so editing the assessment never changes a recorded attempt. `reject_mutation` triggers refuse
+  any UPDATE/DELETE, a CHECK ties `passed` to the integers, and no code under `src` issues an UPDATE or
+  DELETE for these tables (`tests/test_architecture_rules.py`).
+- **Progression.** `services.training_access.passed_module_ids` returns the modules with a passing
+  attempt - sticky, a later failed retake changes nothing. A module with no assessment blocks nothing:
+  module N is open once every lower-positioned module that has an assessment is passed.
+- **Deleting and reordering.** `DELETE .../modules/{id}` and `PUT .../courses/{id}/modules/order` are 409
+  once an attempt exists (the reorder message says to create a new course); the foreign keys from
+  attempts to modules, users and assessments are `ON DELETE RESTRICT` (migration 0021's docstring
+  explains why, citing 0018).
+- **404 for assessment routes.** Seven causes (no module, not enrolled, withdrawn, course or module not
+  published, not an employee, no assessment) give the byte-identical `Assessment not found.`; a locked
+  module is the 403 `module_locked`.
+- **Tests** run against a scratch database: `tests/test_assessments_api.py`,
+  `test_domain_training_assessment.py`, `test_migration_0021_upgrade_downgrade.py` (up/down/up, also
+  with attempt data present), and the pinned route tables in `test_route_policies.py` and
+  `test_training_route_security.py`. The development database stays at 0020 until you run
+  `make migrate`.
+
 ## Project generation settings
 
 A project carries three settings that later phases (scene planning, narration,

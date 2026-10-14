@@ -53,8 +53,10 @@ same row), not a separate route.
 | `GET  /v1/training/courses` | `employee` | (administrator: 403) |
 | `GET  /v1/training/modules/{module_id}/video` | `employee_module` | (non-employee: the module 404) |
 
-No assessment, attempt, progress or pass-gate route exists; a test fails if one appears under the
-training namespaces.
+*As built in Piece 3.* No assessment, attempt, progress or pass-gate route existed then. **Step 3
+(below) adds six assessment routes**; the scope-guard test `test_training_route_security.py::
+test_the_assessment_scope_routes_are_exactly_the_pinned_table_with_their_guards` is now a pinned
+route table, and `test_route_policies.py` pins every route's policy.
 
 **404 versus locked 403 (decision D4 as built).** For an employee asking for a module the rule gives
 three outcomes. *Allowed*: stream it. *Not found*: one identical 404 (status, body and headers
@@ -68,12 +70,11 @@ published, an earlier published module is not passed -> **403 `module_locked`** 
 resource-dependent as the resource: `GET /courses/{course_id}/modules` answers an employee the course
 404, and the route-policy test looks for the identifier *anywhere* in the path.
 
-**Why `passed_module_ids` still returns the empty set.** Passing is defined by an assessment attempt
-(Step 3) and none exists, so nothing can honestly be called passed. The empty set is the fail-closed
-answer: the first published module of an enrolled employee's course (no predecessor) opens, every later
-one is locked. There is deliberately no bypass, flag or test-only unlock; the tests prove the lock is
-*because of* that seam (a test substitutes the seam, nothing else) and fail visibly when Step 3 replaces
-it.
+**Why `passed_module_ids` returned the empty set in Piece 3.** Passing is defined by an assessment
+attempt (Step 3) and none existed, so nothing could honestly be called passed. The empty set was the
+fail-closed answer. There is deliberately no bypass, flag or test-only unlock; the tests prove the lock
+is *because of* that seam (a test substitutes the seam, nothing else). **Step 3 has replaced the body**
+with a query for a submitted, passing attempt - see "Step 3" below.
 
 **Step 3 foreign keys must be `ON DELETE RESTRICT`.** When Step 3 adds attempt, answer, progress or
 assessment tables that reference `training_modules` (or `training_courses`), those foreign keys must
@@ -86,7 +87,8 @@ deleting any project with claims fail; the lesson is that a foreign key's delete
 decision about whether history may disappear, and must be chosen deliberately per relationship - for
 learner history, it must be `RESTRICT`. (Nothing in the project-delete chain may be `RESTRICT` -
 finding F9 - and the training tables are outside that chain: a module's source render link is
-`SET NULL`, and a project's deletion never reaches a module.) The tables are not created in Piece 3.
+`SET NULL`, and a project's deletion never reaches a module.) The tables were not created in Piece 3;
+Step 3's migration 0021 creates them with exactly these rules.
 
 **Audit-log isolation (test strategy).** `audit_logs` is append-only (a trigger rejects deleting a
 row), so a test that really commits writes rows nothing can remove; QA and mutation runs had grown the
@@ -147,6 +149,107 @@ the runner snapshots the four development buckets and the audit count around eve
 `tests/test_storage_isolation.py` is the regression test. Manual verification scripts
 (`scripts/verify_phase10.py`, `verify_phase11.py`, `smoke_test_phase4.py`) are not part of the test
 suite and still use the development buckets by design. Details: `apps/api/README.md`, "Test isolation".
+
+### Step 3 (2026-10-15): assessments, the pass gate and progression — migration 0021
+
+Built and tested locally. Where this section and the sketch in sections 2.4 and 6 differ, **this
+section is authoritative** (the sketch is kept as the history of the thinking). Full behaviour:
+`apps/api/README.md`, "Training assessments".
+
+**What was built.** One optional assessment per module (single-correct multiple choice); employee
+attempts graded on the server; attempts immutable once submitted; `passed_module_ids` now reads real
+attempts; module deletion and reordering refuse (409) once attempts exist.
+
+**Decisions as built (they differ from the section 2.4 sketch in these places).**
+
+1. *The threshold lives on the assessment* (`assessments.threshold_percent`, 1-100, default 70 on
+   authoring) - not in configuration or a code constant. Every attempt **copies** the threshold and
+   the exact question set, options, key and chosen option it was graded with (`assessment_attempts`,
+   `assessment_attempt_answers`, which have no foreign key into the authoring tables). Editing or
+   replacing an assessment later cannot change or re-grade a recorded attempt.
+2. *An attempt is only ever inserted, already graded.* There is no in-progress attempt and no `status`
+   column; the sketch's start/submit pair became one `POST .../assessment/attempts` carrying every
+   answer. A database CHECK ties `passed` to the integers (`correct_count * 100 >= threshold_percent *
+   question_count`), triggers (`reject_mutation`) refuse any UPDATE or DELETE of the two history
+   tables, and `tests/test_architecture_rules.py` fails if any code under `src` issues one. Grading is
+   integer-only: `domain.training_assessment.passes`, and a test that the module has no `/`, `float`,
+   `round` or `Decimal`.
+3. *The key has its own table* (`assessment_answer_keys`, primary key = question) as in the sketch, and
+   the employee types (`EmployeeQuestionResponse`, `EmployeeOptionResponse`, `AttemptResponse`) are
+   separate classes with no field that could carry the answer. The tests check the generated OpenAPI
+   schema, the types, the employee read path's code, and the serialised response bytes - and that the
+   employee view is identical whichever option is correct.
+4. *Sticky passing.* A module is passed when a submitted attempt with `passed` exists - the only thing
+   the query looks for - so a later failed retake cannot take it away. Attempts are unlimited.
+5. *A module with no assessment blocks nothing.* The access rule takes `assessed_module_ids`: module N
+   opens when every lower-positioned module **that has an assessment** is passed. Not being told which
+   modules have one (`None`) is the fail-closed reading: every module blocks.
+6. *Deletion and reordering.* `DELETE` of a module and `PUT .../modules/order` return 409 once any
+   attempt exists (the reorder message tells the administrator to create a new course). The
+   foreign keys from attempts to `training_modules`, `users` and `assessments` and from answers to
+   attempts are all `ON DELETE RESTRICT` - the backstop, and the reason is migration 0018's lesson in
+   reverse: that migration turned two `RESTRICT` keys into `CASCADE` because the rows were *derived*;
+   attempts are the record, so they stay `RESTRICT`. The authoring rows cascade from their module, so
+   deleting a never-attempted module takes its assessment with it. The module-deletion path, which had
+   no HTTP test before, now has one. Deleting an assessment with attempts is a 409 too.
+7. *Idempotent submission.* `POST` carries an `Idempotency-Key` (rule 8, Redis-deduplicated like every
+   mutating route); additionally `(user_id, idempotency_key)` is unique in the database, so a retry that
+   arrives after the cache expired still returns the same attempt, and the same key for a different
+   module is a 409. Concurrent submissions by one employee for one module are serialised with an
+   advisory lock so attempt numbers are consecutive.
+8. *The assessment 404 has seven causes, one answer.* No such module, not enrolled, enrolment withdrawn,
+   course not published, module not published, the caller is not an employee, **and the module has no
+   assessment** all return the byte-identical `Assessment not found.` - so an assessment behind an
+   unreachable module cannot be told from one that does not exist. A locked module stays the 403
+   `module_locked`.
+9. *Stale answers are refused, not mis-graded.* Replacing an assessment gives its questions new ids, so
+   a submission made against the old set is a 422 ("reload") and writes nothing.
+
+**Route inventory (6 new).**
+
+| Method and path | Policy | Notes |
+|---|---|---|
+| `PUT /v1/admin/training/modules/{module_id}/assessment` | `admin_module` | replace the whole assessment, any time |
+| `GET /v1/admin/training/modules/{module_id}/assessment` | `admin_module` | with the key (`is_correct`) |
+| `DELETE /v1/admin/training/modules/{module_id}/assessment` | `admin_module` | 409 once attempted |
+| `GET /v1/training/modules/{module_id}/assessment` | `employee_assessment` | questions, never the key |
+| `GET /v1/training/modules/{module_id}/assessment/attempts` | `employee_assessment` | the caller's own history |
+| `POST /v1/training/modules/{module_id}/assessment/attempts` | `employee_assessment` | submit; `Idempotency-Key` |
+
+**Not built (out of scope by decision):** certificates, progress dashboards and admin reporting,
+reminders, multi-select and free-text questions, an in-progress attempt, a "watched the video" gate
+(D6), a front end for any of this. The dev database is migrated to 0021 only when the owner applies
+it (`make migrate`); this step was verified on scratch databases.
+
+**Test-isolation notes (Step 3 close criteria).**
+
+- *The flaky `test_recovery_with_nothing_to_recover`.* Its query was already scoped to the test's own
+  project, so it was not a global assertion. The cause was a module-level clock: `NOW =
+  datetime.now(UTC)` was read when the test module was imported, and the test created its job with
+  `started_at=NOW`; on a suite that ran for longer than the one-hour recovery window (2h39 under
+  contention) that job was already "stale" when the test ran, and recovery correctly returned it. The
+  clock is now read when asked (`_now()`), and `tests/test_isolation_of_test_assertions.py` fails for
+  any test module with a module-level wall-clock constant and for any raw SQL over `jobs`, `scripts`,
+  `render_outputs`, `audit_logs` or `claim_verifications` that has no `WHERE`. The sweep found no
+  unscoped count or list over those tables; the two `project_id <> :p` comparisons in the committed
+  tests are before/after comparisons on a scratch database.
+- **The mutation runner's scratch-bucket sweeper is unsafe under concurrent test sessions and must not
+  be used concurrently as currently implemented.** After each mutant it removes every `edutoon-test-*`
+  bucket that did not exist when that mutant started - it cannot tell a bucket left behind by the
+  mutant's own broken teardown from one that belongs to a test session that started meanwhile. Run the
+  mutation runner alone (no other pytest session, no second runner); the full suite and the runner
+  must not overlap. (A fix would have each mutant's session report its run id, as
+  `test_a_whole_test_session_creates_its_own_scratch_buckets_and_removes_exactly_those` does.)
+- **Manifest checksums are over LF-normalised text; Windows may write CRLF.** `make_manifest.py`
+  hashes the in-memory manifest (LF line endings) and records that digest in the `.sha256` file; on
+  Windows the file on disk has CRLF, so `sha256sum cleanup_manifest.json` differs from the recorded
+  value although the content is identical. Compare after converting CRLF to LF
+  (`tr -d '\r' < file | sha256sum`) or compare two copies byte for byte. (Seen on 2026-10-14: raw
+  `24ef3e56...` versus recorded `11a95125...`, equal once normalised.)
+- *Step 3 tests run against a scratch database.* The development database stays at migration 0020
+  until the owner migrates it; the suites for this step ran with `DATABASE_URL` /
+  `DATABASE_DIRECT_URL` pointing at a freshly created and migrated scratch database that was dropped
+  afterwards.
 
 ## 0. Pending quality gate (separate from this design — not done)
 

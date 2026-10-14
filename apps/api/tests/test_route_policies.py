@@ -37,6 +37,9 @@ EXPECTED_NON_ADMIN = {
     ("GET", "/v1/auth/me"): "authenticated",
     ("GET", "/v1/training/courses"): "employee",
     ("GET", "/v1/training/modules/{module_id}/video"): "employee_module",
+    ("GET", "/v1/training/modules/{module_id}/assessment"): "employee_assessment",
+    ("GET", "/v1/training/modules/{module_id}/assessment/attempts"): "employee_assessment",
+    ("POST", "/v1/training/modules/{module_id}/assessment/attempts"): "employee_assessment",
 }
 
 # Which policy a route that names a resource must carry, whatever the resource's *position* in the
@@ -433,6 +436,10 @@ TRAINING_ROUTES = {
     ("POST", "/v1/admin/training/modules/{module_id}/republish"): "admin_module",
     ("POST", "/v1/admin/training/modules/{module_id}/unpublish"): "admin_module",
     ("GET", "/v1/admin/training/modules/{module_id}/video"): "admin_module",
+    # Step 3: assessment authoring. All name a module, so an employee gets the module 404.
+    ("PUT", "/v1/admin/training/modules/{module_id}/assessment"): "admin_module",
+    ("GET", "/v1/admin/training/modules/{module_id}/assessment"): "admin_module",
+    ("DELETE", "/v1/admin/training/modules/{module_id}/assessment"): "admin_module",
     # Piece 3: enrolments. Three name a course (404 for an employee); the per-user listing takes
     # ``user_id`` as a query parameter, names no resource in its path, and so is a collection (403).
     ("POST", "/v1/admin/training/courses/{course_id}/enrolments"): "admin_course",
@@ -444,10 +451,14 @@ TRAINING_ROUTES = {
     ("GET", "/v1/admin/training/enrolments"): "admin",
 }
 
-# The employee area: exactly these two routes, and no assessment, progress or pass-gate route.
+# The employee area: exactly these routes. Step 3 added the three assessment routes; there is
+# still no progress or pass-gate route (passing is read from submitted attempts, never written).
 EMPLOYEE_TRAINING_ROUTES = {
     ("GET", "/v1/training/courses"): "employee",
     ("GET", "/v1/training/modules/{module_id}/video"): "employee_module",
+    ("GET", "/v1/training/modules/{module_id}/assessment"): "employee_assessment",
+    ("GET", "/v1/training/modules/{module_id}/assessment/attempts"): "employee_assessment",
+    ("POST", "/v1/training/modules/{module_id}/assessment/attempts"): "employee_assessment",
 }
 
 RENDER_BODY = {
@@ -463,6 +474,15 @@ TRAINING_BODIES = {
     ("PUT", "/v1/admin/training/courses/{course_id}/modules/order"): {"module_ids": [NIL_ID]},
     ("POST", "/v1/admin/training/modules/{module_id}/republish"): RENDER_BODY,
     ("POST", "/v1/admin/training/courses/{course_id}/enrolments"): {"user_id": NIL_ID},
+    ("PUT", "/v1/admin/training/modules/{module_id}/assessment"): {
+        "threshold_percent": 70,
+        "questions": [
+            {
+                "prompt": "Which?",
+                "options": [{"label": "A", "is_correct": True}, {"label": "B"}],
+            }
+        ],
+    },
 }
 
 
@@ -479,9 +499,9 @@ def test_every_training_route_has_exactly_the_pinned_policy():
     assert _training_endpoints(create_app()) == TRAINING_ROUTES
 
 
-def test_the_employee_training_area_is_exactly_the_two_pinned_routes():
-    """Adds nothing for assessments, attempts, progress or a pass gate (Step 3): any route under
-    ``/v1/training`` outside this list fails here."""
+def test_the_employee_training_area_is_exactly_the_pinned_routes():
+    """Any route under ``/v1/training`` outside this list fails here (Step 3 added the three
+    assessment routes; there is still no progress or pass-gate route)."""
     assert _training_endpoints(create_app(), "/v1/training") == EMPLOYEE_TRAINING_ROUTES
 
 
@@ -553,7 +573,7 @@ async def test_an_employee_gets_the_same_404_bytes_as_an_admin_for_a_missing_tra
         assert employee_response.content == admin_response.content, (method, template)
         assert NIL_ID not in employee_response.text
         checked += 1
-    assert checked == 16  # 11 course routes + 5 module routes
+    assert checked == 19  # 11 course routes + 5 module routes + 3 assessment authoring routes
 
 
 async def test_employee_is_forbidden_on_the_training_collection_routes(role_client, make_person):

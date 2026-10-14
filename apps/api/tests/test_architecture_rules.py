@@ -130,3 +130,49 @@ def test_no_code_updates_or_deletes_audit_log_rows() -> None:
         if pattern.search(path.read_text(encoding="utf-8"))
     ]
     assert offenders == []
+
+
+_ATTEMPT_TABLES = r"assessment_attempts|assessment_attempt_answers"
+
+
+def test_no_code_updates_or_deletes_a_submitted_attempt_or_its_answers() -> None:
+    """Step 3, decision 4: a submitted attempt is immutable, proved structurally. No module under
+    ``src`` builds an UPDATE or DELETE for the two history tables - neither through the Core
+    ``Table`` objects nor as raw SQL - so there is no code path that could change a grade. (The
+    database refuses one too (``reject_mutation``); see ``test_assessments_api.py``.)"""
+    table_call = re.compile(rf"\b({_ATTEMPT_TABLES})\s*\.\s*(update|delete)\s*\(")
+    statement_call = re.compile(rf"\b(update|delete)\s*\(\s*({_ATTEMPT_TABLES})\b")
+    raw_sql = re.compile(rf"(?i)\b(update|delete\s+from)\s+({_ATTEMPT_TABLES})\b")
+    offenders = [
+        _relative(path)
+        for path in sorted(SRC.rglob("*.py"))
+        if any(
+            pattern.search(path.read_text(encoding="utf-8"))
+            for pattern in (table_call, statement_call, raw_sql)
+        )
+    ]
+    assert offenders == []
+
+
+def test_only_the_assessments_repository_touches_the_attempt_tables() -> None:
+    """The history tables are reached through ``repositories/assessments.py`` alone (and defined in
+    ``db/tables.py``), whose public functions for them are inserts and reads - no update, no
+    delete."""
+    word = re.compile(rf"\b({_ATTEMPT_TABLES})\b")
+    allowed = {"db/tables.py", "repositories/assessments.py"}
+    offenders = [
+        _relative(path)
+        for path in sorted(SRC.rglob("*.py"))
+        if _relative(path) not in allowed and word.search(path.read_text(encoding="utf-8"))
+    ]
+    assert offenders == []
+
+    names = {
+        node.name
+        for node in ast.parse(
+            (SRC / "repositories" / "assessments.py").read_text(encoding="utf-8")
+        ).body
+        if isinstance(node, ast.AsyncFunctionDef)
+    }
+    attempt_functions = {n for n in names if "attempt" in n}
+    assert not {n for n in attempt_functions if re.search(r"update|delete|remove|set_", n)}

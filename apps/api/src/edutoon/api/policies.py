@@ -13,6 +13,8 @@ router inherits it, or on the route itself:
 * :func:`require_employee` - an active employee (anyone else: 403);
 * :func:`require_employee_for_module` - the same for a route that names a training module (anyone
   else: the fixed 404 an employee gets for a module they may not open);
+* :func:`require_employee_for_assessment` - the same for the employee routes that name a module's
+  assessment (anyone else: the fixed assessment 404, the one every unreachable case gets);
 * :func:`require_authenticated` - any active user, whatever the role;
 * :func:`public_route` - nobody is authenticated (``/health`` only).
 
@@ -35,6 +37,7 @@ from edutoon.api.dependencies import get_current_user
 from edutoon.core.errors import ForbiddenError, NotFoundError
 from edutoon.domain.roles import ROLE_ADMIN, ROLE_EMPLOYEE
 from edutoon.domain.training import COURSE_NOT_FOUND, MODULE_NOT_FOUND
+from edutoon.domain.training_assessment import ASSESSMENT_NOT_FOUND
 from edutoon.services.users import UserRecord
 
 
@@ -113,6 +116,22 @@ async def require_employee_for_module(
     return user
 
 
+async def require_employee_for_assessment(
+    module_id: UUID, user: Annotated[UserRecord, Depends(get_current_user)]
+) -> UserRecord:
+    """Employees only - and to anyone else the assessment simply does not exist.
+
+    For the employee routes under ``/training/modules/{module_id}/assessment``. A non-employee gets
+    the fixed ``ASSESSMENT_NOT_FOUND`` - the very 404 an employee gets when the module is unknown,
+    unreachable (not enrolled, withdrawn, course or module not published) or has no assessment.
+    Whether the caller *may* reach the module is then decided by
+    ``services.training_access.require_module_access`` - never here.
+    """
+    if user.role != ROLE_EMPLOYEE:
+        raise NotFoundError(ASSESSMENT_NOT_FOUND)
+    return user
+
+
 POLICY_NAMES: Final = {
     public_route: "public",
     require_authenticated: "authenticated",
@@ -122,5 +141,6 @@ POLICY_NAMES: Final = {
     require_admin_for_module: "admin_module",
     require_employee: "employee",
     require_employee_for_module: "employee_module",
+    require_employee_for_assessment: "employee_assessment",
 }
 """Every policy dependency and its short name; the route-policy test reads this."""

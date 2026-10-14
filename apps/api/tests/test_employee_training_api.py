@@ -10,8 +10,8 @@ The central guarantees, each tested against the HTTP surface:
   published, module not published all answer byte-identically (status, body, headers), and none of
   them is listed;
 * **locked is not "not found"** - an enrolled employee's later module is listed with ``locked`` and
-  streams a 403 ``module_locked`` naming the blocker, because ``passed_module_ids`` is empty until
-  Step 3 records assessment results;
+  streams a 403 ``module_locked`` naming the blocker, for as long as an earlier module *that has an
+  assessment* has not been passed (Step 3; a module with no assessment blocks nothing);
 * **one serving function** - the employee stream and the administrator's preview are served by the
   same ``serve_module_video`` (Range behaviour itself is tested once, on the preview, in
   ``test_admin_training_api.py``).
@@ -45,9 +45,11 @@ from tests.test_admin_training_api import (  # noqa: F401 - fixtures used by nam
 )
 from tests.training_api_helpers import (
     EMPLOYEE_BASE,
+    answers_for,
     comparable,
     enrol,
     published_course,
+    submit_attempt,
     withdraw,
 )
 
@@ -75,7 +77,7 @@ async def test_an_enrolled_employee_sees_their_course_and_only_the_first_module_
     role_client, admin, employee, source, track, db_session, storage
 ):
     course, modules = await published_course(
-        role_client, admin, source, track, db_session, storage, modules=3
+        role_client, admin, source, track, db_session, storage, modules=3, assessed=(0,)
     )
     await enrol(role_client, admin, course["id"], employee.user.id)
 
@@ -105,18 +107,18 @@ async def test_an_enrolled_employee_sees_their_course_and_only_the_first_module_
     assert not leaked & set(first)
 
 
-async def test_the_first_module_streams_and_the_second_is_locked_because_nothing_is_passed(
+async def test_the_first_module_streams_and_the_second_is_locked_until_the_first_is_passed(
     role_client, admin, employee, source, track, db_session, storage
 ):
-    """The expected result of this test changes when Step 3 implements passing: that is the point.
+    """Pinned in Piece 3 as "nothing is passed, so only module 1 is open"; updated in Step 3 now
+    that ``passed_module_ids`` reads real attempts.
 
-    Until then ``passed_module_ids`` answers "nobody has passed anything", so module 1 (no
-    predecessor) is open and every later module is locked. The assertion on ``passed_module_ids``
-    below is the visible link: when Step 3 makes it return real results this test fails there, and
-    whoever does that must decide what the lock should now be rather than be surprised by it.
+    Module 1 has an assessment, so it blocks module 2 until it is passed. The assertion on
+    ``passed_module_ids`` is the visible link: empty before a pass, exactly module 1 after a passing
+    attempt - and module 2 then streams with no other change.
     """
     course, modules = await published_course(
-        role_client, admin, source, track, db_session, storage, modules=2
+        role_client, admin, source, track, db_session, storage, modules=2, assessed=(0,)
     )
     await enrol(role_client, admin, course["id"], employee.user.id)
     ids = [UUID(m["id"]) for m in modules]
@@ -124,10 +126,7 @@ async def test_the_first_module_streams_and_the_second_is_locked_because_nothing
     passed = await training_access.passed_module_ids(
         db_session, user_id=employee.user.id, module_ids=ids
     )
-    assert passed == frozenset(), (
-        "Step 3 has made passed_module_ids return results: update this test, which pins the "
-        "Step 2 behaviour (only the first module open, every later one locked)"
-    )
+    assert passed == frozenset()  # nothing attempted yet
 
     first = await role_client.get(STREAM.format(modules[0]["id"]), headers=employee.headers)
     assert first.status_code == 200 and first.content == source.body
@@ -149,6 +148,21 @@ async def test_the_first_module_streams_and_the_second_is_locked_because_nothing
         }
     }
 
+    attempt = await submit_attempt(
+        role_client,
+        employee,
+        modules[0]["id"],
+        await answers_for(role_client, admin, modules[0]["id"]),
+    )
+    assert attempt.status_code == 201 and attempt.json()["passed"] is True
+    assert await training_access.passed_module_ids(
+        db_session, user_id=employee.user.id, module_ids=ids
+    ) == frozenset({ids[0]})
+    [mine] = await listing(role_client, employee)
+    assert [m["locked"] for m in mine["modules"]] == [False, False]
+    unlocked = await role_client.get(STREAM.format(modules[1]["id"]), headers=employee.headers)
+    assert unlocked.status_code == 200
+
 
 async def test_a_module_unlocks_only_through_the_passed_module_seam(
     role_client, admin, employee, source, track, db_session, storage, monkeypatch
@@ -156,7 +170,7 @@ async def test_a_module_unlocks_only_through_the_passed_module_seam(
     """Proves the lock really is *because* of ``passed_module_ids`` (not something else): when the
     seam says module 1 is passed, module 2 lists as open and streams - with no other change."""
     course, modules = await published_course(
-        role_client, admin, source, track, db_session, storage, modules=2
+        role_client, admin, source, track, db_session, storage, modules=2, assessed=(0,)
     )
     await enrol(role_client, admin, course["id"], employee.user.id)
     assert (
@@ -178,7 +192,7 @@ async def test_an_unpublished_module_is_not_listed_and_does_not_block_the_next(
     role_client, admin, employee, source, track, db_session, storage
 ):
     course, modules = await published_course(
-        role_client, admin, source, track, db_session, storage, modules=3
+        role_client, admin, source, track, db_session, storage, modules=3, assessed=(0,)
     )
     await enrol(role_client, admin, course["id"], employee.user.id)
     await role_client.post(f"{BASE}/modules/{modules[1]['id']}/unpublish", headers=h(admin))
@@ -311,7 +325,7 @@ async def test_re_enrolling_restores_access_under_the_published_rules(
     role_client, admin, employee, source, track, db_session, storage
 ):
     course, modules = await published_course(
-        role_client, admin, source, track, db_session, storage, modules=2
+        role_client, admin, source, track, db_session, storage, modules=2, assessed=(0,)
     )
     await enrol(role_client, admin, course["id"], employee.user.id)
     await withdraw(role_client, admin, course["id"], employee.user.id)
@@ -455,7 +469,7 @@ async def test_a_locked_or_missing_module_never_reaches_the_shared_function(
     role_client, admin, employee, source, track, db_session, storage, monkeypatch
 ):
     course, modules = await published_course(
-        role_client, admin, source, track, db_session, storage, modules=2
+        role_client, admin, source, track, db_session, storage, modules=2, assessed=(0,)
     )
     await enrol(role_client, admin, course["id"], employee.user.id)
     calls: list[object] = []

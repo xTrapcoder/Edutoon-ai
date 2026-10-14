@@ -59,6 +59,7 @@ from edutoon.domain.training import (
     MODULE_PUBLISHED,
     reorder_mismatch,
 )
+from edutoon.domain.training_assessment import MODULE_DELETE_REFUSED, REORDER_REFUSED
 from edutoon.domain.training_storage import VIDEO_CONTENT_TYPE, belongs_to_module, module_video_key
 from edutoon.providers.storage import (
     InvalidRangeError,
@@ -66,6 +67,7 @@ from edutoon.providers.storage import (
     ObjectStream,
     Storage,
 )
+from edutoon.repositories import assessments as assessments_repo
 from edutoon.repositories import render as render_repo
 from edutoon.repositories import scripts as scripts_repo
 from edutoon.repositories import training as training_repo
@@ -586,18 +588,20 @@ async def unpublish_module(
 async def delete_module(
     session: AsyncSession, effects: StorageEffects, *, actor_id: UUID, module_id: UUID
 ) -> None:
-    """Delete a module and close the gap it leaves in the course's order. Refused (409) if the
-    database says something still refers to it (learner history, from Step 3): unpublish it."""
+    """Delete a module and close the gap it leaves in the course's order. Refused (409,
+    ``MODULE_DELETE_REFUSED``) once anyone has attempted its assessment - the check is explicit and
+    the database's ``RESTRICT`` foreign keys are the backstop: unpublish it instead."""
     _, locked = await _lock_module(session, module_id)
     previous = _object_of(locked)
+    if await assessments_repo.has_attempts_for_module(session, module_id):
+        raise ConflictError(MODULE_DELETE_REFUSED)
     try:
         async with session.begin_nested():
             await training_repo.delete_module(session, module_id)
     except IntegrityError as exc:
+        # The RESTRICT foreign keys (migration 0021) are the backstop for the check above.
         if training_repo.is_foreign_key_violation(exc):
-            raise ConflictError(
-                "This module has learner history, so it cannot be deleted. Unpublish it instead."
-            ) from exc
+            raise ConflictError(MODULE_DELETE_REFUSED) from exc
         raise
     await training_repo.close_position_gap(
         session, course_id=locked.course_id, after=locked.position
@@ -619,11 +623,16 @@ async def reorder_modules(
 ) -> list[ModuleRecord]:
     """Put the course's modules in the order given (positions 1..n), in one statement.
 
+    Refused (409, ``REORDER_REFUSED``) once any module of the course has attempts: a new order would
+    change which modules earlier results unlock. The message points to creating a new course.
+
     ``module_ids`` must be every module of the course - published or not - exactly once; if the
     course changed since the caller last looked (409), nothing is written.
     """
     course = await _course_or_404(session, course_id, for_update=True)
     _require_open(course)
+    if await assessments_repo.has_attempts_in_course(session, course_id):
+        raise ConflictError(REORDER_REFUSED)
     current = await training_repo.list_modules(session, course_id)
     if reorder_mismatch([m.id for m in current], module_ids):
         raise ConflictError(

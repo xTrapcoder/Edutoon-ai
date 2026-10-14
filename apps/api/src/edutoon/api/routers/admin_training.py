@@ -27,6 +27,7 @@ from edutoon.api.policies import (
     require_admin_for_course,
     require_admin_for_module,
 )
+from edutoon.api.schemas.assessments import AdminAssessmentResponse, AssessmentPutRequest
 from edutoon.api.schemas.training import (
     CourseCreateRequest,
     CourseListResponse,
@@ -46,6 +47,8 @@ from edutoon.api.schemas.training import (
 from edutoon.api.video_response import serve_module_video
 from edutoon.core.pagination import DEFAULT_PAGE_SIZE
 from edutoon.db.session import get_session
+from edutoon.domain.training_assessment import AuthoredOption, AuthoredQuestion
+from edutoon.services import assessments as assessments_service
 from edutoon.services import idempotency as idempotency_service
 from edutoon.services import training as training_service
 from edutoon.services import training_enrolments as enrolment_service
@@ -522,6 +525,84 @@ async def delete_module(
             handler=_execute,
             commit=effects.wrap_commit(session.commit),
         )
+
+
+# --- assessments (Step 3) ----------------------------------------------------------------
+
+
+@router.put("/modules/{module_id}/assessment")
+async def put_assessment(
+    request: Request,
+    module_id: UUID,
+    body: AssessmentPutRequest,
+    admin: ModuleAdmin,
+    session: Session,
+    redis: RedisDep,
+    idempotency_key: IdempotencyKey,
+) -> AdminAssessmentResponse:
+    """Create the module's assessment or replace all of its questions and its threshold. Allowed
+    after attempts exist: attempts keep the questions and threshold they were graded with."""
+    questions = [
+        AuthoredQuestion(
+            prompt=q.prompt,
+            options=tuple(AuthoredOption(o.label, o.is_correct) for o in q.options),
+        )
+        for q in body.questions
+    ]
+
+    async def _execute() -> tuple[int, Any]:
+        view = await assessments_service.put_assessment(
+            session,
+            actor_id=admin.id,
+            module_id=module_id,
+            threshold_percent=body.threshold_percent,
+            questions=questions,
+        )
+        return status.HTTP_200_OK, AdminAssessmentResponse.from_view(view).model_dump(mode="json")
+
+    _, response_body = await idempotency_service.run_with_idempotency(
+        redis,
+        owner_id=admin.id,
+        method="PUT",
+        path=request.url.path,
+        idempotency_key=idempotency_key,
+        handler=_execute,
+        commit=session.commit,
+    )
+    return AdminAssessmentResponse.model_validate(response_body)
+
+
+@router.get("/modules/{module_id}/assessment")
+async def get_assessment(
+    module_id: UUID, admin: ModuleAdmin, session: Session
+) -> AdminAssessmentResponse:
+    return AdminAssessmentResponse.from_view(
+        await assessments_service.get_admin_view(session, module_id=module_id)
+    )
+
+
+@router.delete("/modules/{module_id}/assessment", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_assessment(
+    request: Request,
+    module_id: UUID,
+    admin: ModuleAdmin,
+    session: Session,
+    redis: RedisDep,
+    idempotency_key: IdempotencyKey,
+) -> None:
+    async def _execute() -> tuple[int, Any]:
+        await assessments_service.delete_assessment(session, actor_id=admin.id, module_id=module_id)
+        return status.HTTP_204_NO_CONTENT, None
+
+    await idempotency_service.run_with_idempotency(
+        redis,
+        owner_id=admin.id,
+        method="DELETE",
+        path=request.url.path,
+        idempotency_key=idempotency_key,
+        handler=_execute,
+        commit=session.commit,
+    )
 
 
 @router.get("/modules/{module_id}/video")

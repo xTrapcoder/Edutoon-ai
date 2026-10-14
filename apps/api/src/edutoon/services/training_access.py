@@ -11,13 +11,15 @@ a module. This service gathers the facts it needs for one employee and applies i
 * :func:`list_my_courses` - the employee's own course listing, each module marked ``locked`` or
   not by that same function, so the listing and the stream can never disagree.
 
-``passed_module_ids`` is the seam to Step 3's assessment results. In Step 2 nothing can be passed -
-assessments do not exist - so it answers **nobody has passed anything**. That is the fail-closed
-choice, not a placeholder that lets people through: with an empty set the first published module
-of a course is open to an enrolled employee (it has no predecessor) and every later module is
-locked, for everyone, until Step 3 replaces :func:`passed_module_ids` with a real query over
-submitted, passing attempts. Nothing else changes when it does - the rule, the routes and their
-tests already go through this function.
+``passed_module_ids`` reads Step 3's assessment results: a module is passed when the employee has a
+submitted attempt with ``passed`` - the only thing it looks for, so a later failed retake can never
+take a pass away (passing is sticky). It fails closed: on any doubt it returns fewer ids, never
+more.
+
+A module that has **no assessment** blocks nothing (decision 6): ``assessed_module_ids`` - the
+published modules of the course that have one - goes to the rule with the passed set, and module N
+opens once every lower-positioned module that has an assessment is passed. The listing and the
+stream both go through this one function, so they cannot disagree.
 """
 
 from __future__ import annotations
@@ -37,6 +39,7 @@ from edutoon.domain.training_access import (
     ModuleRef,
     decide_module_access,
 )
+from edutoon.repositories import assessments as assessments_repo
 from edutoon.repositories import training as training_repo
 from edutoon.repositories.training import CourseRecord, ModuleRecord
 from edutoon.services.users import UserRecord
@@ -47,13 +50,9 @@ MODULE_LOCKED_MESSAGE = "This module is locked until the earlier module has been
 async def passed_module_ids(
     session: AsyncSession, *, user_id: UUID, module_ids: Collection[UUID]
 ) -> frozenset[UUID]:
-    """The subset of ``module_ids`` that ``user_id`` has passed.
-
-    Step 2: always empty - no assessment, so no pass can exist, so no module is ever considered
-    passed. **Step 3 replaces this body** with a query for a submitted attempt with ``passed``.
-    It must keep failing closed: on any doubt, return fewer ids, never more.
-    """
-    return frozenset()
+    """The subset of ``module_ids`` that ``user_id`` has passed: those with a submitted, passing
+    attempt. Sticky - only a pass is ever looked for. Fails closed: fewer ids, never more."""
+    return await assessments_repo.passed_module_ids(session, user_id=user_id, module_ids=module_ids)
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,11 +104,9 @@ async def list_my_courses(session: AsyncSession, user: UserRecord) -> list[MyCou
     result: list[MyCourse] = []
     for course in courses:
         modules = by_course[course.id]
-        passed = await passed_module_ids(
-            session,
-            user_id=user.id,
-            module_ids=[m.id for m in modules if m.status == MODULE_PUBLISHED],
-        )
+        published_ids = [m.id for m in modules if m.status == MODULE_PUBLISHED]
+        passed = await passed_module_ids(session, user_id=user.id, module_ids=published_ids)
+        assessed = await assessments_repo.module_ids_with_assessment(session, published_ids)
         visible: list[MyModule] = []
         for module in modules:
             decision = decide_module_access(
@@ -120,6 +117,7 @@ async def list_my_courses(session: AsyncSession, user: UserRecord) -> list[MyCou
                 enrolment_status=ENROLMENT_ACTIVE,
                 course_modules=_refs(modules),
                 passed_module_ids=passed,
+                assessed_module_ids=assessed,
             )
             if decision.access == ACCESS_ALLOWED:
                 visible.append(MyModule(module, None))
@@ -148,15 +146,13 @@ async def require_module_access(
         else None
     )
     siblings = await training_repo.list_modules(session, course.id) if course else []
+    published_ids = [m.id for m in siblings if m.status == MODULE_PUBLISHED]
     passed = (
-        await passed_module_ids(
-            session,
-            user_id=user.id,
-            module_ids=[m.id for m in siblings if m.status == MODULE_PUBLISHED],
-        )
+        await passed_module_ids(session, user_id=user.id, module_ids=published_ids)
         if course
         else frozenset()
     )
+    assessed = await assessments_repo.module_ids_with_assessment(session, published_ids)
     decision = decide_module_access(
         module_id=module_id,
         user_role=user.role,
@@ -165,6 +161,7 @@ async def require_module_access(
         enrolment_status=enrolment.status if enrolment else None,
         course_modules=_refs(siblings),
         passed_module_ids=passed,
+        assessed_module_ids=assessed,
     )
     if decision.access == ACCESS_ALLOWED and module is not None:
         return module

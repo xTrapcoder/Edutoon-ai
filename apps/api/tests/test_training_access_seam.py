@@ -1,8 +1,9 @@
-"""The fail-closed seam to Step 3: ``services.training_access.passed_module_ids``.
+"""The seam between assessment results and the access rule (``passed_module_ids``).
 
-In Step 2 no assessment exists, so nothing can be passed. These tests pin that the seam answers
-"nothing passed" (so module 1 is open and every later module locked), and that the access rule
-really does go through it - so Step 3 replacing its body changes nothing else.
+Step 3 replaced its body with a query for a submitted, passing attempt (see
+``test_assessments_api.py`` for the attempts themselves). These tests keep the seam honest for
+someone who has attempted nothing: it answers "nothing passed", and the access rule really does go
+through it - whatever it answers is what the rule uses.
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ from edutoon.domain.training_access import (
 from edutoon.services import training_access
 
 
-async def test_the_seam_says_nobody_has_passed_anything(db_session):
+async def test_the_seam_says_a_user_with_no_attempts_has_passed_nothing(db_session):
     ids = [uuid4() for _ in range(5)]
 
     passed = await training_access.passed_module_ids(db_session, user_id=uuid4(), module_ids=ids)
@@ -26,7 +27,7 @@ async def test_the_seam_says_nobody_has_passed_anything(db_session):
     assert passed == frozenset()
 
 
-async def test_the_seam_does_not_depend_on_who_or_what_is_asked(db_session):
+async def test_the_seam_answers_nothing_for_any_user_with_no_attempts(db_session):
     for user_id in (uuid4(), uuid4()):
         assert (
             await training_access.passed_module_ids(db_session, user_id=user_id, module_ids=[])
@@ -34,7 +35,9 @@ async def test_the_seam_does_not_depend_on_who_or_what_is_asked(db_session):
         )
 
 
-async def test_with_the_real_seam_module_one_is_open_and_every_later_module_is_locked(db_session):
+async def test_with_no_attempts_module_one_is_open_and_every_assessed_module_blocks_the_rest(
+    db_session,
+):
     modules = [ModuleRef(id=uuid4(), position=i, status="published") for i in range(1, 5)]
     user_id = uuid4()
     passed = await training_access.passed_module_ids(
@@ -50,6 +53,7 @@ async def test_with_the_real_seam_module_one_is_open_and_every_later_module_is_l
             enrolment_status="active",
             course_modules=modules,
             passed_module_ids=passed,
+            assessed_module_ids={m.id for m in modules},  # every module has an assessment
         ).access
         for m in modules
     ]

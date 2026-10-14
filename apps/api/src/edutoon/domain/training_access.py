@@ -22,11 +22,14 @@ unrecognised status, a module that is not in the course's list, an empty pass se
 1. the user is an active employee;
 2. the course is ``published`` and the user's enrolment in it is ``active``;
 3. the module belongs to that course and is ``published``;
-4. every *published* module of the course with a lower position has been passed.
+4. every *published* module of the course with a lower position **that has an assessment** has been
+   passed. A module with no assessment blocks nothing (Step 3, decision 6): module N is open once
+   every lower-positioned module that *has* one is passed. ``assessed_module_ids`` names the modules
+   that have one; ``None`` ("not told") is the fail-closed reading - every module requires a pass.
 
-The first published module has no predecessor, so it is open to an enrolled employee. Until Step 3
-records assessment results the set of passed modules is always empty (see
-``services.training_access.passed_module_ids``), so every later module is ``LOCKED``.
+The first published module has no predecessor, so it is open to an enrolled employee. A pass is
+sticky: it is read from the employee's submitted attempts (see
+``services.training_access.passed_module_ids``), and a later failed retake never removes it.
 
 Pure: no I/O, no repositories, no clock (rule 1).
 """
@@ -44,6 +47,7 @@ from edutoon.domain.training import (
     ENROLMENT_ACTIVE,
     MODULE_PUBLISHED,
 )
+from edutoon.domain.training_assessment import requires_pass
 
 Access = Literal["allowed", "locked", "not_found"]
 
@@ -80,6 +84,7 @@ def decide_module_access(
     enrolment_status: str | None,
     course_modules: Sequence[ModuleRef],
     passed_module_ids: Collection[UUID],
+    assessed_module_ids: Collection[UUID] | None = None,
 ) -> AccessDecision:
     """Decide whether the user may open ``module_id``. See the module docstring.
 
@@ -105,6 +110,6 @@ def decide_module_access(
         key=lambda m: m.position,
     )
     for predecessor in earlier:
-        if predecessor.id not in passed:
+        if requires_pass(predecessor.id, assessed_module_ids) and predecessor.id not in passed:
             return AccessDecision(ACCESS_LOCKED, blocking_module_id=predecessor.id)
     return AccessDecision(ACCESS_ALLOWED)
