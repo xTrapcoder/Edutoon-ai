@@ -294,6 +294,33 @@ One optional **assessment per module**: single-correct multiple choice, 1-50 que
   once an attempt exists (the reorder message says to create a new course); the foreign keys from
   attempts to modules, users and assessments are `ON DELETE RESTRICT` (migration 0021's docstring
   explains why, citing 0018).
+- **Known limitations (Step 3, as built).**
+  1. *An attempted assessment is frozen for good.* It is published, `PUT` is a 409 while published, and
+     unpublishing is a 409 once anyone has attempted it - so its questions and threshold can never be
+     changed again. Fixing a wrong question means a new module (or course) with a new assessment.
+  2. *The key can be inferred by repeated attempts.* A result is the integer score, and there is no
+     limit on retakes and no cooldown, so an employee can vary one answer at a time and watch
+     `correct_count` move. Nothing in a single response reveals the key; the score across attempts
+     does. An attempt limit, a cooldown or shuffled options would be a product decision.
+  3. *The history does not show an employee which options they chose.* It is outcome-only (number,
+     score, threshold, verdict, time). The chosen options are recorded
+     (`assessment_attempt_answers.selected_option_id`) but no route returns them, so an employee cannot
+     review their own answers.
+- **Two correct options cannot be stored.** `assessment_answer_keys` has one row per question (its
+  primary key), so a question with two correct options is unrepresentable in the database. Saving
+  refuses it (422) before anything is written, and publishing re-checks the stored questions with the
+  same rule; because no real data can hold that state, the publish test for it injects the state at
+  the one place publish reads the questions (`list_admin_questions`). The other publish-time
+  flaws (no questions, one option, no correct option) are produced by deleting rows underneath a
+  stored draft.
+- **Concurrency.** Publish, unpublish and save take the course and module rows `FOR UPDATE`, then the
+  assessment row `FOR UPDATE`; a submission takes the assessment row `FOR SHARE`. So an unpublish
+  racing a submission either waits for it and is refused (409), or commits first and the submission
+  finds a draft (404): an assessment with an attempt is never a draft. Proved with real overlapping
+  transactions in `tests/test_training_assessments_committed.py` (the assessment-row `FOR UPDATE`
+  itself is defence in depth - the course/module locks and the attempt's foreign-key lock already
+  serialise administrators and a submission in flight - which the mutation runner records as
+  equivalent mutants with that reasoning).
 - **404 for assessment routes.** Seven causes (no module, not enrolled, withdrawn, course or module not
   published, not an employee, no assessment) give the byte-identical `Assessment not found.`; a locked
   module is the 403 `module_locked`.

@@ -210,7 +210,10 @@ async def unpublish_assessment(
 
     The attempts check is made after taking the assessment row's ``FOR UPDATE`` lock, which waits
     for any submission in flight (those hold ``FOR SHARE``), so an attempt cannot slip in between
-    the check and the change."""
+    the check and the change. (Administrator operations are also serialised by the course and
+    module locks ``_lock_module`` takes, and an attempt's insert key-share-locks its module row, so
+    this lock is a second line of defence; the submission's ``FOR SHARE`` is the one that makes a
+    submission find a draft once an unpublish has committed.)"""
     await _lock_module(session, module_id)
     assessment = await assessments_repo.get_by_module(session, module_id, for_update=True)
     if assessment is None:

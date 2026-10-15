@@ -219,6 +219,15 @@ attempts; module deletion and reordering refuse (409) once attempts exist.
     published assessment with no attempts. Two-correct-options cannot be *stored* (the key table has one
     row per question), so the publish check on that case is exercised by injection in the tests.
 
+**Known limitations and the unstorable case (as built).** (1) An attempted assessment is frozen
+for good - published, 409 on save, 409 on unpublish - so correcting it means a new module or course.
+(2) With unlimited retakes and no cooldown an employee can infer the key from the score across
+attempts; no single response reveals it. (3) The history does not return the options an employee chose,
+although they are recorded. Two correct options on one question cannot be stored at all (the key table
+has one row per question), so that publish-time check is exercised by injection in the tests. The
+publish / unpublish / submit races are covered by real overlapping transactions
+(`tests/test_training_assessments_committed.py`); details in `apps/api/README.md`.
+
 **Route inventory (8 new).**
 
 | Method and path | Policy | Notes |

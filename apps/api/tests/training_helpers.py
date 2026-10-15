@@ -141,6 +141,15 @@ async def purge_qa(
     that name QA entities stay; they hold no data beyond ids, an action and a timestamp.
     """
     async with sessionmaker() as session:
+        # Submitted attempts are append-only and RESTRICT the module, assessment and user, so
+        # nothing that has one can be deleted - by design. The database these tests commit to is a
+        # scratch one that is dropped with the session; only the stored files are cleaned up then.
+        attempted = (
+            await session.execute(
+                text("SELECT 1 FROM assessment_attempts WHERE user_id = ANY(:ids) LIMIT 1"),
+                {"ids": list(registry.user_ids)},
+            )
+        ).first()
         for user_id in registry.user_ids:
             rows = (
                 await session.execute(
@@ -153,9 +162,10 @@ async def purge_qa(
                 )
             ).all()
             registry.storage_keys.extend((bucket, key) for bucket, key in rows)
-            await session.execute(
-                text("DELETE FROM training_courses WHERE created_by = :u"), {"u": user_id}
-            )
+            if attempted is None:
+                await session.execute(
+                    text("DELETE FROM training_courses WHERE created_by = :u"), {"u": user_id}
+                )
         for project_id in registry.project_ids:
             registry.storage_keys.extend(
                 (loc.bucket, loc.key)
@@ -168,9 +178,11 @@ async def purge_qa(
                 (loc.bucket, loc.key)
                 for loc in await audio_repo.list_storage_locations_for_project(session, project_id)
             )
-            await session.execute(text("DELETE FROM projects WHERE id = :p"), {"p": project_id})
+            if attempted is None:
+                await session.execute(text("DELETE FROM projects WHERE id = :p"), {"p": project_id})
         for user_id in registry.user_ids:
-            await session.execute(text("DELETE FROM users WHERE id = :u"), {"u": user_id})
+            if attempted is None:
+                await session.execute(text("DELETE FROM users WHERE id = :u"), {"u": user_id})
         await session.commit()
     for bucket, key in registry.storage_keys:
         await storage.delete_object(bucket=bucket, key=key)
