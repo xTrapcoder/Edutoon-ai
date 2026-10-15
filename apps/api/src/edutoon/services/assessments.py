@@ -136,7 +136,7 @@ async def put_assessment(
     if problem is not None:
         raise UnprocessableError(problem)
     await _lock_module(session, module_id)
-    existing = await assessments_repo.get_by_module(session, module_id, for_update=True)
+    existing = await assessments_repo.get_by_module(session, module_id)
     if existing is not None and existing.is_published:
         raise ConflictError(ASSESSMENT_PUBLISHED_REFUSED)
     assessment = await assessments_repo.upsert(
@@ -171,7 +171,7 @@ async def publish_assessment(
     Publishing deliberately changes progression: from now on a module with this assessment holds
     back the modules after it until it is passed."""
     course_id = await _lock_module(session, module_id)
-    assessment = await assessments_repo.get_by_module(session, module_id, for_update=True)
+    assessment = await assessments_repo.get_by_module(session, module_id)
     if assessment is None:
         raise NotFoundError(ASSESSMENT_NOT_FOUND)
     if assessment.is_published:
@@ -208,14 +208,12 @@ async def unpublish_assessment(
 ) -> AdminAssessmentView:
     """Return a published assessment to a draft - refused (409) once anyone has attempted it.
 
-    The attempts check is made after taking the assessment row's ``FOR UPDATE`` lock, which waits
-    for any submission in flight (those hold ``FOR SHARE``), so an attempt cannot slip in between
-    the check and the change. (Administrator operations are also serialised by the course and
-    module locks ``_lock_module`` takes, and an attempt's insert key-share-locks its module row, so
-    this lock is a second line of defence; the submission's ``FOR SHARE`` is the one that makes a
-    submission find a draft once an unpublish has committed.)"""
+    The attempts check is made while holding the module row ``FOR UPDATE`` (``_lock_module``), which
+    waits for any submission in flight - a submission holds the module ``FOR KEY SHARE`` from before
+    it reads the assessment until it commits (:func:`submit_attempt`) - so an attempt cannot slip in
+    between the check and the change, and a submission that arrives later finds a draft."""
     await _lock_module(session, module_id)
-    assessment = await assessments_repo.get_by_module(session, module_id, for_update=True)
+    assessment = await assessments_repo.get_by_module(session, module_id)
     if assessment is None:
         raise NotFoundError(ASSESSMENT_NOT_FOUND)
     if not assessment.is_published:
@@ -273,12 +271,10 @@ async def _require_access(session: AsyncSession, user: UserRecord, module_id: UU
         raise NotFoundError(ASSESSMENT_NOT_FOUND) from exc
 
 
-async def _published_assessment(
-    session: AsyncSession, module_id: UUID, *, share: bool = False
-) -> AssessmentRecord:
+async def _published_assessment(session: AsyncSession, module_id: UUID) -> AssessmentRecord:
     """The module's assessment if it exists **and is published**; otherwise the assessment's own
     fixed 404 - the very one for "no such assessment", so a draft cannot be told from nothing."""
-    assessment = await assessments_repo.get_by_module(session, module_id, share=share)
+    assessment = await assessments_repo.get_by_module(session, module_id)
     if assessment is None or not assessment.is_published:
         raise NotFoundError(ASSESSMENT_NOT_FOUND)
     return assessment
@@ -313,14 +309,19 @@ async def submit_attempt(
 ) -> AttemptRecord:
     """Grade a submission and record it, or return the attempt its ``idempotency_key`` made.
 
-    One transaction: serialise this employee's submissions for the module, find an earlier attempt
-    with the key (a retry), otherwise grade against the assessment as it is *now* (held with a
-    ``FOR SHARE`` lock so an administrator's edit cannot land half-way), and insert the attempt
-    together with the exact question set and threshold used. A submission that cannot be graded
-    (missing, repeated, unknown or foreign answers) is a 422 and writes nothing.
+    One transaction: hold the module row ``FOR KEY SHARE`` (so an administrator's edit, publish or
+    unpublish cannot land half-way), serialise this employee's submissions for the module, find an
+    earlier attempt with the key (a retry), otherwise grade against the assessment as it is *now*,
+    and insert the attempt together with the exact question set and threshold used. A submission
+    that cannot be graded (missing, repeated, unknown or foreign answers) is a 422 and writes
+    nothing.
     """
     await _require_access(session, user, module_id)
-    assessment = await _published_assessment(session, module_id, share=True)
+    # Lock the module first - the same order as every administrator operation - so that an
+    # unpublish racing this submission is wholly before it (we then find a draft: 404) or wholly
+    # after it (it then sees our attempt: 409), and the two can never deadlock.
+    await assessments_repo.lock_module_for_attempt(session, module_id)
+    assessment = await _published_assessment(session, module_id)
     await assessments_repo.lock_user_module(session, user_id=user.id, module_id=module_id)
 
     earlier = await assessments_repo.get_attempt_by_key(

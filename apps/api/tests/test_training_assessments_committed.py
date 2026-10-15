@@ -5,8 +5,10 @@ with transactions that really overlap.
 The rolled-back tests cannot show what two simultaneous transactions do to each other. The property
 at stake: **an assessment that has an attempt is never a draft** - an unpublish racing a submission
 must be refused if the submission got in first, and the submission must find a draft (a 404) if the
-unpublish did. That rests on the row locks of ``services.assessments`` (a submission holds
-``FOR SHARE`` on the assessment, publish / unpublish / save take ``FOR UPDATE`` before they look).
+unpublish did. That rests on one lock order in ``services.assessments``: publish / unpublish / save
+hold the course and then the module row ``FOR UPDATE`` before they look, and a submission holds the
+module row ``FOR KEY SHARE`` first and reads the assessment after. The two conflict, and neither
+waits while holding something the other needs, so they cannot deadlock either.
 
 Two kinds of test, both on the scratch database of ``test_training_committed``'s ``world``:
 
@@ -24,6 +26,7 @@ import pytest
 
 from edutoon.core.errors import ConflictError, NotFoundError
 from edutoon.domain.training_assessment import Answer
+from edutoon.repositories import assessments as assessments_repo
 from edutoon.services import assessments as assessments_service
 from tests.test_training_committed import BASE, World, world  # noqa: F401
 from tests.training_api_helpers import assessment_payload
@@ -266,3 +269,52 @@ async def test_an_unpublish_racing_a_submission_never_leaves_a_draft_with_an_att
     )
     status, attempts = await _state(world, module_id)
     assert (status, attempts) in {("draft", 0), ("published", 1)}
+
+
+async def test_a_submission_paused_before_its_insert_neither_deadlocks_nor_loses_to_an_unpublish(
+    world, monkeypatch
+):
+    """The window the other interleavings do not cover: the submission has read the assessment but
+    has not yet inserted its attempt. With the unpublish arriving then, the two used to take their
+    row locks in opposite orders (unpublish: module, then assessment; submission: assessment, then -
+    through the attempt's foreign key - module), which Postgres can only resolve by aborting one of
+    them with a deadlock error. Both transactions must instead finish cleanly: the submission wins,
+    the unpublish is refused, and no attempt exists on a draft."""
+    async with world.client() as client:
+        _, module_id = await _course_with_module(world, client)
+        await _save(world, client, module_id, publish=True)
+    answers = await _right_answers(world, module_id)
+
+    reached, release = asyncio.Event(), asyncio.Event()
+    real_insert = assessments_repo.insert_attempt
+
+    async def paused_insert(*args, **kwargs):
+        reached.set()
+        await release.wait()
+        return await real_insert(*args, **kwargs)
+
+    monkeypatch.setattr(assessments_repo, "insert_attempt", paused_insert)
+    submitting = asyncio.create_task(
+        _in_own_transaction(
+            world,
+            lambda s: assessments_service.submit_attempt(
+                s,
+                world.employee.user,
+                module_id=UUID(module_id),
+                answers=answers,
+                idempotency_key=f"race-{uuid4()}",
+            ),
+        )
+    )
+    await asyncio.wait_for(reached.wait(), timeout=15)  # graded, about to insert
+    unpublishing = asyncio.create_task(_unpublish(world, module_id))
+    assert await _still_waiting(unpublishing), "the unpublish did not wait for the submission"
+    release.set()
+
+    attempt = await asyncio.wait_for(
+        submitting, timeout=30
+    )  # a deadlock would abort one of the two
+    with pytest.raises(ConflictError, match="has attempts"):
+        await asyncio.wait_for(unpublishing, timeout=30)
+    assert attempt.passed is True
+    assert await _state(world, module_id) == ("published", 1)

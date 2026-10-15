@@ -313,14 +313,19 @@ One optional **assessment per module**: single-correct multiple choice, 1-50 que
   the one place publish reads the questions (`list_admin_questions`). The other publish-time
   flaws (no questions, one option, no correct option) are produced by deleting rows underneath a
   stored draft.
-- **Concurrency.** Publish, unpublish and save take the course and module rows `FOR UPDATE`, then the
-  assessment row `FOR UPDATE`; a submission takes the assessment row `FOR SHARE`. So an unpublish
-  racing a submission either waits for it and is refused (409), or commits first and the submission
-  finds a draft (404): an assessment with an attempt is never a draft. Proved with real overlapping
-  transactions in `tests/test_training_assessments_committed.py` (the assessment-row `FOR UPDATE`
-  itself is defence in depth - the course/module locks and the attempt's foreign-key lock already
-  serialise administrators and a submission in flight - which the mutation runner records as
-  equivalent mutants with that reasoning).
+- **Concurrency.** The module row is the one serialisation point. Publish, unpublish, save and delete
+  take the course row and then the module row `FOR UPDATE` before they read anything; a submission takes
+  the module row `FOR KEY SHARE` first, then reads the assessment, and inserts its attempt under that
+  lock. They conflict, so an unpublish racing a submission is either wholly after it (it waits, sees the
+  attempt, 409) or wholly before it (the submission waits, then finds a draft, 404): an assessment with
+  an attempt is never a draft. The *same order* matters: an earlier version had the submission lock the
+  assessment row first, reaching the module only through the attempt's foreign key, and
+  `test_a_submission_paused_before_its_insert_neither_deadlocks_nor_loses_to_an_unpublish` reproduced
+  Postgres aborting one of the two with a deadlock error - that is why there are no row locks on the
+  assessment itself any more (they were redundant once the module is the serialisation point, and an
+  assessment-row lock is what created the opposite order). Proved with real overlapping transactions in
+  `tests/test_training_assessments_committed.py`; the mutation runner kills a submission that does not
+  lock the module, one that locks it after reading, and administrator operations that do not lock it.
 - **404 for assessment routes.** Seven causes (no module, not enrolled, withdrawn, course or module not
   published, not an employee, no assessment) give the byte-identical `Assessment not found.`; a locked
   module is the 403 `module_locked`.

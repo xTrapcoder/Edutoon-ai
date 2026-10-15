@@ -145,23 +145,31 @@ def _attempt(row: Any) -> AttemptRecord:
 # --- authoring ---------------------------------------------------------------------------------
 
 
-async def get_by_module(
-    session: AsyncSession, module_id: UUID, *, share: bool = False, for_update: bool = False
-) -> AssessmentRecord | None:
-    """The module's assessment. ``share=True`` takes a ``FOR SHARE`` lock, which waits for an
-    administrator's change to it (publishing, unpublishing or replacing its questions all update
-    this row) to commit and then holds it off until the caller's transaction ends - so a grading
-    call sees one consistent version. ``for_update=True`` is the administrator's side of that: it
-    waits for any grading call in flight, so a check made afterwards (are there attempts?) cannot be
-    overtaken by one."""
-    assert not (share and for_update), "ask for one lock, not two"
+async def get_by_module(session: AsyncSession, module_id: UUID) -> AssessmentRecord | None:
+    """The module's assessment, read without a lock. Whoever needs it to hold still takes the
+    module's row lock first (:func:`lock_module_for_attempt` for a submission; the administrator
+    operations of ``services.assessments`` hold the module ``FOR UPDATE``)."""
     stmt = select(assessments).where(assessments.c.module_id == module_id)
-    if share:
-        stmt = stmt.with_for_update(read=True)
-    elif for_update:
-        stmt = stmt.with_for_update()
     row = (await session.execute(stmt)).mappings().one_or_none()
     return _assessment(row) if row is not None else None
+
+
+async def lock_module_for_attempt(session: AsyncSession, module_id: UUID) -> None:
+    """Hold the module row ``FOR KEY SHARE`` until the transaction ends.
+
+    Every administrator operation on an assessment holds the module row ``FOR UPDATE`` (after the
+    course row) from before it looks until it commits; this lock conflicts with that and with
+    nothing a submission does, so an unpublish / save / publish and a submission are strictly one
+    after the other. Taking it *first* gives both sides the same lock order (module, then
+    everything else): a submission that locked the assessment row first and reached the module only
+    through the attempt's foreign key would deadlock with an administrator who holds the module and
+    waits for the assessment. A submission inserts its attempt under this lock, so an administrator
+    who then gets the module sees the attempt."""
+    await session.execute(
+        select(training_modules.c.id)
+        .where(training_modules.c.id == module_id)
+        .with_for_update(read=True, key_share=True)
+    )
 
 
 async def upsert(
