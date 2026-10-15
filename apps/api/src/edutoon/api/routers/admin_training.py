@@ -27,7 +27,11 @@ from edutoon.api.policies import (
     require_admin_for_course,
     require_admin_for_module,
 )
-from edutoon.api.schemas.assessments import AdminAssessmentResponse, AssessmentPutRequest
+from edutoon.api.schemas.assessments import (
+    AdminAssessmentResponse,
+    AssessmentPublishResponse,
+    AssessmentPutRequest,
+)
 from edutoon.api.schemas.training import (
     CourseCreateRequest,
     CourseListResponse,
@@ -540,8 +544,8 @@ async def put_assessment(
     redis: RedisDep,
     idempotency_key: IdempotencyKey,
 ) -> AdminAssessmentResponse:
-    """Create the module's assessment or replace all of its questions and its threshold. Allowed
-    after attempts exist: attempts keep the questions and threshold they were graded with."""
+    """Create the module's assessment or replace all of its questions and its threshold. The
+    result is a draft; a published assessment is refused (409) - unpublish it first."""
     questions = [
         AuthoredQuestion(
             prompt=q.prompt,
@@ -564,6 +568,68 @@ async def put_assessment(
         redis,
         owner_id=admin.id,
         method="PUT",
+        path=request.url.path,
+        idempotency_key=idempotency_key,
+        handler=_execute,
+        commit=session.commit,
+    )
+    return AdminAssessmentResponse.model_validate(response_body)
+
+
+@router.post("/modules/{module_id}/assessment/publish")
+async def publish_assessment(
+    request: Request,
+    module_id: UUID,
+    admin: ModuleAdmin,
+    session: Session,
+    redis: RedisDep,
+    idempotency_key: IdempotencyKey,
+) -> AssessmentPublishResponse:
+    """Validate the whole assessment (422) and make it live for employees. Reports
+    ``active_enrolments_affected``: the active enrolments of the course, for whom the pass gate now
+    applies."""
+
+    async def _execute() -> tuple[int, Any]:
+        result = await assessments_service.publish_assessment(
+            session, actor_id=admin.id, module_id=module_id
+        )
+        return status.HTTP_200_OK, AssessmentPublishResponse.from_result(result).model_dump(
+            mode="json"
+        )
+
+    _, response_body = await idempotency_service.run_with_idempotency(
+        redis,
+        owner_id=admin.id,
+        method="POST",
+        path=request.url.path,
+        idempotency_key=idempotency_key,
+        handler=_execute,
+        commit=session.commit,
+    )
+    return AssessmentPublishResponse.model_validate(response_body)
+
+
+@router.post("/modules/{module_id}/assessment/unpublish")
+async def unpublish_assessment(
+    request: Request,
+    module_id: UUID,
+    admin: ModuleAdmin,
+    session: Session,
+    redis: RedisDep,
+    idempotency_key: IdempotencyKey,
+) -> AdminAssessmentResponse:
+    """Return the assessment to a draft; refused (409) once anyone has attempted it."""
+
+    async def _execute() -> tuple[int, Any]:
+        view = await assessments_service.unpublish_assessment(
+            session, actor_id=admin.id, module_id=module_id
+        )
+        return status.HTTP_200_OK, AdminAssessmentResponse.from_view(view).model_dump(mode="json")
+
+    _, response_body = await idempotency_service.run_with_idempotency(
+        redis,
+        owner_id=admin.id,
+        method="POST",
         path=request.url.path,
         idempotency_key=idempotency_key,
         handler=_execute,

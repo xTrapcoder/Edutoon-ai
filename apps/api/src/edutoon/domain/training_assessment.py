@@ -31,6 +31,12 @@ MAX_OPTIONS: Final = 6
 PROMPT_MAX_CHARS: Final = 1000
 LABEL_MAX_CHARS: Final = 500
 
+ASSESSMENT_DRAFT: Final = "draft"
+ASSESSMENT_PUBLISHED: Final = "published"
+ASSESSMENT_STATUSES: Final = (ASSESSMENT_DRAFT, ASSESSMENT_PUBLISHED)
+"""``ck_assessments_status``. Saving always produces a draft; only a published assessment is visible
+to employees or counts toward the pass gate."""
+
 ASSESSMENT_NOT_FOUND: Final = "Assessment not found."
 """The one fixed message for every employee-side 404 on an assessment route: no such module, not
 enrolled, enrolment withdrawn, course not published, module not published, the caller is not an
@@ -40,6 +46,16 @@ behind a module the caller cannot reach is **byte-identical** to one that does n
 ASSESSMENT_DELETE_REFUSED: Final = (
     "This assessment has attempts, so it cannot be deleted. Replace its questions instead: "
     "earlier attempts keep the question set and threshold they were graded with."
+)
+ASSESSMENT_PUBLISHED_REFUSED: Final = (
+    "This assessment is published, so it cannot be changed. Unpublish it first, edit it, then "
+    "publish it again."
+)
+ASSESSMENT_ALREADY_PUBLISHED: Final = "This assessment is already published."
+ASSESSMENT_ALREADY_DRAFT: Final = "This assessment is already a draft."
+ASSESSMENT_UNPUBLISH_REFUSED: Final = (
+    "This assessment has attempts, so it cannot be unpublished or changed. Employees' results "
+    "refer to it exactly as it stands."
 )
 MODULE_DELETE_REFUSED: Final = (
     "This module has learner attempts, so it cannot be deleted. Unpublish it instead."
@@ -97,6 +113,17 @@ def authoring_problem(questions: Sequence[AuthoredQuestion], threshold_percent: 
         if sum(1 for option in question.options if option.is_correct) != 1:
             return f"Question {number} must have exactly one correct option."
     return None
+
+
+def publish_problem(questions: Sequence[AuthoredQuestion], threshold_percent: int) -> str | None:
+    """Why this assessment, as stored, may not be published, or ``None`` if it may.
+
+    Publishing re-validates the *whole* assessment with the very rules saving applies
+    (:func:`authoring_problem`: 1 to ``MAX_QUESTIONS`` questions, 2 to ``MAX_OPTIONS`` options each,
+    exactly one correct option per question), so a stored draft that is incomplete or inconsistent -
+    whatever way it came to be - can never reach an employee.
+    """
+    return authoring_problem(questions, threshold_percent)
 
 
 # --- grading -----------------------------------------------------------------------------------

@@ -256,8 +256,13 @@ One optional **assessment per module**: single-correct multiple choice, 1-50 que
 `docs/training-platform-design.md`, "Step 3".
 
 - **Authoring** (administrators): `PUT /v1/admin/training/modules/{module_id}/assessment` replaces the
-  whole assessment (threshold 1-100, default 70, stored on the assessment) at any time - also after
-  attempts exist; `GET` returns it with `is_correct`; `DELETE` is 409 once it has attempts.
+  whole assessment (threshold 1-100, default 70, stored on the assessment) as a **draft**; it is a 409
+  while the assessment is published, even with no attempts. `GET` returns it with `is_correct` and its
+  `status` / `published_at`; `DELETE` is allowed for a draft or published assessment and is 409 once it
+  has attempts. `POST .../assessment/publish` re-validates the whole assessment (422 if it has no
+  questions, a question outside 2-6 options, or not exactly one correct option; 1-50 questions), makes it
+  live and returns `active_enrolments_affected`; `POST .../assessment/unpublish` returns it to a draft
+  and is 409 once anyone has attempted it. An attempted assessment is therefore frozen for good.
 - **Taking it** (employees): `GET /v1/training/modules/{module_id}/assessment` returns the questions with
   no key; `POST .../assessment/attempts` (`Idempotency-Key`) submits **every** answer once, is graded in
   that request and recorded; `GET .../assessment/attempts` lists the caller's own attempts. The
@@ -268,11 +273,12 @@ One optional **assessment per module**: single-correct multiple choice, 1-50 que
   echo the options the employee chose. The score itself is still information: with unlimited retakes an
   employee could probe the key one answer at a time - no attempt limit or cooldown exists (a product
   decision, not made).
-- **There is no draft or published state on an assessment.** `PUT` writes it and it is live at once:
-  an employee who can reach the module (enrolled, course and module published, not locked) can read it
-  in the next request, and the modules after it lock until it is passed. What hides one is its *module*
-  being unpublished or its course not being published. An unpublished module's assessment is a 404 and
-  blocks nothing.
+- **Draft and published.** Only a published assessment is visible to employees (a draft is the same
+  byte-identical `Assessment not found.` 404 as every other unreachable cause, on all three employee
+  routes) and only a published one counts toward the pass gate, so a draft never blocks the next module.
+  Publishing deliberately starts gating the enrolled employees. An unpublished module's assessment is
+  hidden and blocks nothing too. (Migration 0021 carries `status` and `published_at`; it was edited in
+  place before it had been applied to any persistent database.)
 - **Grading** is integer-only: `passed <=> correct * 100 >= threshold_percent * question_count`
   (7/10 and 70/100 pass a 70% gate; 69/100 and 2/3 do not). A submission with a missing, repeated,
   unknown or foreign answer is a 422 and writes nothing.

@@ -192,6 +192,8 @@ SCOPE_GUARDED_ROUTES = {
     ("PUT", "/v1/admin/training/modules/{module_id}/assessment"): "admin_module",
     ("GET", "/v1/admin/training/modules/{module_id}/assessment"): "admin_module",
     ("DELETE", "/v1/admin/training/modules/{module_id}/assessment"): "admin_module",
+    ("POST", "/v1/admin/training/modules/{module_id}/assessment/publish"): "admin_module",
+    ("POST", "/v1/admin/training/modules/{module_id}/assessment/unpublish"): "admin_module",
     ("GET", "/v1/training/modules/{module_id}/assessment"): "employee_assessment",
     ("GET", "/v1/training/modules/{module_id}/assessment/attempts"): "employee_assessment",
     ("POST", "/v1/training/modules/{module_id}/assessment/attempts"): "employee_assessment",
@@ -212,6 +214,8 @@ def test_the_assessment_scope_routes_are_exactly_the_pinned_table_with_their_gua
     }
     assert len(found) >= 1  # the scan found them at all
     assert found == SCOPE_GUARDED_ROUTES
+    assert len(SCOPE_GUARDED_ROUTES) == 8  # five administrator routes + three employee routes
+    assert sum(path.startswith("/v1/training") for _, path in SCOPE_GUARDED_ROUTES) == 3
     for (_, path), policy in found.items():
         employee_side = path.startswith("/v1/training")
         assert policy == ("employee_assessment" if employee_side else "admin_module")

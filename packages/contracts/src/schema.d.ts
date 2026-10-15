@@ -340,13 +340,55 @@ export interface paths {
         get: operations["get_assessment_v1_admin_training_modules__module_id__assessment_get"];
         /**
          * Put Assessment
-         * @description Create the module's assessment or replace all of its questions and its threshold. Allowed
-         *     after attempts exist: attempts keep the questions and threshold they were graded with.
+         * @description Create the module's assessment or replace all of its questions and its threshold. The
+         *     result is a draft; a published assessment is refused (409) - unpublish it first.
          */
         put: operations["put_assessment_v1_admin_training_modules__module_id__assessment_put"];
         post?: never;
         /** Delete Assessment */
         delete: operations["delete_assessment_v1_admin_training_modules__module_id__assessment_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/training/modules/{module_id}/assessment/publish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Publish Assessment
+         * @description Validate the whole assessment (422) and make it live for employees. Reports
+         *     ``active_enrolments_affected``: the active enrolments of the course, for whom the pass gate now
+         *     applies.
+         */
+        post: operations["publish_assessment_v1_admin_training_modules__module_id__assessment_publish_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/training/modules/{module_id}/assessment/unpublish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Unpublish Assessment
+         * @description Return the assessment to a draft; refused (409) once anyone has attempted it.
+         */
+        post: operations["unpublish_assessment_v1_admin_training_modules__module_id__assessment_unpublish_post"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -910,6 +952,10 @@ export interface components {
              * Format: uuid
              */
             module_id: string;
+            /** Status */
+            status: string;
+            /** Published At */
+            published_at: string | null;
             /** Threshold Percent */
             threshold_percent: number;
             /** Question Count */
@@ -972,6 +1018,39 @@ export interface components {
              * @default false
              */
             is_correct: boolean;
+        };
+        /**
+         * AssessmentPublishResponse
+         * @description The published assessment, and how many employees the pass gate now applies to.
+         */
+        AssessmentPublishResponse: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Module Id
+             * Format: uuid
+             */
+            module_id: string;
+            /** Status */
+            status: string;
+            /** Published At */
+            published_at: string | null;
+            /** Threshold Percent */
+            threshold_percent: number;
+            /** Question Count */
+            question_count: number;
+            /** Questions */
+            questions: components["schemas"]["AdminQuestionResponse"][];
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /** Active Enrolments Affected */
+            active_enrolments_affected: number;
         };
         /**
          * AssessmentPutRequest
@@ -3497,6 +3576,74 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    publish_assessment_v1_admin_training_modules__module_id__assessment_publish_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "idempotency-key": string;
+                authorization?: string | null;
+            };
+            path: {
+                module_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AssessmentPublishResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    unpublish_assessment_v1_admin_training_modules__module_id__assessment_unpublish_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "idempotency-key": string;
+                authorization?: string | null;
+            };
+            path: {
+                module_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminAssessmentResponse"];
+                };
             };
             /** @description Validation Error */
             422: {

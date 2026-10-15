@@ -1829,7 +1829,7 @@
           "admin-training"
         ],
         "summary": "Put Assessment",
-        "description": "Create the module's assessment or replace all of its questions and its threshold. Allowed\nafter attempts exist: attempts keep the questions and threshold they were graded with.",
+        "description": "Create the module's assessment or replace all of its questions and its threshold. The\nresult is a draft; a published assessment is refused (409) - unpublish it first.",
         "operationId": "put_assessment_v1_admin_training_modules__module_id__assessment_put",
         "parameters": [
           {
@@ -2008,6 +2008,148 @@
         "responses": {
           "204": {
             "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/training/modules/{module_id}/assessment/publish": {
+      "post": {
+        "tags": [
+          "admin-training"
+        ],
+        "summary": "Publish Assessment",
+        "description": "Validate the whole assessment (422) and make it live for employees. Reports\n``active_enrolments_affected``: the active enrolments of the course, for whom the pass gate now\napplies.",
+        "operationId": "publish_assessment_v1_admin_training_modules__module_id__assessment_publish_post",
+        "parameters": [
+          {
+            "name": "module_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Module Id"
+            }
+          },
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255,
+              "title": "Idempotency-Key"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssessmentPublishResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/training/modules/{module_id}/assessment/unpublish": {
+      "post": {
+        "tags": [
+          "admin-training"
+        ],
+        "summary": "Unpublish Assessment",
+        "description": "Return the assessment to a draft; refused (409) once anyone has attempted it.",
+        "operationId": "unpublish_assessment_v1_admin_training_modules__module_id__assessment_unpublish_post",
+        "parameters": [
+          {
+            "name": "module_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Module Id"
+            }
+          },
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255,
+              "title": "Idempotency-Key"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminAssessmentResponse"
+                }
+              }
+            }
           },
           "422": {
             "description": "Validation Error",
@@ -5100,6 +5242,22 @@
             "format": "uuid",
             "title": "Module Id"
           },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "published_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Published At"
+          },
           "threshold_percent": {
             "type": "integer",
             "title": "Threshold Percent"
@@ -5125,6 +5283,8 @@
         "required": [
           "id",
           "module_id",
+          "status",
+          "published_at",
           "threshold_percent",
           "question_count",
           "questions",
@@ -5234,6 +5394,74 @@
           "label"
         ],
         "title": "AssessmentOptionInput"
+      },
+      "AssessmentPublishResponse": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "module_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Module Id"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "published_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Published At"
+          },
+          "threshold_percent": {
+            "type": "integer",
+            "title": "Threshold Percent"
+          },
+          "question_count": {
+            "type": "integer",
+            "title": "Question Count"
+          },
+          "questions": {
+            "items": {
+              "$ref": "#/components/schemas/AdminQuestionResponse"
+            },
+            "type": "array",
+            "title": "Questions"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          },
+          "active_enrolments_affected": {
+            "type": "integer",
+            "title": "Active Enrolments Affected"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "module_id",
+          "status",
+          "published_at",
+          "threshold_percent",
+          "question_count",
+          "questions",
+          "updated_at",
+          "active_enrolments_affected"
+        ],
+        "title": "AssessmentPublishResponse",
+        "description": "The published assessment, and how many employees the pass gate now applies to."
       },
       "AssessmentPutRequest": {
         "properties": {

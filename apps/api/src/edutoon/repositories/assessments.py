@@ -24,7 +24,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import delete, func, select, text
+from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -38,6 +38,8 @@ from edutoon.db.tables import (
     training_modules,
 )
 from edutoon.domain.training_assessment import (
+    ASSESSMENT_DRAFT,
+    ASSESSMENT_PUBLISHED,
     AuthoredQuestion,
     Grade,
     SnapshotOption,
@@ -52,9 +54,15 @@ class AssessmentRecord:
     id: UUID
     module_id: UUID
     threshold_percent: int
+    status: str
+    published_at: datetime | None
     created_by: UUID
     created_at: datetime
     updated_at: datetime
+
+    @property
+    def is_published(self) -> bool:
+        return self.status == ASSESSMENT_PUBLISHED
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,6 +118,8 @@ def _assessment(row: Any) -> AssessmentRecord:
         id=row["id"],
         module_id=row["module_id"],
         threshold_percent=row["threshold_percent"],
+        status=row["status"],
+        published_at=row["published_at"],
         created_by=row["created_by"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
@@ -136,14 +146,20 @@ def _attempt(row: Any) -> AttemptRecord:
 
 
 async def get_by_module(
-    session: AsyncSession, module_id: UUID, *, share: bool = False
+    session: AsyncSession, module_id: UUID, *, share: bool = False, for_update: bool = False
 ) -> AssessmentRecord | None:
     """The module's assessment. ``share=True`` takes a ``FOR SHARE`` lock, which waits for an
-    administrator's replacement of its questions (that updates this row) to commit and then holds
-    it off until the caller's transaction ends - so a grading call sees one consistent version."""
+    administrator's change to it (publishing, unpublishing or replacing its questions all update
+    this row) to commit and then holds it off until the caller's transaction ends - so a grading
+    call sees one consistent version. ``for_update=True`` is the administrator's side of that: it
+    waits for any grading call in flight, so a check made afterwards (are there attempts?) cannot be
+    overtaken by one."""
+    assert not (share and for_update), "ask for one lock, not two"
     stmt = select(assessments).where(assessments.c.module_id == module_id)
     if share:
         stmt = stmt.with_for_update(read=True)
+    elif for_update:
+        stmt = stmt.with_for_update()
     row = (await session.execute(stmt)).mappings().one_or_none()
     return _assessment(row) if row is not None else None
 
@@ -151,14 +167,43 @@ async def get_by_module(
 async def upsert(
     session: AsyncSession, *, module_id: UUID, threshold_percent: int, created_by: UUID
 ) -> AssessmentRecord:
-    """Create the module's assessment or change its threshold (``created_by`` is kept)."""
+    """Create the module's assessment as a **draft** or change a draft's threshold (``created_by``
+    is kept). The status is always written explicitly (the column has no default), and a published
+    assessment is never touched: the conflict update only matches a draft, so a caller that skipped
+    the service's check gets an error rather than a silently changed published assessment."""
     stmt = (
         pg_insert(assessments)
-        .values(module_id=module_id, threshold_percent=threshold_percent, created_by=created_by)
+        .values(
+            module_id=module_id,
+            threshold_percent=threshold_percent,
+            status=ASSESSMENT_DRAFT,
+            published_at=None,
+            created_by=created_by,
+        )
         .on_conflict_do_update(
             index_elements=[assessments.c.module_id],
             set_={"threshold_percent": threshold_percent},
+            where=assessments.c.status == ASSESSMENT_DRAFT,
         )
+        .returning(assessments)
+    )
+    row = (await session.execute(stmt)).mappings().one_or_none()
+    if row is None:
+        raise ValueError("a published assessment cannot be saved over")
+    return _assessment(row)
+
+
+async def set_status(
+    session: AsyncSession, assessment_id: UUID, *, status: str
+) -> AssessmentRecord:
+    """Publish (stamping ``published_at``) or return an assessment to draft (clearing it)."""
+    if status not in (ASSESSMENT_DRAFT, ASSESSMENT_PUBLISHED):
+        raise ValueError(f"unknown assessment status {status!r}")
+    published_at = func.now() if status == ASSESSMENT_PUBLISHED else None
+    stmt = (
+        update(assessments)
+        .where(assessments.c.id == assessment_id)
+        .values(status=status, published_at=published_at)
         .returning(assessments)
     )
     return _assessment((await session.execute(stmt)).mappings().one())
@@ -319,13 +364,19 @@ async def load_grading_set(session: AsyncSession, assessment_id: UUID) -> list[S
 async def module_ids_with_assessment(
     session: AsyncSession, module_ids: Collection[UUID]
 ) -> frozenset[UUID]:
-    """Which of ``module_ids`` have an assessment (with at least one question)."""
+    """Which of ``module_ids`` have a **published** assessment (with at least one question).
+
+    A draft is an administrator's work in progress: it is not counted, so it never holds back the
+    modules after it."""
     if not module_ids:
         return frozenset()
     stmt = (
         select(assessments.c.module_id)
         .join(assessment_questions, assessment_questions.c.assessment_id == assessments.c.id)
-        .where(assessments.c.module_id.in_(list(module_ids)))
+        .where(
+            assessments.c.module_id.in_(list(module_ids)),
+            assessments.c.status == ASSESSMENT_PUBLISHED,
+        )
         .distinct()
     )
     return frozenset((await session.execute(stmt)).scalars().all())

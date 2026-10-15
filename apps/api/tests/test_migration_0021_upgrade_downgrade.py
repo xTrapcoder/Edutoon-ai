@@ -48,13 +48,18 @@ def head_url(scratch_url) -> str:
 # --- helpers: the smallest valid rows ----------------------------------------------------------
 
 
-def _assessment(url: str, module: str, owner: Any, threshold: int = 70) -> str:
+def _assessment(
+    url: str, module: str, owner: Any, threshold: int = 70, status: str = "published"
+) -> str:
+    """``status`` has no default in the schema, so every insert says it; ``published_at`` is set
+    exactly when the assessment is published (the schema ties the two)."""
     [row] = sql(
         url,
-        "INSERT INTO assessments (module_id, threshold_percent, created_by) "
-        "VALUES (:m, :t, :o) RETURNING id",
+        "INSERT INTO assessments (module_id, threshold_percent, status, published_at, created_by) "
+        "VALUES (:m, :t, :s, CASE WHEN :s = 'published' THEN now() END, :o) RETURNING id",
         m=module,
         t=threshold,
+        s=status,
         o=owner,
     )
     return str(row["id"])
@@ -400,6 +405,50 @@ def test_attempt_numbers_and_idempotency_keys_are_unique(head_url):
             a=history["attempt"],
         )  # the same user and Idempotency-Key a second time
     assert _attempt(*args, n=2, k="a-new-key")
+
+
+def test_an_assessment_status_is_draft_or_published_with_no_default_and_a_matching_timestamp(
+    head_url,
+):
+    columns = {
+        row["column_name"]: row
+        for row in sql(
+            head_url,
+            "SELECT column_name, is_nullable, column_default, data_type FROM "
+            "information_schema.columns WHERE table_name = 'assessments'",
+        )
+    }
+    assert columns["status"]["is_nullable"] == "NO" and columns["status"]["data_type"] == "text"
+    assert columns["status"]["column_default"] is None  # the service must say which, always
+    assert columns["published_at"]["is_nullable"] == "YES"
+    assert columns["published_at"]["data_type"] == "timestamp with time zone"
+
+    owner = add_owner(head_url)
+    insert = (
+        "INSERT INTO assessments (module_id, threshold_percent, {cols} created_by) "
+        "VALUES (:m, 70, {vals} :o)"
+    )
+    for cols, vals, why in (
+        ("", "", "no status at all"),
+        ("status,", "'live',", "a status outside draft / published"),
+        ("status,", "'Draft',", "a status in the wrong case"),
+        ("status,", "'published',", "published without a published_at"),
+        ("status, published_at,", "'draft', now(),", "a draft with a published_at"),
+    ):
+        module = _module(head_url, _course(head_url, owner), owner)
+        with pytest.raises(IntegrityError):
+            sql(head_url, insert.format(cols=cols, vals=vals), m=module, o=owner)
+        assert _count(head_url, "assessments") == 0, why
+    module = _module(head_url, _course(head_url, owner), owner)
+    sql(head_url, insert.format(cols="status,", vals="'draft',"), m=module, o=owner)
+    other = _module(head_url, _course(head_url, owner), owner)
+    sql(
+        head_url,
+        insert.format(cols="status, published_at,", vals="'published', now(),"),
+        m=other,
+        o=owner,
+    )
+    assert _count(head_url, "assessments") == 2
 
 
 def test_an_assessment_is_one_per_module_with_a_threshold_between_1_and_100(head_url):

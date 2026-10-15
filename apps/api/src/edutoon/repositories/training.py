@@ -611,6 +611,19 @@ async def list_open_courses_of_user(session: AsyncSession, user_id: UUID) -> lis
     return [_course_from_row(row) for row in (await session.execute(stmt)).mappings().all()]
 
 
+async def count_active_enrolments(session: AsyncSession, course_id: UUID) -> int:
+    """How many enrolments of the course are active (withdrawn ones are not counted)."""
+    stmt = (
+        select(func.count())
+        .select_from(course_enrolments)
+        .where(
+            course_enrolments.c.course_id == course_id,
+            course_enrolments.c.status == ENROLMENT_ACTIVE,
+        )
+    )
+    return int((await session.execute(stmt)).scalar_one())
+
+
 async def list_modules_of_courses(
     session: AsyncSession, course_ids: Sequence[UUID]
 ) -> dict[UUID, list[ModuleRecord]]:

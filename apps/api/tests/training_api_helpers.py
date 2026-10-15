@@ -71,8 +71,9 @@ async def published_course(
 ) -> tuple[dict, list[dict]]:
     """A course with ``modules`` published modules, itself published unless told otherwise.
 
-    ``assessed`` lists the 0-based indexes of the modules that get an assessment (Step 3: only a
-    module that has one blocks the modules after it)."""
+    ``assessed`` lists the 0-based indexes of the modules that get an assessment, saved **and
+    published** (Step 3: only a module with a published assessment blocks the modules after it; a
+    draft is invisible to employees)."""
     course = await make_course(client, admin, title)
     made = await publish_modules(
         client, admin, source, track, db_session, storage, course["id"], modules
@@ -80,6 +81,8 @@ async def published_course(
     for index in assessed:
         saved = await put_assessment(client, admin, made[index]["id"])
         assert saved.status_code == 200, saved.text
+        live = await publish_assessment(client, admin, made[index]["id"])
+        assert live.status_code == 200, live.text
     if publish_course:
         response = await client.post(f"{BASE}/courses/{course['id']}/publish", headers=h(admin))
         assert response.status_code == 200, response.text
@@ -175,6 +178,35 @@ async def put_assessment(
         f"{BASE}/modules/{module_id}/assessment",
         json=payload if payload is not None else assessment_payload(),
         headers=h(admin, key),
+    )
+
+
+async def publish_assessment(
+    client: httpx.AsyncClient, admin: Any, module_id: str, key: str | None = None
+) -> httpx.Response:
+    return await client.post(
+        f"{BASE}/modules/{module_id}/assessment/publish", headers=h(admin, key)
+    )
+
+
+async def put_live(
+    client: httpx.AsyncClient,
+    admin: Any,
+    module_id: str,
+    payload: dict[str, Any] | None = None,
+) -> httpx.Response:
+    """Save an assessment and publish it; returns the publish response (the assessment as the
+    administrator sees it, plus ``active_enrolments_affected``)."""
+    saved = await put_assessment(client, admin, module_id, payload)
+    assert saved.status_code == 200, saved.text
+    return await publish_assessment(client, admin, module_id)
+
+
+async def unpublish_assessment(
+    client: httpx.AsyncClient, admin: Any, module_id: str, key: str | None = None
+) -> httpx.Response:
+    return await client.post(
+        f"{BASE}/modules/{module_id}/assessment/unpublish", headers=h(admin, key)
     )
 
 

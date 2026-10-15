@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import replace
 from uuid import UUID, uuid4
 
 import pytest
@@ -27,7 +28,12 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from edutoon.api.schemas import assessments as schemas
 from edutoon.core.errors import ConflictError, NotFoundError
-from edutoon.domain.training_assessment import MODULE_DELETE_REFUSED, Answer
+from edutoon.domain.training_assessment import (
+    MODULE_DELETE_REFUSED,
+    Answer,
+    AuthoredOption,
+    AuthoredQuestion,
+)
 from edutoon.main import create_app
 from edutoon.repositories import assessments as assessments_repo
 from edutoon.repositories import training as training_repo
@@ -50,9 +56,12 @@ from tests.training_api_helpers import (
     assessment_payload,
     comparable,
     enrol,
+    publish_assessment,
     published_course,
     put_assessment,
+    put_live,
     submit_attempt,
+    unpublish_assessment,
     withdraw,
 )
 
@@ -309,8 +318,8 @@ async def test_the_employee_view_is_the_same_whichever_option_is_correct(
     for question in second["questions"]:
         question["options"][0]["is_correct"] = False
         question["options"][2]["is_correct"] = True
-    assert (await put_assessment(role_client, admin, modules[0]["id"], first)).status_code == 200
-    assert (await put_assessment(role_client, admin, modules[1]["id"], second)).status_code == 200
+    assert (await put_live(role_client, admin, modules[0]["id"], first)).status_code == 200
+    assert (await put_live(role_client, admin, modules[1]["id"], second)).status_code == 200
     # module 2 is locked behind module 1 while module 1 has an assessment: pass module 1 first
     await submit_attempt(
         role_client,
@@ -364,7 +373,7 @@ async def test_the_pass_gate_over_http_uses_the_stored_threshold_and_integers(
         role_client, admin, employee, source, track, db_session, storage, modules=1, assessed=()
     )
     module = modules[0]
-    saved = await put_assessment(
+    saved = await put_live(
         role_client, admin, module["id"], assessment_payload(questions=total, threshold=threshold)
     )
     assert saved.status_code == 200
@@ -423,16 +432,17 @@ async def test_an_unanswerable_submission_is_a_422_and_writes_nothing(
     assert await attempts_of(db_session, employee, module["id"]) == []
 
 
-async def test_editing_the_assessment_after_an_attempt_changes_nothing_that_was_recorded(
+async def test_rewriting_the_assessment_after_an_attempt_changes_nothing_that_was_recorded(
     role_client, admin, employee, source, track, db_session, storage
 ):
+    """No route can edit an attempted assessment any more (it is published, and unpublishing is
+    refused once it has attempts - the 409s asserted first). The data layer must still keep every
+    recorded attempt independent of the authoring rows, so they are rewritten here directly."""
     course, modules = await world(
         role_client, admin, employee, source, track, db_session, storage, modules=1, assessed=()
     )
     module = modules[0]
-    await put_assessment(
-        role_client, admin, module["id"], assessment_payload(questions=10, threshold=70)
-    )
+    await put_live(role_client, admin, module["id"], assessment_payload(questions=10, threshold=70))
     original = (
         await role_client.get(ADMIN_ASSESSMENT.format(module["id"]), headers=admin.headers)
     ).json()
@@ -446,9 +456,28 @@ async def test_editing_the_assessment_after_an_attempt_changes_nothing_that_was_
     [before] = await attempts_of(db_session, employee, module["id"])
     answers_before = await assessments_repo.list_answer_rows(db_session, before.id)
 
-    # an administrator now rewrites the questions and lowers the threshold
-    await put_assessment(
-        role_client, admin, module["id"], assessment_payload(questions=2, threshold=10)
+    # the routes now refuse to change it ...
+    assert (
+        await put_assessment(role_client, admin, module["id"], assessment_payload(questions=2))
+    ).status_code == 409
+    assert (await unpublish_assessment(role_client, admin, module["id"])).status_code == 409
+    # ... so rewrite the authoring rows and lower the threshold underneath it, as a bug or a manual
+    # change could
+    assessment = await assessments_repo.get_by_module(db_session, UUID(module["id"]))
+    assert assessment is not None
+    await assessments_repo.replace_questions(
+        db_session,
+        assessment_id=assessment.id,
+        questions=[
+            AuthoredQuestion(
+                f"Rewritten {n}?",
+                (AuthoredOption("Yes", True), AuthoredOption("No", False)),
+            )
+            for n in (1, 2)
+        ],
+    )
+    await db_session.execute(
+        text("UPDATE assessments SET threshold_percent = 10 WHERE id = :a"), {"a": assessment.id}
     )
 
     [after] = await attempts_of(db_session, employee, module["id"])
@@ -486,7 +515,11 @@ async def test_a_submission_made_against_an_edited_assessment_is_refused_not_mis
     )
     module = modules[0]
     stale = await answers_for(role_client, admin, module["id"])
-    await put_assessment(role_client, admin, module["id"], assessment_payload(questions=2))
+    # the administrator unpublishes (no attempts yet), rewrites and publishes again
+    assert (await unpublish_assessment(role_client, admin, module["id"])).status_code == 200
+    assert (
+        await put_live(role_client, admin, module["id"], assessment_payload(questions=2))
+    ).status_code == 200
 
     response = await submit_attempt(role_client, employee, module["id"], stale)
 
@@ -754,6 +787,11 @@ async def test_an_assessment_behind_an_unreachable_module_is_indistinguishable_f
     )
     await enrol(role_client, admin, bare_course["id"], employee.user.id)
 
+    drafted_course, [drafted] = await published_course(
+        role_client, admin, source, track, db_session, storage, modules=1, title="Drafted"
+    )
+    await enrol(role_client, admin, drafted_course["id"], employee.user.id)
+    assert (await put_assessment(role_client, admin, drafted["id"])).status_code == 200  # a draft
     stranger = await make_person(role="employee")  # (2) enrolled in nothing
     former = await make_person(role="employee")  # (3) enrolled, then withdrawn
     await enrol(role_client, admin, course["id"], former.user.id)
@@ -778,6 +816,7 @@ async def test_an_assessment_behind_an_unreachable_module_is_indistinguishable_f
             "module not published": (unpublished["id"], employee),
             "not an employee": (target["id"], admin),
             "no assessment on a reachable module": (bare["id"], employee),
+            "draft assessment on a reachable module": (drafted["id"], employee),
         }
 
     for verb, builder in (
@@ -876,7 +915,7 @@ async def test_a_key_already_used_for_another_module_is_a_conflict_not_a_replay(
         role_client, admin, employee, source, track, db_session, storage, modules=2, assessed=()
     )
     for module in modules:
-        assert (await put_assessment(role_client, admin, module["id"])).status_code == 200
+        assert (await put_live(role_client, admin, module["id"])).status_code == 200
     first, second = (UUID(m["id"]) for m in modules)
     answers_first = [
         Answer(q.id, next(o.id for o in q.options if o.is_correct))
@@ -1032,10 +1071,10 @@ async def test_an_employees_attempt_history_shows_their_outcome_and_nothing_that
     and no per-answer verdict, so it cannot say which option of any question is correct - the key
     is not in the response, and nothing in it is a function of the key beyond the score itself."""
     course, modules = await world(
-        role_client, admin, employee, source, track, db_session, storage, modules=1
+        role_client, admin, employee, source, track, db_session, storage, modules=1, assessed=()
     )
     module = modules[0]
-    saved = await put_assessment(
+    saved = await put_live(
         role_client, admin, module["id"], assessment_payload(questions=4, options=3, threshold=70)
     )
     assert saved.status_code == 200, saved.text
@@ -1162,10 +1201,10 @@ async def test_deleting_a_module_with_attempts_is_the_same_409_from_the_check_an
 async def test_an_assessment_on_an_unpublished_module_is_invisible_and_blocks_nothing(
     role_client, admin, employee, source, track, db_session, storage
 ):
-    """There is no draft state on an assessment (see the next test): what hides one from employees
-    is its *module* being unpublished (or its course not published, covered above). An unpublished
-    module's assessment is a 404 for the employee, is never listed, and - whether or not anyone
-    passed it - does not hold back the modules after it."""
+    """Besides the assessment's own draft state (tests below), its *module* being unpublished (or
+    its course not published, covered above) hides it. An unpublished module's assessment is a 404
+    for the employee, is never listed, and - whether or not anyone passed it - does not hold back
+    the modules after it."""
     course, modules = await world(
         role_client, admin, employee, source, track, db_session, storage, modules=3, assessed=(0, 1)
     )
@@ -1189,31 +1228,260 @@ async def test_an_assessment_on_an_unpublished_module_is_invisible_and_blocks_no
     assert [m["id"] for m in mine["modules"]] == [first["id"], third["id"]]
 
 
-async def test_saving_an_assessment_takes_effect_at_once_there_is_no_draft_state(
+async def test_a_draft_does_not_block_progression_and_publishing_it_does_until_it_is_passed(
     role_client, admin, employee, source, track, db_session, storage
 ):
-    """Characterisation, not an endorsement: the six assessment routes have no draft or published
-    state. ``PUT`` writes the assessment and, if its module is reachable, an employee can read it in
-    the very next request and the modules after it lock until it is passed."""
+    """The pass gate counts published assessments only. Saving gives a draft: the next module stays
+    open and the employee's listing is unchanged. Publishing the very same assessment locks the next
+    module until it is passed."""
     course, modules = await world(
         role_client, admin, employee, source, track, db_session, storage, modules=2, assessed=()
     )
     first, second = modules
+    assert (await put_assessment(role_client, admin, first["id"])).status_code == 200  # a draft
+
     assert (
         await role_client.get(STREAM.format(second["id"]), headers=employee.headers)
     ).status_code == 200
-    assert (
-        await role_client.get(ASSESSMENT.format(first["id"]), headers=employee.headers)
-    ).status_code == 404
+    [mine] = (await role_client.get(EMPLOYEE_BASE + "/courses", headers=employee.headers)).json()[
+        "items"
+    ]
+    assert [m["locked"] for m in mine["modules"]] == [False, False]
 
-    assert (await put_assessment(role_client, admin, first["id"])).status_code == 200
+    published = await publish_assessment(role_client, admin, first["id"])
+    assert published.status_code == 200, published.text
 
-    assert (
-        await role_client.get(ASSESSMENT.format(first["id"]), headers=employee.headers)
-    ).status_code == 200
     locked = await role_client.get(STREAM.format(second["id"]), headers=employee.headers)
     assert locked.status_code == 403 and locked.json()["error"]["code"] == "module_locked"
-    columns = await db_session.execute(
-        text("SELECT column_name FROM information_schema.columns WHERE table_name = 'assessments'")
+    [mine] = (await role_client.get(EMPLOYEE_BASE + "/courses", headers=employee.headers)).json()[
+        "items"
+    ]
+    assert [m["locked"] for m in mine["modules"]] == [False, True]
+    await submit_attempt(
+        role_client, employee, first["id"], await answers_for(role_client, admin, first["id"])
     )
-    assert not {c for (c,) in columns.all()} & {"status", "published", "is_published", "draft"}
+    assert (
+        await role_client.get(STREAM.format(second["id"]), headers=employee.headers)
+    ).status_code == 200
+    # what an employee reads never says whether an assessment is a draft or published
+    shown = await role_client.get(ASSESSMENT.format(first["id"]), headers=employee.headers)
+    assert shown.status_code == 200 and b"status" not in shown.content
+    assert b"published_at" not in shown.content
+
+
+@pytest.mark.parametrize("flaw", ["no questions", "one option", "no correct option", "two correct"])
+async def test_publishing_validates_the_whole_stored_assessment(
+    role_client, admin, employee, source, track, db_session, storage, monkeypatch, flaw
+):
+    """Saving already refuses these, so a stored draft is made flawed underneath it (the way a bug
+    or a manual change could) and publishing must still refuse it (422) and leave it a draft.
+
+    Two correct options cannot be *stored* at all - the key table has one row per question - so
+    that case is injected at the one place publishing reads the stored questions."""
+    course, modules = await world(
+        role_client, admin, employee, source, track, db_session, storage, modules=1, assessed=()
+    )
+    module = modules[0]
+    assert (
+        await put_assessment(role_client, admin, module["id"], assessment_payload(options=2))
+    ).status_code == 200
+    stored = await assessments_repo.get_by_module(db_session, UUID(module["id"]))
+    assert stored is not None
+    [first_question, *_] = await assessments_repo.list_admin_questions(db_session, stored.id)
+
+    expected_message = "needs between"
+    if flaw == "no questions":
+        await db_session.execute(
+            text("DELETE FROM assessment_questions WHERE assessment_id = :a"), {"a": stored.id}
+        )
+        expected_message = "between 1 and"
+    elif flaw == "one option":
+        await db_session.execute(
+            text("DELETE FROM assessment_options WHERE question_id = :q AND position = 2"),
+            {"q": first_question.id},
+        )
+    elif flaw == "no correct option":
+        await db_session.execute(
+            text("DELETE FROM assessment_answer_keys WHERE question_id = :q"),
+            {"q": first_question.id},
+        )
+        expected_message = "exactly one correct"
+    else:
+        real = assessments_repo.list_admin_questions
+
+        async def two_correct(session, assessment_id):
+            questions = await real(session, assessment_id)
+            doubled = replace(
+                questions[0],
+                options=tuple(replace(o, is_correct=True) for o in questions[0].options),
+            )
+            return [doubled, *questions[1:]]
+
+        monkeypatch.setattr(assessments_repo, "list_admin_questions", two_correct)
+        expected_message = "exactly one correct"
+
+    response = await publish_assessment(role_client, admin, module["id"])
+
+    assert response.status_code == 422, response.text
+    assert expected_message in response.json()["error"]["message"]
+    after = await assessments_repo.get_by_module(db_session, UUID(module["id"]))
+    assert after is not None and (after.status, after.published_at) == ("draft", None)
+    shown = await role_client.get(ASSESSMENT.format(module["id"]), headers=employee.headers)
+    assert shown.status_code == 404 and shown.content == FIXED_404
+
+
+async def test_a_published_assessment_cannot_be_saved_over_even_with_no_attempts(
+    role_client, admin, employee, source, track, db_session, storage
+):
+    course, modules = await world(
+        role_client, admin, employee, source, track, db_session, storage, modules=1
+    )
+    module = modules[0]
+    before = (
+        await role_client.get(ADMIN_ASSESSMENT.format(module["id"]), headers=admin.headers)
+    ).json()
+    assert (
+        before["status"] == "published"
+        and await attempts_of(db_session, employee, module["id"]) == []
+    )
+
+    refused = await put_assessment(
+        role_client, admin, module["id"], assessment_payload(questions=1, threshold=90)
+    )
+
+    assert refused.status_code == 409
+    assert "Unpublish it first" in refused.json()["error"]["message"]
+    after = await role_client.get(ADMIN_ASSESSMENT.format(module["id"]), headers=admin.headers)
+    assert after.json() == before  # not a question, an option or the threshold moved
+
+
+async def test_the_lifecycle_unpublish_edit_publish_while_nobody_has_attempted_it(
+    role_client, admin, employee, source, track, db_session, storage
+):
+    course, modules = await world(
+        role_client, admin, employee, source, track, db_session, storage, modules=1
+    )
+    module = modules[0]
+    live = (
+        await role_client.get(ADMIN_ASSESSMENT.format(module["id"]), headers=admin.headers)
+    ).json()
+    assert live["status"] == "published" and live["published_at"] is not None
+    assert (
+        await role_client.get(ASSESSMENT.format(module["id"]), headers=employee.headers)
+    ).status_code == 200
+
+    unpublished = await unpublish_assessment(role_client, admin, module["id"])
+
+    assert unpublished.status_code == 200, unpublished.text
+    assert (unpublished.json()["status"], unpublished.json()["published_at"]) == ("draft", None)
+    hidden = await role_client.get(ASSESSMENT.format(module["id"]), headers=employee.headers)
+    assert hidden.status_code == 404 and hidden.content == FIXED_404
+    assert (  # already a draft
+        await unpublish_assessment(role_client, admin, module["id"])
+    ).status_code == 409
+    edited = await put_assessment(role_client, admin, module["id"], assessment_payload(questions=3))
+    assert edited.status_code == 200 and edited.json()["status"] == "draft"
+    assert edited.json()["question_count"] == 3
+
+    republished = await publish_assessment(role_client, admin, module["id"])
+    assert republished.status_code == 200 and republished.json()["status"] == "published"
+    assert republished.json()["published_at"] is not None
+    assert (  # already published
+        await publish_assessment(role_client, admin, module["id"])
+    ).status_code == 409
+    seen = await role_client.get(ASSESSMENT.format(module["id"]), headers=employee.headers)
+    assert seen.status_code == 200 and seen.json()["question_count"] == 3
+
+
+async def test_once_attempted_an_assessment_cannot_be_unpublished_changed_or_deleted(
+    role_client, admin, employee, source, track, db_session, storage
+):
+    course, modules = await world(
+        role_client, admin, employee, source, track, db_session, storage, modules=1
+    )
+    module = modules[0]
+    await submit_attempt(
+        role_client, employee, module["id"], await answers_for(role_client, admin, module["id"])
+    )
+    before = (
+        await role_client.get(ADMIN_ASSESSMENT.format(module["id"]), headers=admin.headers)
+    ).json()
+
+    unpublished = await unpublish_assessment(role_client, admin, module["id"])
+    saved = await put_assessment(role_client, admin, module["id"], assessment_payload(questions=1))
+    deleted = await role_client.delete(ADMIN_ASSESSMENT.format(module["id"]), headers=h(admin))
+
+    assert (unpublished.status_code, saved.status_code, deleted.status_code) == (409, 409, 409)
+    assert "has attempts" in unpublished.json()["error"]["message"]
+    assert "has attempts" in deleted.json()["error"]["message"]
+    after = await role_client.get(ADMIN_ASSESSMENT.format(module["id"]), headers=admin.headers)
+    assert after.json() == before and after.json()["status"] == "published"
+    assert len(await attempts_of(db_session, employee, module["id"])) == 1
+    assert (
+        await role_client.get(ASSESSMENT.format(module["id"]), headers=employee.headers)
+    ).status_code == 200
+
+
+@pytest.mark.parametrize("publish_first", [False, True])
+async def test_a_never_attempted_assessment_can_be_deleted_draft_or_published(
+    role_client, admin, employee, source, track, db_session, storage, publish_first
+):
+    course, modules = await world(
+        role_client, admin, employee, source, track, db_session, storage, modules=1, assessed=()
+    )
+    module = modules[0]
+    saver = put_live if publish_first else put_assessment
+    assert (await saver(role_client, admin, module["id"])).status_code == 200
+
+    deleted = await role_client.delete(ADMIN_ASSESSMENT.format(module["id"]), headers=h(admin))
+
+    assert deleted.status_code == 204
+    assert await assessments_repo.get_by_module(db_session, UUID(module["id"])) is None
+    assert (
+        await role_client.get(STREAM.format(module["id"]), headers=employee.headers)
+    ).status_code == 200  # and nothing is gating the module any more
+
+
+async def test_publishing_reports_how_many_active_enrolments_it_affects(
+    role_client, admin, make_person, source, track, db_session, storage
+):
+    """Zero, one, several - withdrawn enrolments excluded, other courses' enrolments not counted.
+    The same assessment is unpublished and published again (allowed while unattempted) so each
+    count is taken at a different state of the course."""
+    course, modules = await published_course(
+        role_client, admin, source, track, db_session, storage, modules=1, title="Counted"
+    )
+    other_course, _ = await published_course(
+        role_client, admin, source, track, db_session, storage, modules=1, title="Elsewhere"
+    )
+    module = modules[0]
+    people = [await make_person(role="employee") for _ in range(4)]
+    stranger = await make_person(role="employee")
+    await enrol(role_client, admin, other_course["id"], stranger.user.id)  # another course
+    assert (await put_assessment(role_client, admin, module["id"])).status_code == 200
+
+    async def publish_and_count() -> int:
+        response = await publish_assessment(role_client, admin, module["id"])
+        assert response.status_code == 200, response.text
+        assert (await unpublish_assessment(role_client, admin, module["id"])).status_code == 200
+        return response.json()["active_enrolments_affected"]
+
+    assert await publish_and_count() == 0
+    await enrol(role_client, admin, course["id"], people[0].user.id)
+    assert await publish_and_count() == 1
+    for person in people[1:]:
+        await enrol(role_client, admin, course["id"], person.user.id)
+    assert await publish_and_count() == 4
+    await withdraw(role_client, admin, course["id"], people[1].user.id)
+    await withdraw(role_client, admin, course["id"], people[2].user.id)
+    assert await publish_and_count() == 2
+    await enrol(role_client, admin, course["id"], people[1].user.id)  # re-enrolled: active again
+    assert await publish_and_count() == 3
+    final = await publish_assessment(role_client, admin, module["id"])
+    assert final.json()["active_enrolments_affected"] == 3
+    assert set(final.json()) >= {
+        "status",
+        "published_at",
+        "questions",
+        "active_enrolments_affected",
+    }

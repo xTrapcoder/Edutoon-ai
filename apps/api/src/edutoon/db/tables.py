@@ -416,6 +416,8 @@ assessments = sa.Table(
     sa.Column("id", UUID(as_uuid=True), primary_key=True, server_default=sa.FetchedValue()),
     sa.Column("module_id", UUID(as_uuid=True), nullable=False),
     sa.Column("threshold_percent", sa.Integer, nullable=False),
+    sa.Column("status", sa.Text, nullable=False),
+    sa.Column("published_at", sa.DateTime(timezone=True), nullable=True),
     sa.Column("created_by", UUID(as_uuid=True), nullable=False),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),

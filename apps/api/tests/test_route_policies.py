@@ -440,6 +440,8 @@ TRAINING_ROUTES = {
     ("PUT", "/v1/admin/training/modules/{module_id}/assessment"): "admin_module",
     ("GET", "/v1/admin/training/modules/{module_id}/assessment"): "admin_module",
     ("DELETE", "/v1/admin/training/modules/{module_id}/assessment"): "admin_module",
+    ("POST", "/v1/admin/training/modules/{module_id}/assessment/publish"): "admin_module",
+    ("POST", "/v1/admin/training/modules/{module_id}/assessment/unpublish"): "admin_module",
     # Piece 3: enrolments. Three name a course (404 for an employee); the per-user listing takes
     # ``user_id`` as a query parameter, names no resource in its path, and so is a collection (403).
     ("POST", "/v1/admin/training/courses/{course_id}/enrolments"): "admin_course",
@@ -523,9 +525,7 @@ def test_the_pinned_expectations_name_only_routes_that_exist():
     actual |= {key for key in _training_endpoints(create_app(), "/v1/training")}
     pinned = set(TRAINING_ROUTES) | set(EMPLOYEE_TRAINING_ROUTES)
     assert pinned == actual
-    served = {
-        (method, endpoint.path) for method, endpoint in api_routes(create_app())
-    }
+    served = {(method, endpoint.path) for method, endpoint in api_routes(create_app())}
     assert set(EXPECTED_NON_ADMIN) <= served
 
 
@@ -573,7 +573,9 @@ async def test_an_employee_gets_the_same_404_bytes_as_an_admin_for_a_missing_tra
         assert employee_response.content == admin_response.content, (method, template)
         assert NIL_ID not in employee_response.text
         checked += 1
-    assert checked == 19  # 11 course routes + 5 module routes + 3 assessment authoring routes
+    # 11 course routes + 5 module routes + 5 assessment authoring routes (PUT, GET, DELETE,
+    # publish, unpublish)
+    assert checked == 21
 
 
 async def test_employee_is_forbidden_on_the_training_collection_routes(role_client, make_person):

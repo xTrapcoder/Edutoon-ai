@@ -204,12 +204,28 @@ attempts; module deletion and reordering refuse (409) once attempts exist.
    `module_locked`.
 9. *Stale answers are refused, not mis-graded.* Replacing an assessment gives its questions new ids, so
    a submission made against the old set is a 422 ("reload") and writes nothing.
+10. *An assessment is a `draft` or `published` (added to migration 0021 in place, before it was ever
+    applied to a persistent database).* `assessments.status` (text, CHECK, **no default** - the service
+    always says which) and `published_at` (set exactly when published; a CHECK ties the two). `PUT`
+    always produces a draft and is a 409 while the assessment is published, even with no attempts.
+    Publishing re-validates the whole assessment (422: 1-50 questions, 2-6 options, exactly one correct
+    option each), stamps `published_at` and reports `active_enrolments_affected` (the course's active
+    enrolments, withdrawn ones excluded). Unpublishing returns it to a draft and is a 409 once anyone
+    has attempted it. Only a **published** assessment is visible to employees (a draft is the same
+    byte-identical 404 as every other unreachable cause, history route included) and only a published
+    one counts toward the pass gate - publishing deliberately changes progression for the enrolled
+    employees. **Consequence:** an attempted assessment is frozen for good (it cannot be unpublished,
+    so it cannot be edited); changing it means a new module or course. Delete is allowed for a draft or
+    published assessment with no attempts. Two-correct-options cannot be *stored* (the key table has one
+    row per question), so the publish check on that case is exercised by injection in the tests.
 
-**Route inventory (6 new).**
+**Route inventory (8 new).**
 
 | Method and path | Policy | Notes |
 |---|---|---|
-| `PUT /v1/admin/training/modules/{module_id}/assessment` | `admin_module` | replace the whole assessment, any time |
+| `PUT /v1/admin/training/modules/{module_id}/assessment` | `admin_module` | replace the whole draft assessment; 409 if published |
+| `POST /v1/admin/training/modules/{module_id}/assessment/publish` | `admin_module` | validate, make live; `active_enrolments_affected` |
+| `POST /v1/admin/training/modules/{module_id}/assessment/unpublish` | `admin_module` | back to draft; 409 once attempted |
 | `GET /v1/admin/training/modules/{module_id}/assessment` | `admin_module` | with the key (`is_correct`) |
 | `DELETE /v1/admin/training/modules/{module_id}/assessment` | `admin_module` | 409 once attempted |
 | `GET /v1/training/modules/{module_id}/assessment` | `employee_assessment` | questions, never the key |

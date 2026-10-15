@@ -30,7 +30,11 @@ from edutoon.domain.training_assessment import (
     PROMPT_MAX_CHARS,
 )
 from edutoon.repositories.assessments import AttemptRecord
-from edutoon.services.assessments import AdminAssessmentView, EmployeeAssessmentView
+from edutoon.services.assessments import (
+    AdminAssessmentView,
+    EmployeeAssessmentView,
+    PublishResult,
+)
 
 Prompt = Annotated[str, Field(min_length=1, max_length=PROMPT_MAX_CHARS)]
 Label = Annotated[str, Field(min_length=1, max_length=LABEL_MAX_CHARS)]
@@ -85,6 +89,8 @@ class AdminQuestionResponse(BaseModel):
 class AdminAssessmentResponse(BaseModel):
     id: UUID
     module_id: UUID
+    status: str
+    published_at: datetime | None
     threshold_percent: int
     question_count: int
     questions: list[AdminQuestionResponse]
@@ -95,6 +101,8 @@ class AdminAssessmentResponse(BaseModel):
         return cls(
             id=view.assessment.id,
             module_id=view.assessment.module_id,
+            status=view.assessment.status,
+            published_at=view.assessment.published_at,
             threshold_percent=view.assessment.threshold_percent,
             question_count=len(view.questions),
             questions=[
@@ -112,6 +120,19 @@ class AdminAssessmentResponse(BaseModel):
                 for q in view.questions
             ],
             updated_at=view.assessment.updated_at,
+        )
+
+
+class AssessmentPublishResponse(AdminAssessmentResponse):
+    """The published assessment, and how many employees the pass gate now applies to."""
+
+    active_enrolments_affected: int
+
+    @classmethod
+    def from_result(cls, result: PublishResult) -> AssessmentPublishResponse:
+        base = AdminAssessmentResponse.from_view(result.view)
+        return cls(
+            **base.model_dump(), active_enrolments_affected=result.active_enrolments_affected
         )
 
 

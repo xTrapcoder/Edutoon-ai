@@ -11,7 +11,11 @@ tables, no existing table or constraint is altered.
 
 * ``assessments`` - at most one per module (``uq_assessments_module_id``), carrying the pass
   threshold (``threshold_percent``, 1-100). The threshold lives *here*, not in configuration, so
-  it can be read back for what it was.
+  it can be read back for what it was. It also carries its lifecycle: ``status`` is ``draft`` or
+  ``published`` (a text column with a CHECK, rule 7, and **no default** - the service always says
+  which) and ``published_at`` is set exactly when it is published (a CHECK ties the two). Only a
+  published assessment is visible to employees or counts toward the pass gate; a draft is an
+  administrator's work in progress.
 * ``assessment_questions`` / ``assessment_options`` - single-correct multiple choice only.
 * ``assessment_answer_keys`` - the correct option of each question, in a **table of its own**
   (primary key ``question_id``: exactly one per question; the composite foreign key makes the
@@ -69,6 +73,8 @@ def upgrade() -> None:
             id                uuid        PRIMARY KEY DEFAULT uuid_generate_v7(),
             module_id         uuid        NOT NULL,
             threshold_percent integer     NOT NULL,
+            status            text        NOT NULL,
+            published_at      timestamptz,
             created_by        uuid        NOT NULL,
             created_at        timestamptz NOT NULL DEFAULT now(),
             updated_at        timestamptz NOT NULL DEFAULT now(),
@@ -78,7 +84,10 @@ def upgrade() -> None:
                 FOREIGN KEY (created_by) REFERENCES users (id) ON DELETE RESTRICT,
             CONSTRAINT uq_assessments_module_id UNIQUE (module_id),
             CONSTRAINT ck_assessments_threshold_percent
-                CHECK (threshold_percent BETWEEN 1 AND 100)
+                CHECK (threshold_percent BETWEEN 1 AND 100),
+            CONSTRAINT ck_assessments_status CHECK (status IN ('draft', 'published')),
+            CONSTRAINT ck_assessments_published_at_matches_status
+                CHECK ((status = 'published') = (published_at IS NOT NULL))
         );
         """
     )

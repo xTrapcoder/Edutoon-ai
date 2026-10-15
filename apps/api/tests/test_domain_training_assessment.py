@@ -28,6 +28,7 @@ from edutoon.domain.training_assessment import (
     authoring_problem,
     grade,
     passes,
+    publish_problem,
     requires_pass,
 )
 
@@ -226,3 +227,24 @@ def test_module_n_unlocks_when_every_lower_module_that_has_an_assessment_is_pass
     )
     # passing the module without an assessment (or one that is not assessed) changes nothing
     assert decide(ms, ms[3], passed={ms[1].id}, assessed=assessed).access == ACCESS_LOCKED
+
+
+def test_publishing_validates_with_the_rules_saving_applies():
+    """Publishing re-checks the whole assessment: 1 to 50 questions, 2 to 6 options, exactly one
+    correct option each, and a threshold in range."""
+    assert publish_problem([authored()], 70) is None
+    assert publish_problem([authored()] * training_assessment.MAX_QUESTIONS, 70) is None
+    too_many = [authored()] * (training_assessment.MAX_QUESTIONS + 1)
+    assert "between 1 and 50" in (publish_problem(too_many, 70) or "")
+    assert "between 1 and 50" in (publish_problem([], 70) or "")
+    assert "needs between 2 and 6" in (publish_problem([authored(labels=("Only",))], 70) or "")
+    assert "needs between 2 and 6" in (
+        publish_problem([authored(labels=tuple("ABCDEFG"))], 70) or ""
+    )
+    two_correct = AuthoredQuestion("Which?", (AuthoredOption("A", True), AuthoredOption("B", True)))
+    none_correct = AuthoredQuestion(
+        "Which?", (AuthoredOption("A", False), AuthoredOption("B", False))
+    )
+    assert "exactly one correct" in (publish_problem([two_correct], 70) or "")
+    assert "exactly one correct" in (publish_problem([none_correct], 70) or "")
+    assert publish_problem([authored()], 0) is not None
