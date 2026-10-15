@@ -152,9 +152,7 @@ async def upload_source(
         status="parsed",
         page_count=len(pages),
     )
-    await evidence_service.enqueue_indexing_job(
-        session, project_id=project_id, source_id=source.id
-    )
+    await evidence_service.enqueue_indexing_job(session, project_id=project_id, source_id=source.id)
     return parsed
 
 

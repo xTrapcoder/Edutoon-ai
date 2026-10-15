@@ -27,9 +27,7 @@ def test_app_error_maps_to_its_status_and_an_error_envelope():
         response = client.get("/_test/not-found")
 
     assert response.status_code == 404
-    assert response.json() == {
-        "error": {"code": "not_found", "message": "Widget 123 not found."}
-    }
+    assert response.json() == {"error": {"code": "not_found", "message": "Widget 123 not found."}}
 
 
 def test_unexpected_error_maps_to_a_generic_500_envelope():
@@ -59,9 +57,7 @@ def test_validation_error_returns_structured_field_errors_not_a_raw_dump():
     with TestClient(app, raise_server_exceptions=False) as client:
         # `title` has the wrong type *and* `secret` is an unknown field
         # (rule 10) - two distinct field errors from one request.
-        response = client.post(
-            "/_test/validate", json={"title": 123, "secret": "do-not-leak"}
-        )
+        response = client.post("/_test/validate", json={"title": 123, "secret": "do-not-leak"})
 
     assert response.status_code == 422
     body = response.json()

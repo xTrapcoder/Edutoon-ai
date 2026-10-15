@@ -329,9 +329,7 @@ async def _refuse_if_scripts_reference_topics(session: AsyncSession, project_id:
 # --- run (background job) ----------------------------------------------------------------
 
 
-async def run_extract_topics_job(
-    session: AsyncSession, llm: LLM, *, job_id: UUID
-) -> JobRecord:
+async def run_extract_topics_job(session: AsyncSession, llm: LLM, *, job_id: UUID) -> JobRecord:
     """Process one queued ``extract_topics`` job end to end.
 
     Marks it running, extracts and persists (see the module docstring), then

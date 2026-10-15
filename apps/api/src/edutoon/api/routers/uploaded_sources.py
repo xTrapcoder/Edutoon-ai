@@ -96,9 +96,7 @@ def _raise_validation_error(field: str, msg: str, error_type: str = "value_error
     class is for deeper domain checks, e.g. a pagination ``limit``, not
     "the request itself is malformed").
     """
-    raise RequestValidationError(
-        [{"loc": ("body", field), "msg": msg, "type": error_type}]
-    )
+    raise RequestValidationError([{"loc": ("body", field), "msg": msg, "type": error_type}])
 
 
 def _reject_unknown_form_fields(field_names: set[str]) -> None:

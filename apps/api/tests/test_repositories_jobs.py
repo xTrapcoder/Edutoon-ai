@@ -10,9 +10,7 @@ from edutoon.repositories import users as users_repo
 
 async def _make_project(db_session):
     owner = await users_repo.create(db_session, email=f"{uuid4()}@example.com")
-    return await projects_repo.create(
-        db_session, owner_id=owner.id, title="P", source_type="topic"
-    )
+    return await projects_repo.create(db_session, owner_id=owner.id, title="P", source_type="topic")
 
 
 async def test_create_defaults_to_queued(db_session):
@@ -117,9 +115,7 @@ async def test_claim_next_is_empty_once_the_only_job_is_claimed(db_session):
 
 async def test_claim_next_does_not_reclaim_an_already_running_job(db_session):
     project = await _make_project(db_session)
-    running_job = await jobs_repo.create(
-        db_session, project_id=project.id, kind="build_evidence"
-    )
+    running_job = await jobs_repo.create(db_session, project_id=project.id, kind="build_evidence")
     await jobs_repo.update(db_session, job_id=running_job.id, status="running")
     queued_job = await jobs_repo.create(db_session, project_id=project.id, kind="generate_script")
 
@@ -131,9 +127,7 @@ async def test_claim_next_does_not_reclaim_an_already_running_job(db_session):
 
 async def test_claim_next_skips_a_job_scheduled_in_the_future(db_session):
     project = await _make_project(db_session)
-    future_job = await jobs_repo.create(
-        db_session, project_id=project.id, kind="build_evidence"
-    )
+    future_job = await jobs_repo.create(db_session, project_id=project.id, kind="build_evidence")
     await jobs_repo.update(
         db_session,
         job_id=future_job.id,

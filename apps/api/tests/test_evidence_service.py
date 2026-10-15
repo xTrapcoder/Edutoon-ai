@@ -144,9 +144,7 @@ async def test_enqueuing_twice_for_the_same_source_raises_conflict_error(db_sess
 
 async def test_index_source_embeds_every_chunk(db_session, monkeypatch):
     _, source, chunks = await _make_source(db_session, num_chunks=3)
-    embeddings = _fake_embeddings(
-        monkeypatch, {f"chunk {i}": [float(i)] * 1536 for i in range(3)}
-    )
+    embeddings = _fake_embeddings(monkeypatch, {f"chunk {i}": [float(i)] * 1536 for i in range(3)})
 
     count = await evidence_service.index_source(db_session, embeddings, source_id=source.id)
 
@@ -200,9 +198,7 @@ async def test_run_build_evidence_job_succeeds_and_records_the_chunk_count(db_se
         db_session, project_id=project.id, source_id=source.id
     )
 
-    completed = await evidence_service.run_build_evidence_job(
-        db_session, embeddings, job_id=job.id
-    )
+    completed = await evidence_service.run_build_evidence_job(db_session, embeddings, job_id=job.id)
 
     assert completed.status == "succeeded"
     assert completed.result == {"chunks_embedded": 2}
@@ -224,9 +220,7 @@ async def test_run_build_evidence_job_marks_failed_on_embedding_error(db_session
     client.embeddings.create = _boom  # type: ignore[method-assign]
     embeddings = Embeddings(client, model=MODEL)
 
-    completed = await evidence_service.run_build_evidence_job(
-        db_session, embeddings, job_id=job.id
-    )
+    completed = await evidence_service.run_build_evidence_job(db_session, embeddings, job_id=job.id)
 
     assert completed.status == "failed"
     # A bare exception's text is never shown to the owner - only a fixed sentence.

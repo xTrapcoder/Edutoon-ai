@@ -205,6 +205,4 @@ async def list_storage_locations_for_project(
         )
     )
     rows = (await session.execute(stmt)).all()
-    return [
-        StorageLocation(bucket=bucket, key=key) for bucket, key in rows if bucket and key
-    ]
+    return [StorageLocation(bucket=bucket, key=key) for bucket, key in rows if bucket and key]

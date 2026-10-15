@@ -132,9 +132,7 @@ async def test_me_resolves_identity_for_a_valid_token_and_reuses_it_on_a_second_
 ):
     private_pem, public_key = rsa_keypair
     monkeypatch.setattr(clerk, "get_signing_key", lambda token: public_key)
-    token = _make_token(
-        private_pem, sub=f"clerk_{uuid4()}", email="whoami@example.com"
-    )
+    token = _make_token(private_pem, sub=f"clerk_{uuid4()}", email="whoami@example.com")
     app = _build_app_with_session_override(db_session)
 
     async with httpx.AsyncClient(

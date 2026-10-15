@@ -111,9 +111,7 @@ def test_malformed_claim_id_is_dropped_not_raised() -> None:
 
 def test_duplicate_claim_ids_are_deduplicated_in_order() -> None:
     c1, c2 = uuid4(), uuid4()
-    draft = _draft(
-        _segment("Repeats a citation.", [str(c1), str(c2), str(c1), str(c2)])
-    )
+    draft = _draft(_segment("Repeats a citation.", [str(c1), str(c2), str(c1), str(c2)]))
 
     result = filter_and_validate(draft, {c1, c2}, WPM)
 

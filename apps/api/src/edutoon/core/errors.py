@@ -194,15 +194,9 @@ _UNIQUE_CONSTRAINT_MESSAGES: dict[str, str] = {
     "uq_uploaded_sources_project_id_checksum_sha256": (
         "This file has already been uploaded to this project."
     ),
-    "uq_uploaded_sources_storage_bucket_storage_key": (
-        "This storage location is already in use."
-    ),
-    "uq_jobs_project_id_kind_idempotency_key": (
-        "A job with this idempotency key already exists."
-    ),
-    "uq_project_topics_project_id_parent_id_position": (
-        "A topic already occupies this position."
-    ),
+    "uq_uploaded_sources_storage_bucket_storage_key": ("This storage location is already in use."),
+    "uq_jobs_project_id_kind_idempotency_key": ("A job with this idempotency key already exists."),
+    "uq_project_topics_project_id_parent_id_position": ("A topic already occupies this position."),
     "uq_source_chunks_source_id_chunk_index": (
         "A chunk with this index already exists for this source."
     ),
@@ -212,9 +206,7 @@ _UNIQUE_CONSTRAINT_MESSAGES: dict[str, str] = {
     "uq_topic_citations_topic_id_source_chunk_id": (
         "This source chunk is already cited by this topic."
     ),
-    "uq_scripts_project_id_active": (
-        "This project already has an active script."
-    ),
+    "uq_scripts_project_id_active": ("This project already has an active script."),
     "uq_script_segments_script_id_segment_index": (
         "A segment already occupies this index in the script."
     ),

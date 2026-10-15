@@ -268,7 +268,9 @@ async def count_by_project(session: AsyncSession, project_id: UUID) -> int:
     """How many chunks a project has - a cheap "is there any parsed text to
     work from?" check that does not load any content.
     """
-    stmt = select(func.count()).select_from(source_chunks).where(
-        source_chunks.c.project_id == project_id
+    stmt = (
+        select(func.count())
+        .select_from(source_chunks)
+        .where(source_chunks.c.project_id == project_id)
     )
     return int((await session.execute(stmt)).scalar_one())

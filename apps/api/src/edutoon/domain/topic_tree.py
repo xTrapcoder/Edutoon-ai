@@ -168,9 +168,7 @@ def _truncate(text: str, max_chars: int) -> str:
 # --- user keywords ---------------------------------------------------------------------
 
 
-def normalise_user_keywords(
-    raw: Sequence[str], *, max_keywords: int, max_length: int
-) -> list[str]:
+def normalise_user_keywords(raw: Sequence[str], *, max_keywords: int, max_length: int) -> list[str]:
     """Clean the keywords a user typed, strictly.
 
     Each is normalised (:func:`normalise_term`); duplicates that differ only in
@@ -728,9 +726,7 @@ def _arrange(
             )
         )
         stack.extend(
-            reversed(
-                [(child, index, depth + 1, n) for n, child in enumerate(children.get(i, []))]
-            )
+            reversed([(child, index, depth + 1, n) for n, child in enumerate(children.get(i, []))])
         )
     return tuple(arranged)
 

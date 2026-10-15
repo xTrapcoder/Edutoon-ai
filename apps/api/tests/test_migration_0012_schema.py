@@ -19,9 +19,7 @@ from edutoon.repositories import users as users_repo
 
 async def _make_project(db_session):
     owner = await users_repo.create(db_session, email=f"{uuid4()}@example.com")
-    return await projects_repo.create(
-        db_session, owner_id=owner.id, title="P", source_type="topic"
-    )
+    return await projects_repo.create(db_session, owner_id=owner.id, title="P", source_type="topic")
 
 
 async def _column(db_session, table: str, column: str):
@@ -71,13 +69,17 @@ async def test_topic_id_foreign_key_sets_null_on_delete_not_restrict(db_session)
 
 async def test_topic_id_index_exists(db_session):
     rows = (
-        await db_session.execute(
-            text(
-                "SELECT indexname FROM pg_indexes "
-                "WHERE schemaname = 'public' AND tablename = 'claim_verifications'"
+        (
+            await db_session.execute(
+                text(
+                    "SELECT indexname FROM pg_indexes "
+                    "WHERE schemaname = 'public' AND tablename = 'claim_verifications'"
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
 
     assert "ix_claim_verifications_topic_id" in rows
 
@@ -111,9 +113,7 @@ async def test_deleting_a_topic_sets_topic_id_to_null_rather_than_failing(db_ses
         )
     ).one()
 
-    await db_session.execute(
-        text("DELETE FROM project_topics WHERE id = :t"), {"t": topic.id}
-    )
+    await db_session.execute(text("DELETE FROM project_topics WHERE id = :t"), {"t": topic.id})
 
     remaining = (
         await db_session.execute(

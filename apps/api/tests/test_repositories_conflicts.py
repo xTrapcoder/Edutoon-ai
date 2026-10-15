@@ -47,9 +47,7 @@ async def test_duplicate_clerk_user_id_raises_conflict_error(db_session):
     await users_repo.create(db_session, email=f"{uuid4()}@example.com", clerk_user_id=clerk_id)
 
     with pytest.raises(ConflictError):
-        await users_repo.create(
-            db_session, email=f"{uuid4()}@example.com", clerk_user_id=clerk_id
-        )
+        await users_repo.create(db_session, email=f"{uuid4()}@example.com", clerk_user_id=clerk_id)
 
 
 async def test_duplicate_checksum_in_same_project_raises_conflict_error(db_session):

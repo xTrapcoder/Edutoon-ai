@@ -109,9 +109,7 @@ def add_owner(url: str) -> Any:
         "WHERE table_schema = 'public' AND table_name = 'users' AND column_name = 'role'",
     )
     columns, values = ("email, role", ":email, 'admin'") if has_role else ("email", ":email")
-    [row] = sql(
-        url, f"INSERT INTO users ({columns}) VALUES ({values}) RETURNING id", email=email
-    )
+    [row] = sql(url, f"INSERT INTO users ({columns}) VALUES ({values}) RETURNING id", email=email)
     return row["id"]
 
 

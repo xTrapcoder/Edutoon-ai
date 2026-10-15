@@ -56,9 +56,7 @@ async def list_jobs(
 ) -> JobListResponse:
     await projects_service.get_project(session, project_id=project_id, owner_id=current_user.id)
 
-    page = await jobs_service.list_jobs_for_project(
-        session, project_id, limit=limit, cursor=cursor
-    )
+    page = await jobs_service.list_jobs_for_project(session, project_id, limit=limit, cursor=cursor)
     return JobListResponse(
         items=[JobResponse.from_record(job) for job in page.items],
         next_cursor=page.next_cursor,

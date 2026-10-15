@@ -198,9 +198,7 @@ async def _add_supported_claims(db_session, project_id: str | UUID, texts: list[
     chunks = await source_chunks_repo.create_many(
         db_session,
         [
-            NewSourceChunk(
-                source_id=source.id, project_id=project_id, chunk_index=i, content=text
-            )
+            NewSourceChunk(source_id=source.id, project_id=project_id, chunk_index=i, content=text)
             for i, text in enumerate(texts)
         ],
     )
@@ -270,9 +268,7 @@ async def _drafted_project(
         project_id,
         ["Plants convert light to chemical energy.", "Chlorophyll absorbs light."],
     )
-    enqueue = await client.post(
-        f"/v1/projects/{project_id}/scripts", headers=_headers(headers)
-    )
+    enqueue = await client.post(f"/v1/projects/{project_id}/scripts", headers=_headers(headers))
     assert enqueue.status_code == 202
     script_id = enqueue.json()["id"]
 
@@ -427,12 +423,8 @@ async def test_enqueuing_again_does_not_touch_a_still_pending_script(
         project_id = await _create_project(client, headers)
         await _add_supported_claims(db_session, project_id, ["A verified fact."])
 
-        first = await client.post(
-            f"/v1/projects/{project_id}/scripts", headers=_headers(headers)
-        )
-        second = await client.post(
-            f"/v1/projects/{project_id}/scripts", headers=_headers(headers)
-        )
+        first = await client.post(f"/v1/projects/{project_id}/scripts", headers=_headers(headers))
+        second = await client.post(f"/v1/projects/{project_id}/scripts", headers=_headers(headers))
 
         listed = await client.get(f"/v1/projects/{project_id}/scripts", headers=headers)
 
@@ -454,9 +446,7 @@ async def test_completing_a_regeneration_supersedes_the_previous_draft(
         )
         # Re-enqueue for the *same* accepted topic - it already has supported
         # evidence, so nothing more needs adding.
-        second = await client.post(
-            f"/v1/projects/{project_id}/scripts", headers=_headers(headers)
-        )
+        second = await client.post(f"/v1/projects/{project_id}/scripts", headers=_headers(headers))
         assert second.status_code == 202
         llm = _fake_llm(
             monkeypatch,
@@ -494,9 +484,7 @@ async def test_list_returns_newest_first(client_factory, auth_headers, db_sessio
             client, db_session, headers, monkeypatch
         )
         # a second generation supersedes the drafted one
-        second = await client.post(
-            f"/v1/projects/{project_id}/scripts", headers=_headers(headers)
-        )
+        second = await client.post(f"/v1/projects/{project_id}/scripts", headers=_headers(headers))
 
         listed = await client.get(f"/v1/projects/{project_id}/scripts", headers=headers)
 
@@ -540,9 +528,7 @@ async def test_detail_for_an_unknown_script_is_404(client_factory, auth_headers)
 
     async with client_factory() as client:
         project_id = await _create_project(client, headers)
-        response = await client.get(
-            f"/v1/projects/{project_id}/scripts/{uuid4()}", headers=headers
-        )
+        response = await client.get(f"/v1/projects/{project_id}/scripts/{uuid4()}", headers=headers)
 
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "not_found"
@@ -577,9 +563,7 @@ async def test_approve_rejects_a_script_that_is_not_a_draft(
     async with client_factory() as client:
         project_id = await _create_project(client, headers)
         await _add_supported_claims(db_session, project_id, ["A verified fact."])
-        enqueue = await client.post(
-            f"/v1/projects/{project_id}/scripts", headers=_headers(headers)
-        )
+        enqueue = await client.post(f"/v1/projects/{project_id}/scripts", headers=_headers(headers))
         script_id = enqueue.json()["id"]  # still 'pending'
 
         response = await client.post(
@@ -660,9 +644,7 @@ async def test_another_users_project_is_404_everywhere(
         enqueue = await client.post(
             f"/v1/projects/{project_id}/scripts", headers=_headers(other_headers)
         )
-        listed = await client.get(
-            f"/v1/projects/{project_id}/scripts", headers=other_headers
-        )
+        listed = await client.get(f"/v1/projects/{project_id}/scripts", headers=other_headers)
         detail = await client.get(
             f"/v1/projects/{project_id}/scripts/{script_id}", headers=other_headers
         )
@@ -693,9 +675,7 @@ async def test_a_script_from_another_project_is_404(
         )
         project_b = await _create_project(client, headers)
 
-        detail = await client.get(
-            f"/v1/projects/{project_b}/scripts/{script_a}", headers=headers
-        )
+        detail = await client.get(f"/v1/projects/{project_b}/scripts/{script_a}", headers=headers)
         approval = await client.post(
             f"/v1/projects/{project_b}/scripts/{script_a}/approval",
             headers=_headers(headers),

@@ -332,5 +332,3 @@ def make_person(db_session, mint_token) -> Callable[..., object]:
         return Person(user, {"Authorization": f"Bearer {token}"}, email, sub)
 
     return _make
-
-

@@ -82,7 +82,6 @@ class SynthesisStatusResponse(BaseModel):
             script=ScriptResponse.from_record(synthesis_status.script),
             job=JobResponse.from_record(synthesis_status.job) if synthesis_status.job else None,
             segments=[
-                SynthesisSegmentResponse.from_detail(detail)
-                for detail in synthesis_status.segments
+                SynthesisSegmentResponse.from_detail(detail) for detail in synthesis_status.segments
             ],
         )

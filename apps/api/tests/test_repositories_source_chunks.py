@@ -409,8 +409,7 @@ async def test_list_by_ids_with_no_ids_returns_empty(db_session):
     project, _source = await _make_source(db_session)
 
     assert (
-        await source_chunks_repo.list_by_ids(db_session, project_id=project.id, chunk_ids=[])
-        == []
+        await source_chunks_repo.list_by_ids(db_session, project_id=project.id, chunk_ids=[]) == []
     )
 
 
@@ -418,8 +417,6 @@ async def test_list_by_ids_with_unknown_ids_returns_empty(db_session):
     project, _source = await _make_source(db_session)
 
     assert (
-        await source_chunks_repo.list_by_ids(
-            db_session, project_id=project.id, chunk_ids=[uuid4()]
-        )
+        await source_chunks_repo.list_by_ids(db_session, project_id=project.id, chunk_ids=[uuid4()])
         == []
     )

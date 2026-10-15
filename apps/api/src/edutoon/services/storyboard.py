@@ -750,9 +750,7 @@ async def get_storyboard_status(
     computed fresh from current state, never copied from a job's historical
     result (spec: completeness is separate from job status).
     """
-    project = await projects_service.get_project(
-        session, project_id=project_id, owner_id=owner_id
-    )
+    project = await projects_service.get_project(session, project_id=project_id, owner_id=owner_id)
 
     script = await scripts_repo.get_by_id_for_project(session, script_id, project_id)
     if script is None:

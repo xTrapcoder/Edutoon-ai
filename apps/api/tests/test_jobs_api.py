@@ -107,12 +107,8 @@ async def test_list_jobs_returns_a_projects_jobs_newest_first(
         project_id = await _create_project(client, headers)
         project = await projects_repo.get_by_id(db_session, UUID(project_id))
         assert project is not None
-        first = await jobs_repo.create(
-            db_session, project_id=project.id, kind="build_evidence"
-        )
-        second = await jobs_repo.create(
-            db_session, project_id=project.id, kind="generate_script"
-        )
+        first = await jobs_repo.create(db_session, project_id=project.id, kind="build_evidence")
+        second = await jobs_repo.create(db_session, project_id=project.id, kind="generate_script")
 
         response = await client.get(f"/v1/projects/{project_id}/jobs", headers=headers)
 
@@ -144,9 +140,7 @@ async def test_list_jobs_for_another_users_project_returns_404_not_403(
 
 async def test_list_jobs_for_nonexistent_project_returns_404(client_factory, auth_headers):
     async with client_factory() as client:
-        response = await client.get(
-            f"/v1/projects/{uuid4()}/jobs", headers=auth_headers()
-        )
+        response = await client.get(f"/v1/projects/{uuid4()}/jobs", headers=auth_headers())
 
     assert response.status_code == 404
 

@@ -336,9 +336,7 @@ async def test_update_rejects_unknown_fields(client_factory, auth_headers):
 
 async def test_create_without_idempotency_key_is_rejected(client_factory, auth_headers):
     async with client_factory() as client:
-        response = await client.post(
-            "/v1/projects", json=_create_payload(), headers=auth_headers()
-        )
+        response = await client.post("/v1/projects", json=_create_payload(), headers=auth_headers())
 
     assert response.status_code == 422
 
@@ -376,9 +374,7 @@ async def test_delete_without_idempotency_key_is_rejected(client_factory, auth_h
 # --- idempotency-key deduplication (rule 8, real store) -----------------------------
 
 
-async def test_duplicate_post_with_same_key_creates_only_one_project(
-    client_factory, auth_headers
-):
+async def test_duplicate_post_with_same_key_creates_only_one_project(client_factory, auth_headers):
     headers = {**auth_headers(), "Idempotency-Key": str(uuid4())}
 
     async with client_factory() as client:

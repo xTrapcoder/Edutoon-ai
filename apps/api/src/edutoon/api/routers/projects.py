@@ -64,9 +64,7 @@ async def create_project(
             orientation=body.orientation,
             target_duration_ms=body.target_duration_ms,
         )
-        return status.HTTP_201_CREATED, ProjectResponse.from_record(project).model_dump(
-            mode="json"
-        )
+        return status.HTTP_201_CREATED, ProjectResponse.from_record(project).model_dump(mode="json")
 
     _, response_body = await idempotency_service.run_with_idempotency(
         redis,
@@ -173,6 +171,4 @@ async def delete_project(
     # Only now - the deletion is committed - are the project's uploaded files removed. A replay
     # of this request does not run ``_execute``, so ``stored_files`` is empty and nothing is
     # removed twice; a failure to remove a file is logged, never surfaced (the project is gone).
-    await projects_service.remove_stored_files(
-        storage, project_id=project_id, files=stored_files
-    )
+    await projects_service.remove_stored_files(storage, project_id=project_id, files=stored_files)

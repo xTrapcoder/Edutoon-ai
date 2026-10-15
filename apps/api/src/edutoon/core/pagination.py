@@ -73,9 +73,7 @@ async def paginate_rows(
 
     if cursor is not None:
         cursor_created_at, cursor_id = decode_cursor(cursor)
-        stmt = stmt.where(
-            tuple_(table.c.created_at, table.c.id) < (cursor_created_at, cursor_id)
-        )
+        stmt = stmt.where(tuple_(table.c.created_at, table.c.id) < (cursor_created_at, cursor_id))
 
     stmt = stmt.order_by(table.c.created_at.desc(), table.c.id.desc()).limit(limit + 1)
 

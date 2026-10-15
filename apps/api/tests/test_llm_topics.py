@@ -564,8 +564,13 @@ async def test_keywords_only_preserves_every_seed_and_marks_additions_as_suggest
         {
             "topics": [
                 # The model rewrites the user's wording and cites a passage it invented.
-                _topic("t1", "Photosynthesis!", summary="Making food.", seed="seed-1",
-                       evidence=(str(uuid4()),)),
+                _topic(
+                    "t1",
+                    "Photosynthesis!",
+                    summary="Making food.",
+                    seed="seed-1",
+                    evidence=(str(uuid4()),),
+                ),
                 _topic("t2", "Light reactions", parent="t1", evidence=(str(uuid4()),)),
                 # seed-2 is never mentioned at all.
             ]
@@ -608,8 +613,13 @@ async def test_pdf_plus_keywords_keeps_every_seed_and_leaves_an_uncovered_one_vi
         monkeypatch,
         {
             "topics": [
-                _topic("t1", "photosynthesis (model wording)", summary="From p.1.",
-                       seed="seed-1", evidence=(a,)),
+                _topic(
+                    "t1",
+                    "photosynthesis (model wording)",
+                    summary="From p.1.",
+                    seed="seed-1",
+                    evidence=(a,),
+                ),
                 _topic("t2", "Light reactions", parent="t1", evidence=(b,)),
                 _topic("t3", "Extra topic from the PDF", evidence=(b,)),
                 _topic("t4", "Uncited extra"),  # cites nothing: to be dropped

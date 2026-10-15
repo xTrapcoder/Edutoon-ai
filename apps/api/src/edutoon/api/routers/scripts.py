@@ -84,9 +84,9 @@ async def enqueue_script_generation(
             idempotency_key=idempotency_key,
             llm_model=script_llm.model,
         )
-        return status.HTTP_202_ACCEPTED, ScriptResponse.from_record(
-            result.script
-        ).model_dump(mode="json")
+        return status.HTTP_202_ACCEPTED, ScriptResponse.from_record(result.script).model_dump(
+            mode="json"
+        )
 
     _, response_body = await idempotency_service.run_with_idempotency(
         redis,
@@ -108,9 +108,7 @@ async def list_scripts(
     limit: int = DEFAULT_PAGE_SIZE,
     cursor: str | None = None,
 ) -> ScriptListResponse:
-    await projects_service.get_project(
-        session, project_id=project_id, owner_id=current_user.id
-    )
+    await projects_service.get_project(session, project_id=project_id, owner_id=current_user.id)
 
     page = await scripts_service.list_scripts(
         session, project_id=project_id, limit=limit, cursor=cursor
@@ -159,9 +157,7 @@ async def approve_script(
             owner_id=current_user.id,
             script_id=script_id,
         )
-        return status.HTTP_200_OK, ScriptResponse.from_record(script).model_dump(
-            mode="json"
-        )
+        return status.HTTP_200_OK, ScriptResponse.from_record(script).model_dump(mode="json")
 
     _, response_body = await idempotency_service.run_with_idempotency(
         redis,

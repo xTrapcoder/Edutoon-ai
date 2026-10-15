@@ -10,9 +10,7 @@ from tests.storage_isolation import UPLOADS_BUCKET
 
 async def _make_project(db_session):
     owner = await users_repo.create(db_session, email=f"{uuid4()}@example.com")
-    return await projects_repo.create(
-        db_session, owner_id=owner.id, title="P", source_type="pdf"
-    )
+    return await projects_repo.create(db_session, owner_id=owner.id, title="P", source_type="pdf")
 
 
 def _sha256_hex() -> str:
@@ -88,6 +86,7 @@ async def test_list_by_ids_is_project_scoped(db_session):
 async def test_list_by_ids_with_no_ids_returns_empty(db_session):
     project = await _make_project(db_session)
 
-    assert await uploaded_sources_repo.list_by_ids(
-        db_session, project_id=project.id, source_ids=[]
-    ) == []
+    assert (
+        await uploaded_sources_repo.list_by_ids(db_session, project_id=project.id, source_ids=[])
+        == []
+    )

@@ -215,9 +215,7 @@ async def main() -> None:
                         owner_id=user.id,
                         script_id=enqueued.script.id,
                     )
-                    narration = "\n".join(
-                        seg.segment.narration_text for seg in detail.segments
-                    )
+                    narration = "\n".join(seg.segment.narration_text for seg in detail.segments)
                     results["script_text"] = narration
                     print("    generated script narration:")
                     print("    " + narration.replace("\n", "\n    "))
@@ -238,9 +236,7 @@ async def main() -> None:
         cleanup_ok = True
         try:
             if source is not None:
-                await storage.delete_object(
-                    bucket=source.storage_bucket, key=source.storage_key
-                )
+                await storage.delete_object(bucket=source.storage_bucket, key=source.storage_key)
             if project is not None and user is not None:
                 # Cascades (ON DELETE CASCADE, migrations 0003/0004/0006/0007) to
                 # jobs, uploaded_sources, source_chunks, claim_verifications

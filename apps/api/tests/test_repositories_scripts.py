@@ -409,7 +409,9 @@ async def test_a_segment_cannot_cite_the_same_claim_twice(db_session):
             script_id=script.id,
             segments=[
                 NewScriptSegment(
-                    0, "Cited twice.", 1_000,
+                    0,
+                    "Cited twice.",
+                    1_000,
                     claim_verification_ids=(verification.id, verification.id),
                 )
             ],
@@ -478,9 +480,7 @@ async def test_deleting_a_script_cascades_to_segments_and_claims(db_session):
     await db_session.execute(delete(scripts_table).where(scripts_table.c.id == script.id))
 
     assert (
-        await scripts_repo.list_segments(
-            db_session, project_id=project.id, script_id=script.id
-        )
+        await scripts_repo.list_segments(db_session, project_id=project.id, script_id=script.id)
         == []
     )
     assert (
@@ -503,9 +503,7 @@ async def test_deleting_a_topic_nulls_the_segment_link(db_session):
         segments=[NewScriptSegment(0, "Has a topic.", 1_000, topic_id=topic.id)],
     )
 
-    await db_session.execute(
-        delete(project_topics).where(project_topics.c.id == topic.id)
-    )
+    await db_session.execute(delete(project_topics).where(project_topics.c.id == topic.id))
 
     [refetched] = await scripts_repo.list_segments(
         db_session, project_id=project.id, script_id=script.id
@@ -560,9 +558,12 @@ async def test_create_script_persists_the_validated_draft(db_session):
         db_session, project_id=project.id, script_id=script.id
     )
     assert [s.segment_index for s in segments] == [0, 1]
-    assert await scripts_repo.list_segment_claims(
-        db_session, project_id=project.id, script_segment_id=segments[0].id
-    ) == []
+    assert (
+        await scripts_repo.list_segment_claims(
+            db_session, project_id=project.id, script_segment_id=segments[0].id
+        )
+        == []
+    )
     linked = await scripts_repo.list_segment_claims(
         db_session, project_id=project.id, script_segment_id=segments[1].id
     )

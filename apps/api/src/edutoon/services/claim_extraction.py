@@ -179,8 +179,7 @@ async def enqueue_claim_extraction(
     topics = await project_topics_repo.list_all_by_project(session, project_id)
     if not accepted_topics(topics):
         raise ValidationError(
-            "There are no accepted topics to extract claims from. Accept at least one "
-            "topic first."
+            "There are no accepted topics to extract claims from. Accept at least one topic first."
         )
 
     await spend_guard.ensure_can_start_provider_job(session, project_id=project_id)
@@ -218,8 +217,7 @@ async def refuse_if_extraction_active(session: AsyncSession, *, project_id: UUID
     )
     if active is not None:
         raise ConflictError(
-            "Claim extraction is already queued or running for this project; wait for "
-            "it to finish."
+            "Claim extraction is already queued or running for this project; wait for it to finish."
         )
 
 
@@ -350,8 +348,7 @@ async def _run(
     eligible = accepted_topics(topics)
     if not eligible:
         raise ValidationError(
-            "There are no accepted topics to extract claims from. Accept at least one "
-            "topic first."
+            "There are no accepted topics to extract claims from. Accept at least one topic first."
         )
 
     processed: list[_TopicOutcome] = []
@@ -359,9 +356,7 @@ async def _run(
     failures: list[_TopicFailure] = []
 
     for topic in eligible:
-        existing_texts = await claim_verifications_repo.list_claim_texts_by_topic(
-            session, topic.id
-        )
+        existing_texts = await claim_verifications_repo.list_claim_texts_by_topic(session, topic.id)
         if existing_texts and not replace:
             skipped.append(topic.id)
             continue

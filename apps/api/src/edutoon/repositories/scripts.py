@@ -329,9 +329,7 @@ async def get_by_id_for_project(
     """Ownership-scoped fetch (rule 9): a script that exists but belongs to
     a different project looks identical to one that doesn't exist.
     """
-    stmt = select(scripts).where(
-        scripts.c.id == script_id, scripts.c.project_id == project_id
-    )
+    stmt = select(scripts).where(scripts.c.id == script_id, scripts.c.project_id == project_id)
     row = (await session.execute(stmt)).mappings().one_or_none()
     return _script_from_row(row) if row is not None else None
 

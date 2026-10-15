@@ -823,8 +823,11 @@ def test_a_seed_the_material_does_not_cover_survives_with_no_evidence() -> None:
 def test_a_seed_the_model_omitted_is_added_as_a_bare_root() -> None:
     ids = _ids(1)
 
-    tree = _build(_node("t1", "Photosynthesis", seed="seed-a", evidence=ids),
-                  seeds=[SEED_A, SEED_B], known=ids)
+    tree = _build(
+        _node("t1", "Photosynthesis", seed="seed-a", evidence=ids),
+        seeds=[SEED_A, SEED_B],
+        known=ids,
+    )
 
     assert _titles(tree) == ["Photosynthesis", "Respiration"]
     omitted = _by_title(tree, "Respiration")

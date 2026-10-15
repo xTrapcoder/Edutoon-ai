@@ -70,9 +70,7 @@ async def enqueue_synthesis(
             script_id=script_id,
             idempotency_key=idempotency_key,
         )
-        return status.HTTP_202_ACCEPTED, JobResponse.from_record(result.job).model_dump(
-            mode="json"
-        )
+        return status.HTTP_202_ACCEPTED, JobResponse.from_record(result.job).model_dump(mode="json")
 
     _, response_body = await idempotency_service.run_with_idempotency(
         redis,

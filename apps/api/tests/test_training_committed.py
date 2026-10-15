@@ -198,9 +198,9 @@ async def world(mint_token, committed_database_url) -> AsyncIterator[World]:
     settings = get_settings()
     # These tests commit, and what they commit includes append-only audit rows, so they run on a
     # database of their own (conftest.committed_database_url) - never on the development one.
-    assert make_url(committed_database_url).database != make_url(
-        settings.DATABASE_DIRECT_URL
-    ).database, "committed tests must not run against the development database"
+    assert (
+        make_url(committed_database_url).database != make_url(settings.DATABASE_DIRECT_URL).database
+    ), "committed tests must not run against the development database"
     engine = create_async_engine(committed_database_url)
     sessionmaker = async_sessionmaker(engine, expire_on_commit=False)
     registry = QaRegistry()

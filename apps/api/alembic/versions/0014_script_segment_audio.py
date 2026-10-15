@@ -113,9 +113,7 @@ def upgrade() -> None:
         );
         """
     )
-    op.execute(
-        "CREATE INDEX ix_script_segment_audio_status ON script_segment_audio (status);"
-    )
+    op.execute("CREATE INDEX ix_script_segment_audio_status ON script_segment_audio (status);")
     op.execute(
         """
         CREATE TRIGGER trg_script_segment_audio_set_updated_at

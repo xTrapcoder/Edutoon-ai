@@ -84,9 +84,7 @@ class Storage:
     def __init__(self, client: Any) -> None:
         self._client = client
 
-    async def put_object(
-        self, *, bucket: str, key: str, body: bytes, content_type: str
-    ) -> None:
+    async def put_object(self, *, bucket: str, key: str, body: bytes, content_type: str) -> None:
         await asyncio.to_thread(
             self._client.put_object,
             Bucket=bucket,
@@ -237,9 +235,7 @@ class Storage:
         await asyncio.to_thread(self._client.head_bucket, Bucket=bucket)
 
 
-def get_storage_client(
-    *, endpoint_url: str, access_key_id: str, secret_access_key: str
-) -> Storage:
+def get_storage_client(*, endpoint_url: str, access_key_id: str, secret_access_key: str) -> Storage:
     client = boto3.client(
         "s3",
         endpoint_url=endpoint_url,

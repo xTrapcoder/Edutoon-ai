@@ -67,9 +67,7 @@ def _citation_from_row(row: RowMapping) -> ClaimCitationRecord:
     )
 
 
-async def count_manual_within(
-    session: AsyncSession, *, project_id: UUID, within: timedelta
-) -> int:
+async def count_manual_within(session: AsyncSession, *, project_id: UUID, within: timedelta) -> int:
     """How many claims typed in by hand (no topic) were verified for ``project_id`` in the last
     ``within``, by the database's clock. Claims a job extracted carry a topic and are counted by
     the job that made them."""
@@ -158,9 +156,7 @@ async def add_citations(
     return [_citation_from_row(row) for row in result.mappings().all()]
 
 
-async def get_by_id(
-    session: AsyncSession, verification_id: UUID
-) -> ClaimVerificationRecord | None:
+async def get_by_id(session: AsyncSession, verification_id: UUID) -> ClaimVerificationRecord | None:
     stmt = select(claim_verifications).where(claim_verifications.c.id == verification_id)
     row = (await session.execute(stmt)).mappings().one_or_none()
     return _verification_from_row(row) if row is not None else None

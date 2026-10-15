@@ -723,9 +723,7 @@ async def test_chunks_for_another_users_project_returns_404_not_403(client_facto
     assert response.json()["error"]["code"] == "not_found"
 
 
-async def test_chunks_for_a_source_in_a_different_project_returns_404(
-    client_factory, auth_headers
-):
+async def test_chunks_for_a_source_in_a_different_project_returns_404(client_factory, auth_headers):
     """The source exists and the caller owns *a* project - just not the one
     named in the URL - so this must 404 exactly like a nonexistent source
     would (rule 9), not leak the source's existence via some other status.
@@ -1099,8 +1097,6 @@ async def test_the_real_app_refuses_an_oversized_declared_body_before_parsing_it
 
     assert response.status_code == 413
     assert response.json()["error"]["code"] == "payload_too_large"
-
-
 
 
 def _scan(pages: int = 2) -> bytes:

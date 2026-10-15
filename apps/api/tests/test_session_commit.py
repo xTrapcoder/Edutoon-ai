@@ -41,9 +41,7 @@ async def test_get_session_commits_writes_that_survive_the_dependency_completing
         # back empty even though `create` above returned successfully.
         async with engine.connect() as verification_conn:
             row = (
-                await verification_conn.execute(
-                    select(users.c.id).where(users.c.email == email)
-                )
+                await verification_conn.execute(select(users.c.id).where(users.c.email == email))
             ).first()
 
         assert row is not None

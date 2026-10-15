@@ -28,9 +28,7 @@ def test_decode_cursor_rejects_garbage():
 async def test_paginate_rows_rejects_zero_or_negative_limit(db_session):
     for bad_limit in (0, -1):
         with pytest.raises(ValidationError):
-            await paginate_rows(
-                db_session, select(users_table), table=users_table, limit=bad_limit
-            )
+            await paginate_rows(db_session, select(users_table), table=users_table, limit=bad_limit)
 
 
 async def test_paginate_rows_rejects_limit_over_the_max(db_session):

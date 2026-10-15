@@ -95,9 +95,7 @@ class _StubLLM:
     async def judge_claim(self, claim: str, passages: list[Passage]) -> Verdict:
         self.calls.append(claim)
         cited = [p.id for p in passages] if self._cite == "all" else []
-        return Verdict(
-            status=self._status, rationale=self._rationale, cited_passage_ids=cited
-        )
+        return Verdict(status=self._status, rationale=self._rationale, cited_passage_ids=cited)
 
     async def extract_claims(
         self, topic: ClaimTopicBrief, passages: list, *, limits
@@ -445,9 +443,7 @@ async def test_verification_from_another_project_returns_404(
         cross = await client.get(
             f"/v1/projects/{project_b}/claim-verifications/{verification_id}", headers=headers
         )
-        b_list = await client.get(
-            f"/v1/projects/{project_b}/claim-verifications", headers=headers
-        )
+        b_list = await client.get(f"/v1/projects/{project_b}/claim-verifications", headers=headers)
 
     assert cross.status_code == 404
     assert b_list.json()["items"] == []
