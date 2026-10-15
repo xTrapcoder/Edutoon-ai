@@ -9,6 +9,28 @@ uv run uvicorn edutoon.main:app --reload --port 8000
 
 Requires the environment variables listed in the repository root `.env.example`.
 
+## Running the project's `make` targets without `make`
+
+The root `Makefile` is a thin wrapper; every target is one or two commands. **GNU Make is not
+installed on the Windows development machine this was built on**, so `make migrate`, `make lint` and
+the rest cannot be run there as documented. Either install GNU Make (and run from a shell that has
+`uv`, `pnpm` and `docker` on its path), or run the equivalent commands from the repository root:
+
+| `make ...` | Equivalent |
+|---|---|
+| `up` | `docker compose up -d --wait` |
+| `migrate` | `cd apps/api && uv run alembic upgrade head` |
+| `migrate-down` | `cd apps/api && uv run alembic downgrade -1` |
+| `test` | `cd apps/api && uv run pytest` and `pnpm --filter @edutoon/web test` |
+| `lint` | `pnpm lint`, then `cd apps/api && uv run ruff check . && uv run mypy src` |
+| `format` | `pnpm format`, then `cd apps/api && uv run ruff format .` |
+| `contracts` | `cd apps/api && uv run python scripts/export_openapi.py`, then `pnpm --filter @edutoon/contracts generate` |
+| `contracts-check` | the `--check` form of the first command, `pnpm --filter @edutoon/contracts generate`, then `git diff --exit-code -- packages/contracts` |
+| `worker` | `cd apps/api && uv run python -m edutoon.worker` |
+| `dev` | the API (`uv run uvicorn edutoon.main:app --reload --port 8000` in `apps/api`), the web app (`pnpm dev` in `apps/web`) and the worker, each in its own terminal |
+
+The `pnpm` commands need Node 22 or later with pnpm available (Corepack); the Python ones only need `uv`.
+
 ## API contract for the front end
 
 `scripts/export_openapi.py` writes this API's OpenAPI document to
