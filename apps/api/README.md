@@ -333,6 +333,14 @@ One optional **assessment per module**: single-correct multiple choice, 1-50 que
   development database, point `DATABASE_URL` and `DATABASE_DIRECT_URL` at a scratch database that
   `alembic upgrade head` has migrated.
 
+## Formatting
+
+Python is formatted with `ruff format` (line length 100); the whole tree is formatted, and `make lint`
+runs `ruff check` and `mypy` (run `uv run ruff format --check .` to see drift). The one commit that
+reformatted the tree is listed in `.git-blame-ignore-revs` at the repository root so `git blame` skips it:
+once per clone, run `git config blame.ignoreRevsFile .git-blame-ignore-revs` (GitHub reads the file by
+itself). Any later whole-tree format should be its own commit, added to that file.
+
 ## Project generation settings
 
 A project carries three settings that later phases (scene planning, narration,
