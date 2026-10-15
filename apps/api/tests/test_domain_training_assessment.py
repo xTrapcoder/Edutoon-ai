@@ -54,6 +54,8 @@ from edutoon.domain.training_assessment import (
         (57, 100, 57, True),  # float: 56.99999999999999
         (2, 3, 67, False),  # 200 >= 201 is False: no rounding rescues 66.67% against 67
         (2, 3, 66, True),
+        (3, 5, 70, False),  # the demo assessment: 60% fails ...
+        (4, 5, 70, True),  # ... and 80% passes
     ],
 )
 def test_the_pass_gate_is_decided_with_integers(correct, total, threshold, expected):

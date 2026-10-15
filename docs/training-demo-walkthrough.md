@@ -14,7 +14,7 @@ stand-in.
 | Course | `Demo: Safety induction` — `01a13ec3-5762-75ae-87c2-c89762e078a2` (published) |
 | Module 1 | `Welcome and the rules of the site` — `01a13ec3-651f-7960-8c5b-12fcfe272a8e` (640x360, 8 s, has a published assessment) |
 | Module 2 | `Emergency exits and lifting` — `01a13ec3-72d1-7b1a-8b45-620af49a5af8` (1280x720, 8 s, no assessment) |
-| Assessment (module 1) | 3 questions, pass threshold 70 % — so **3 of 3** is needed (2 of 3 is 66 %) |
+| Assessment (module 1) | 5 questions, pass threshold 70 % — so **4 of 5** is needed (3 of 5 is 60 % and fails; 4 of 5 is 80 % and passes) |
 | Employee | `durgesh200417+employee@gmail.com` — a **pending invitation**; no user, no enrolment yet |
 | Administrator | `durgesh200417@gmail.com` (existing) |
 
@@ -65,9 +65,10 @@ adm $API/v1/admin/training/modules/$M1/assessment | pj     # status "published",
 adm $API/v1/admin/invitations | pj                         # one pending employee invitation
 ```
 
-Note the option ids of the **correct** options (`is_correct: true`); you will need them in step 10.
-They are, by label: Q1 *At the assembly point*, Q2 *Your supervisor*, Q3 *With a straight back and
-bent knees*.
+Note the option ids of the **correct** options (`is_correct: true`); you will need them in steps 9
+and 10. They are, by label: Q1 *At the assembly point*, Q2 *Your supervisor*, Q3 *With a straight back
+and bent knees*, Q4 *Report it so it is cleared straight away*, Q5 *Whenever you are in a marked work
+area*.
 
 ## 3. Employee: sign up (browser)
 
@@ -106,7 +107,7 @@ Expect two modules; module 2 has `"locked": true` and a `lock` naming module 1.
 ## 7. Employee: module 2's video is refused, module 1's plays
 
 ```bash
-emp -i -o /dev/null -w "%{http_code}\n" $API/v1/training/modules/$M2/video       # 403
+emp -o /dev/null -w "%{http_code}\n" $API/v1/training/modules/$M2/video            # 403
 emp $API/v1/training/modules/$M2/video | pj                                      # code "module_locked", names module 1
 emp -o /tmp/m1.mp4 -H "Range: bytes=0-" -w "%{http_code} %{size_download}\n" \
     $API/v1/training/modules/$M1/video                                           # 206 and the file's bytes
@@ -122,27 +123,29 @@ emp $API/v1/training/modules/$M1/assessment | pj
 Questions with options (`id`, `position`, `label`) only. There is no `is_correct` anywhere.
 Copy the question and option ids.
 
-## 9. Employee: a failing attempt (1 of 3)
+## 9. Employee: a failing attempt (3 of 5)
 
-Answer Q1 correctly and Q2, Q3 wrongly (any other option):
+Answer Q1, Q2 and Q3 correctly and Q4, Q5 wrongly (any other option):
 
 ```bash
 emp -X POST $API/v1/training/modules/$M1/assessment/attempts \
     -H "Content-Type: application/json" \
     -d '{"answers": [
-          {"question_id": "<Q1>", "option_id": "<Q1 assembly point>"},
-          {"question_id": "<Q2>", "option_id": "<Q2 a wrong option>"},
-          {"question_id": "<Q3>", "option_id": "<Q3 a wrong option>"}]}' | pj
+          {"question_id": "<Q1>", "option_id": "<Q1 the correct option>"},
+          {"question_id": "<Q2>", "option_id": "<Q2 the correct option>"},
+          {"question_id": "<Q3>", "option_id": "<Q3 the correct option>"},
+          {"question_id": "<Q4>", "option_id": "<Q4 a wrong option>"},
+          {"question_id": "<Q5>", "option_id": "<Q5 a wrong option>"}]}' | pj
 ```
 
-Expect `201`, `correct_count: 1`, `question_count: 3`, `threshold_percent: 70`, `passed: false`,
-`attempt_number: 1`. It tells you the score, **not which answers were right**. Module 2 is still
-locked (repeat step 7's first command: 403).
+Expect `201`, `correct_count: 3`, `question_count: 5`, `threshold_percent: 70`, `passed: false`,
+`attempt_number: 1` (3 of 5 is 60 %). It tells you the score, **not which answers were right**.
+Module 2 is still locked (repeat step 7's first command: 403).
 
-## 10. Employee: a passing attempt (3 of 3)
+## 10. Employee: a passing attempt (4 of 5)
 
-Same request with the three correct option ids from step 2. Expect `201`, `correct_count: 3`,
-`passed: true`, `attempt_number: 2`.
+Same request, but with Q4 also answered correctly (only Q5 wrong). Expect `201`, `correct_count: 4`,
+`question_count: 5`, `passed: true` (80 %), `attempt_number: 2`. (All five right passes too.)
 
 ```bash
 emp $API/v1/training/modules/$M1/assessment/attempts | pj     # both attempts, outcome only

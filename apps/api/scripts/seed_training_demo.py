@@ -7,7 +7,7 @@ What it creates, all labelled "Demo":
   render outputs in the outputs bucket - written directly, because producing them through the full
   pipeline needs a provider key or a long deck render;
 * through the **real HTTP API** with a real Clerk token for the administrator: a course, two modules
-  published from those renders, a three-question assessment on module 1 (published), the course
+  published from those renders, a five-question assessment on module 1 (published), the course
   published, and a pending invitation for the demo employee.
 
 It does **not** enrol anyone (the employee does not exist until they first sign in) and does not
@@ -61,6 +61,24 @@ QUESTIONS = (
             "With a straight back and bent knees",
         ),
         2,
+    ),
+    (
+        "A fire exit is blocked by boxes. What should you do?",
+        (
+            "Report it so it is cleared straight away",
+            "Leave it, someone else will notice",
+            "Climb over them in an emergency",
+        ),
+        0,
+    ),
+    (
+        "When should you wear your safety boots and hard hat on site?",
+        (
+            "Only when a manager is watching",
+            "Whenever you are in a marked work area",
+            "Only in wet weather",
+        ),
+        1,
     ),
 )
 
