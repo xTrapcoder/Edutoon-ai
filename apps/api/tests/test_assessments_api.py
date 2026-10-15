@@ -27,9 +27,10 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from edutoon.api.schemas import assessments as schemas
 from edutoon.core.errors import ConflictError, NotFoundError
-from edutoon.domain.training_assessment import Answer
+from edutoon.domain.training_assessment import MODULE_DELETE_REFUSED, Answer
 from edutoon.main import create_app
 from edutoon.repositories import assessments as assessments_repo
+from edutoon.repositories import training as training_repo
 from edutoon.services import assessments as assessments_service
 from edutoon.services import training_access
 from tests.test_admin_training_api import (  # noqa: F401 - fixtures used by name
@@ -978,3 +979,241 @@ async def test_the_database_will_not_store_a_pass_that_disagrees_with_the_score(
                         "k": f"bad-{correct}",
                     },
                 )
+
+
+# --- remediation after review: the history leaks nothing, the two 409s, what "available" means ---------
+
+
+def key_leaks(
+    content: bytes, *, option_ids: set[str], labels: set[str], prompts: set[str]
+) -> list[str]:
+    """Everything in ``content`` that an attempt history has no business carrying: a field name that
+    names an answer, any option or question identifier, or any option label or question prompt. The
+    history is a record of outcomes (score, threshold, verdict); an identifier or wording in it would
+    be a channel that could tell which option is the right one."""
+    found = [token.decode() for token in FORBIDDEN_BYTES if token in content]
+    found += [
+        name
+        for name in ("correct_option", "selected_option", "answers", "options")
+        if name.encode() in content
+    ]
+    body = content.decode()
+    found += [i for i in sorted(option_ids) if i in body]
+    found += [wording for wording in sorted(labels | prompts) if wording in body]
+    return found
+
+
+def test_the_key_scanner_would_catch_a_leaking_history():
+    """Mutation check for the scanner itself (it must not pass vacuously): a history that carries a
+    correct option's id, its label, a per-answer verdict or an answer-key field is flagged, a clean
+    one is not."""
+    clean = json.dumps({"items": [{"attempt_number": 1, "correct_count": 1, "passed": False}]})
+    scan = {"option_ids": {"opt-1"}, "labels": {"Q1 option 1"}, "prompts": {"Question 1?"}}
+    assert key_leaks(clean.encode(), **scan) == []
+    leaking = [
+        {"items": [{"correct_option_ids": ["opt-1"]}]},
+        {"items": [{"selected_option_id": "opt-2"}]},
+        {"items": [{"answers": [{"is_correct": True}]}]},
+        {"items": [{"note": "Q1 option 1"}]},
+        {"items": [{"note": "Question 1?"}]},
+        {"items": [{"hint": "opt-1"}]},
+    ]
+    for body in leaking:
+        assert key_leaks(json.dumps(body).encode(), **scan), body
+
+
+async def test_an_employees_attempt_history_shows_their_outcome_and_nothing_that_reveals_the_key(
+    role_client, admin, employee, source, track, db_session, storage
+):
+    """Real attempts (all wrong, half right, three of four right), then the exact bytes of the history.
+
+    The history is outcome-only: per attempt the number, the integer score, the threshold it was
+    graded with, the verdict and the time. It carries no question or option identifier, no wording
+    and no per-answer verdict, so it cannot say which option of any question is correct - the key
+    is not in the response, and nothing in it is a function of the key beyond the score itself."""
+    course, modules = await world(
+        role_client, admin, employee, source, track, db_session, storage, modules=1
+    )
+    module = modules[0]
+    saved = await put_assessment(
+        role_client, admin, module["id"], assessment_payload(questions=4, options=3, threshold=70)
+    )
+    assert saved.status_code == 200, saved.text
+    admin_view = saved.json()
+    options = [o for q in admin_view["questions"] for o in q["options"]]
+    option_ids = {o["id"] for o in options}
+    scan = {
+        "option_ids": option_ids | {q["id"] for q in admin_view["questions"]},
+        "labels": {o["label"] for o in options},
+        "prompts": {q["prompt"] for q in admin_view["questions"]},
+    }
+    assert len([o for o in options if o["is_correct"]]) == 4
+
+    submitted = [
+        await submit_attempt(
+            role_client,
+            employee,
+            module["id"],
+            await answers_for(role_client, admin, module["id"], right=right),
+        )
+        for right in (0, 2, 3)
+    ]
+    history = await role_client.get(ATTEMPTS.format(module["id"]), headers=employee.headers)
+
+    # the employee sees the outcome of every attempt ...
+    assert history.status_code == 200, history.text
+    body = history.json()
+    assert set(body) == {"items"}
+    assert [
+        (
+            a["attempt_number"],
+            a["correct_count"],
+            a["question_count"],
+            a["threshold_percent"],
+            a["passed"],
+        )
+        for a in body["items"]
+    ] == [(1, 0, 4, 70, False), (2, 2, 4, 70, False), (3, 3, 4, 70, True)]
+    assert [a["id"] for a in body["items"]] == [r.json()["id"] for r in submitted]
+    for item in body["items"]:
+        assert set(item) == {
+            "id",
+            "module_id",
+            "attempt_number",
+            "correct_count",
+            "question_count",
+            "threshold_percent",
+            "passed",
+            "submitted_at",
+        }
+    # ... and nothing in the bytes of the history, or of any submission response, can name the key
+    for response in (history, *submitted):
+        assert key_leaks(response.content, **scan) == [], response.request.url
+    # the scanner is not vacuous: it does find the key in the administrator's view of the same assessment
+    assert key_leaks(json.dumps(admin_view).encode(), **scan)
+    # and the question read an employee does get names every option without marking one
+    shown = await role_client.get(ASSESSMENT.format(module["id"]), headers=employee.headers)
+    assert shown.status_code == 200
+    assert {o["id"] for q in shown.json()["questions"] for o in q["options"]} == option_ids
+    assert not [t for t in FORBIDDEN_BYTES if t in shown.content]
+
+
+async def test_deleting_a_module_with_attempts_is_the_same_409_from_the_check_and_from_the_database(
+    role_client, admin, employee, source, track, db_session, storage, monkeypatch
+):
+    """Evidence for the 'equivalent' mutant "deleting a module does not check for attempts first".
+
+    First the explicit service check refuses. Then the check is made to answer "no attempts" and the
+    delete goes on to the database, whose ``RESTRICT`` foreign keys refuse it inside the savepoint.
+    The status, the exact body bytes and every non-volatile header must be identical, and neither
+    leaves anything changed - so the explicit check is not observable and its removal is not a
+    different outcome."""
+    course, modules = await world(
+        role_client, admin, employee, source, track, db_session, storage, modules=2, assessed=(0,)
+    )
+    first, second = modules
+    await submit_attempt(
+        role_client, employee, first["id"], await answers_for(role_client, admin, first["id"])
+    )
+
+    async def modules_and_audit():
+        listed = await role_client.get(
+            f"{BASE}/courses/{course['id']}/modules", headers=admin.headers
+        )
+        audited = await db_session.execute(
+            text("SELECT count(*) FROM audit_logs WHERE action = 'training.module.deleted'")
+        )
+        return listed.content, audited.scalar_one()
+
+    before = await modules_and_audit()
+    by_check = await role_client.delete(f"{BASE}/modules/{first['id']}", headers=h(admin))
+
+    async def no_attempts_seen(*_args, **_kwargs):
+        return False
+
+    refusals: list[Exception] = []  # proof that the database, not the check, did the refusing
+    real_delete = training_repo.delete_module
+
+    async def watching_delete(session, module_id):
+        try:
+            await real_delete(session, module_id)
+        except IntegrityError as exc:
+            refusals.append(exc)
+            raise
+
+    with monkeypatch.context() as patched:  # (not monkeypatch.undo(): the fixtures' patches stay)
+        patched.setattr(assessments_repo, "has_attempts_for_module", no_attempts_seen)
+        patched.setattr(training_repo, "delete_module", watching_delete)
+        by_database = await role_client.delete(f"{BASE}/modules/{first['id']}", headers=h(admin))
+    assert len(refusals) == 1 and training_repo.is_foreign_key_violation(refusals[0])
+
+    assert by_check.status_code == 409
+    assert json.loads(by_check.content) == {
+        "error": {"code": "conflict", "message": MODULE_DELETE_REFUSED}
+    }
+    assert comparable(by_database) == comparable(by_check)  # status, exact bytes, headers
+    assert await modules_and_audit() == before  # the refused delete changed nothing
+    assert second["id"] in before[0].decode()
+    assert (
+        await role_client.get(f"{BASE}/modules/{first['id']}", headers=admin.headers)
+    ).status_code == 200
+
+
+async def test_an_assessment_on_an_unpublished_module_is_invisible_and_blocks_nothing(
+    role_client, admin, employee, source, track, db_session, storage
+):
+    """There is no draft state on an assessment (see the next test): what hides one from employees
+    is its *module* being unpublished (or its course not published, covered above). An unpublished
+    module's assessment is a 404 for the employee, is never listed, and - whether or not anyone
+    passed it - does not hold back the modules after it."""
+    course, modules = await world(
+        role_client, admin, employee, source, track, db_session, storage, modules=3, assessed=(0, 1)
+    )
+    first, second, third = modules
+    await role_client.post(f"{BASE}/modules/{second['id']}/unpublish", headers=h(admin))
+
+    hidden = await role_client.get(ASSESSMENT.format(second["id"]), headers=employee.headers)
+    assert hidden.status_code == 404 and hidden.content == FIXED_404
+    blocked = await role_client.get(STREAM.format(third["id"]), headers=employee.headers)
+    assert blocked.status_code == 403  # still waiting for module 1, which is published and assessed
+    assert blocked.json()["error"]["details"]["blocking_module_id"] == first["id"]
+
+    await submit_attempt(
+        role_client, employee, first["id"], await answers_for(role_client, admin, first["id"])
+    )
+    opened = await role_client.get(STREAM.format(third["id"]), headers=employee.headers)
+    assert opened.status_code == 200  # the unpublished module 2 and its assessment never gated it
+    [mine] = (await role_client.get(EMPLOYEE_BASE + "/courses", headers=employee.headers)).json()[
+        "items"
+    ]
+    assert [m["id"] for m in mine["modules"]] == [first["id"], third["id"]]
+
+
+async def test_saving_an_assessment_takes_effect_at_once_there_is_no_draft_state(
+    role_client, admin, employee, source, track, db_session, storage
+):
+    """Characterisation, not an endorsement: the six assessment routes have no draft or published
+    state. ``PUT`` writes the assessment and, if its module is reachable, an employee can read it in
+    the very next request and the modules after it lock until it is passed."""
+    course, modules = await world(
+        role_client, admin, employee, source, track, db_session, storage, modules=2, assessed=()
+    )
+    first, second = modules
+    assert (
+        await role_client.get(STREAM.format(second["id"]), headers=employee.headers)
+    ).status_code == 200
+    assert (
+        await role_client.get(ASSESSMENT.format(first["id"]), headers=employee.headers)
+    ).status_code == 404
+
+    assert (await put_assessment(role_client, admin, first["id"])).status_code == 200
+
+    assert (
+        await role_client.get(ASSESSMENT.format(first["id"]), headers=employee.headers)
+    ).status_code == 200
+    locked = await role_client.get(STREAM.format(second["id"]), headers=employee.headers)
+    assert locked.status_code == 403 and locked.json()["error"]["code"] == "module_locked"
+    columns = await db_session.execute(
+        text("SELECT column_name FROM information_schema.columns WHERE table_name = 'assessments'")
+    )
+    assert not {c for (c,) in columns.all()} & {"status", "published", "is_published", "draft"}

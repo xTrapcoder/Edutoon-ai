@@ -696,7 +696,7 @@ MUTATIONS: tuple[Mutation, ...] = (
         "    if await assessments_repo.has_attempts_for_module(session, module_id):\n        raise ConflictError(MODULE_DELETE_REFUSED)\n",
         "",
         (T_ASSESS,),
-        "the RESTRICT foreign keys refuse the same delete inside the savepoint and the handler turns that into the very same 409, so the explicit check is a clearer message first, not a different outcome",
+        "proved byte-for-byte by tests/test_assessments_api.py::test_deleting_a_module_with_attempts_is_the_same_409_from_the_check_and_from_the_database: with the check forced to say 'no attempts' the RESTRICT foreign keys refuse the delete inside the savepoint (the test asserts that happened) and the response has the same status, body bytes and headers, and changes nothing - the explicit check is not observable",
     ),
     Mutation(
         "assessment: deleting an assessment with attempts is allowed",
@@ -720,6 +720,22 @@ MUTATIONS: tuple[Mutation, ...] = (
         "api/schemas/assessments.py",
         "    passed: bool\n    submitted_at: datetime\n\n    @classmethod\n    def from_record(cls, attempt: AttemptRecord)",
         "    passed: bool\n    submitted_at: datetime\n    correct_option_ids: list[UUID] = []\n\n    @classmethod\n    def from_record(cls, attempt: AttemptRecord)",
+        (T_ASSESS,),
+    ),
+    Mutation(
+        "assessment: the attempt history gains an answer-key field",
+        "training assessments",
+        "api/schemas/assessments.py",
+        "class AttemptListResponse(BaseModel):\n    items: list[AttemptResponse]\n",
+        "class AttemptListResponse(BaseModel):\n    correct_option_ids: list[UUID] = []\n    items: list[AttemptResponse]\n",
+        (T_ASSESS,),
+    ),
+    Mutation(
+        "assessment: each attempt in the history gains per-answer verdicts",
+        "training assessments",
+        "api/schemas/assessments.py",
+        "    passed: bool\n    submitted_at: datetime\n\n    @classmethod\n    def from_record(cls, attempt: AttemptRecord)",
+        "    passed: bool\n    submitted_at: datetime\n    answer_verdicts: list[bool] = []\n\n    @classmethod\n    def from_record(cls, attempt: AttemptRecord)",
         (T_ASSESS,),
     ),
     Mutation(

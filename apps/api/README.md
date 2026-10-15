@@ -262,7 +262,17 @@ One optional **assessment per module**: single-correct multiple choice, 1-50 que
   no key; `POST .../assessment/attempts` (`Idempotency-Key`) submits **every** answer once, is graded in
   that request and recorded; `GET .../assessment/attempts` lists the caller's own attempts. The
   response is the integer score (`correct_count`, `question_count`), the `threshold_percent` it was
-  graded with and `passed` - never which answers were right.
+  graded with and `passed` - never which answers were right. The history carries no question or option
+  id and no wording either, so it has nothing to tell the right option apart (`tests/test_assessments_api.py`,
+  `test_an_employees_attempt_history_shows_their_outcome_and_nothing_that_reveals_the_key`). It does not
+  echo the options the employee chose. The score itself is still information: with unlimited retakes an
+  employee could probe the key one answer at a time - no attempt limit or cooldown exists (a product
+  decision, not made).
+- **There is no draft or published state on an assessment.** `PUT` writes it and it is live at once:
+  an employee who can reach the module (enrolled, course and module published, not locked) can read it
+  in the next request, and the modules after it lock until it is passed. What hides one is its *module*
+  being unpublished or its course not being published. An unpublished module's assessment is a 404 and
+  blocks nothing.
 - **Grading** is integer-only: `passed <=> correct * 100 >= threshold_percent * question_count`
   (7/10 and 70/100 pass a 70% gate; 69/100 and 2/3 do not). A submission with a missing, repeated,
   unknown or foreign answer is a 422 and writes nothing.
@@ -281,11 +291,14 @@ One optional **assessment per module**: single-correct multiple choice, 1-50 que
 - **404 for assessment routes.** Seven causes (no module, not enrolled, withdrawn, course or module not
   published, not an employee, no assessment) give the byte-identical `Assessment not found.`; a locked
   module is the 403 `module_locked`.
-- **Tests** run against a scratch database: `tests/test_assessments_api.py`,
+- **Tests**: `tests/test_assessments_api.py`,
   `test_domain_training_assessment.py`, `test_migration_0021_upgrade_downgrade.py` (up/down/up, also
   with attempt data present), and the pinned route tables in `test_route_policies.py` and
   `test_training_route_security.py`. The development database stays at 0020 until you run
-  `make migrate`.
+  `make migrate` - and until then the assessment API tests (which use the shared database, rolled
+  back) fail with `relation "assessments" does not exist`; to run the suite without touching the
+  development database, point `DATABASE_URL` and `DATABASE_DIRECT_URL` at a scratch database that
+  `alembic upgrade head` has migrated.
 
 ## Project generation settings
 
