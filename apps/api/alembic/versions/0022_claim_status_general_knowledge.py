@@ -10,7 +10,8 @@ this"). Such a claim is recorded with its own status, ``general_knowledge``: the
 knowledge, never verified, never cited. Nothing else changes - ``supported`` still requires at least
 one citation, and a project that has source material never produces this status.
 
-``claim_verifications.status`` is a text column with a CHECK (rule 7), so this only widens the CHECK.
+``claim_verifications.status`` is a text column with a CHECK (rule 7), so this only widens the
+CHECK.
 
 ``downgrade`` narrows it again and is refused, with a clear message, while any ``general_knowledge``
 claim exists: those rows cannot be expressed in the old vocabulary and are not rewritten or deleted
