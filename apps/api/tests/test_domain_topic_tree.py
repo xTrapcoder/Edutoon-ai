@@ -472,17 +472,38 @@ def test_a_chain_exactly_max_depth_levels_deep_is_allowed() -> None:
     assert [n.depth for n in tree.nodes] == [0, 1, 2]
 
 
-def test_a_chain_one_level_too_deep_is_rejected() -> None:
+def test_a_chain_one_level_too_deep_is_trimmed_not_failed() -> None:
+    """A model that nests one level too deep keeps its first three levels; the over-deep topic is
+    dropped and counted, never the whole extraction failed for it."""
     ids = _ids(1)
 
-    with pytest.raises(TopicDepthError, match="at most 3 levels"):
-        _build(
-            _node("a", evidence=ids),
-            _node("b", parent="a", evidence=ids),
-            _node("c", parent="b", evidence=ids),
-            _node("d", parent="c", evidence=ids),
-            known=ids,
-        )
+    tree = _build(
+        _node("a", evidence=ids),
+        _node("b", parent="a", evidence=ids),
+        _node("c", parent="b", evidence=ids),
+        _node("d", parent="c", evidence=ids),
+        known=ids,
+    )
+
+    assert _titles(tree) == ["A", "B", "C"]
+    assert [n.depth for n in tree.nodes] == [0, 1, 2]
+    assert tree.dropped_over_limit == 1
+
+
+def test_trimming_for_depth_moves_a_dropped_topics_children_up() -> None:
+    ids = _ids(1)
+
+    tree = _build(
+        _node("a", evidence=ids),
+        _node("b", parent="a", evidence=ids),
+        _node("c", parent="b", evidence=ids),
+        _node("d", parent="c", evidence=ids),
+        _node("e", parent="d", evidence=ids),
+        known=ids,
+    )
+
+    assert _titles(tree) == ["A", "B", "C"]
+    assert tree.dropped_over_limit == 2
 
 
 def test_dropping_an_uncited_ancestor_can_bring_a_deep_chain_back_within_the_limit() -> None:
@@ -516,9 +537,57 @@ def test_a_tree_at_the_topic_limit_is_allowed_and_one_more_is_rejected() -> None
     three = [_node(f"n{i}", evidence=ids) for i in range(3)]
 
     assert len(_build(*three, known=ids, limits=small).nodes) == 3
+    over = _build(*three, _node("n3", evidence=ids), known=ids, limits=small)
+    assert _titles(over) == ["N0", "N1", "N2"]
+    assert over.dropped_over_limit == 1
+
+
+def test_too_many_topics_drops_the_deepest_then_the_last_but_never_a_user_topic() -> None:
+    ids = _ids(1)
+    small = TopicLimits(
+        max_topics=3,
+        max_depth=3,
+        max_title_chars=60,
+        max_summary_chars=100,
+        max_keywords_per_topic=4,
+        max_keyword_chars=20,
+        max_evidence_per_topic=3,
+    )
+    seed = TopicSeed(ref="s1", title="Calvin cycle", position=0)
+
+    tree = _build(
+        _node("a", evidence=ids),
+        _node("a1", parent="a", evidence=ids),
+        _node("b", evidence=ids),
+        _node("c", evidence=ids),
+        seeds=[seed],
+        known=ids,
+        limits=small,
+    )
+
+    # The seed and the three model roots make four; the deeper "a1" goes first, then nothing
+    # else is needed.
+    assert "Calvin cycle" in _titles(tree)
+    assert "A1" not in _titles(tree)
+    assert len(tree.nodes) == 3
+    assert tree.dropped_over_limit == 2
+
+
+def test_more_user_topics_than_the_limit_is_still_an_error() -> None:
+    small = TopicLimits(
+        max_topics=2,
+        max_depth=3,
+        max_title_chars=60,
+        max_summary_chars=100,
+        max_keywords_per_topic=4,
+        max_keyword_chars=20,
+        max_evidence_per_topic=3,
+    )
+    seeds = [TopicSeed(ref=f"s{i}", title=f"Topic {i}", position=i) for i in range(3)]
+
     with pytest.raises(TopicLimitError) as excinfo:
-        _build(*three, _node("n3", evidence=ids), known=ids, limits=small)
-    assert (excinfo.value.count, excinfo.value.limit) == (4, 3)
+        _build(seeds=seeds, limits=small)
+    assert (excinfo.value.count, excinfo.value.limit) == (3, 2)
 
 
 def test_dropped_topics_do_not_count_towards_the_limit() -> None:

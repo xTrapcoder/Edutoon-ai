@@ -609,6 +609,7 @@ def _result(
         "chunks_used": selection.chunks_used,
         "truncated": selection.truncated,
         "dropped_uncited": tree.dropped_uncited,
+        "dropped_over_limit": tree.dropped_over_limit,
         "replaced": replace,
         "input_tokens": report.total.input_tokens or 0,
         "output_tokens": report.total.output_tokens or 0,

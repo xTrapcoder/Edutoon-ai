@@ -807,6 +807,7 @@ async def test_process_one_job_runs_the_extract_topics_handler(
         "chunks_used": 0,
         "truncated": False,
         "dropped_uncited": 0,
+        "dropped_over_limit": 0,
         "replaced": False,
         "input_tokens": 11,
         "output_tokens": 22,

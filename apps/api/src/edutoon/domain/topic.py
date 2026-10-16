@@ -230,12 +230,14 @@ class ValidatedTopicNode:
 class ValidatedTopicTree:
     """The result of validation: ``nodes`` in reading order (a parent always
     precedes its children), the input ``mode`` the extraction ran in, and how
-    many model-proposed topics were dropped for citing nothing.
+    many model-proposed topics were dropped for citing nothing and how many for
+    exceeding the depth or topic-count limits.
     """
 
     mode: InputMode
     nodes: tuple[ValidatedTopicNode, ...]
     dropped_uncited: int = 0
+    dropped_over_limit: int = 0
 
 
 # --- passage selection result --------------------------------------------------------
