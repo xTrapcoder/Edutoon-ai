@@ -124,10 +124,17 @@ def _llm_with(monkeypatch: Any, responses: dict[int, Any]) -> tuple[LLM, AsyncMo
     """
     llm = LLM(AsyncAnthropic(api_key="sk-ant-test-not-a-real-key"), model=MODEL)
     calls: list[int] = []
+    received_corrections: list[str] = []
+    llm.received_corrections = received_corrections  # type: ignore[attr-defined]
 
-    async def _compose(segment, *, max_scenes: int):
+    async def _compose(segment, *, max_scenes: int, corrections=()):
         calls.append(segment.segment_index)
+        if corrections:
+            received_corrections.extend(corrections)
         response = responses[segment.segment_index]
+        if isinstance(response, list) and response and isinstance(response[0], list):
+            # a list of answers: the first call gets the first, a rewrite the next (last repeats)
+            response = response[min(calls.count(segment.segment_index) - 1, len(response) - 1)]
         if isinstance(response, BaseException):
             raise response
         scenes = tuple(StoryboardSceneDraft(template=t, content=c) for t, c in response)
@@ -1287,3 +1294,39 @@ async def test_the_job_records_one_storyboard_call_per_segment_it_composed(db_se
     assert usage["by_call"]["storyboard"]["calls"] == 2
     assert usage["total"]["input_tokens"] == 10 and usage["total"]["output_tokens"] == 10
     assert job.result["provider_calls"] == 2
+
+
+async def test_a_rewrite_that_fixes_an_invented_word_is_accepted_and_the_first_draft_never_stored(
+    db_session, monkeypatch
+):
+    """The checks are never loosened: the first draft's invented word is told to the writer, and
+    only a rewrite that passes the very same checks is stored."""
+    _owner, project, script, segments = await _project_with_ready_audio(
+        db_session, narrations=["Photosynthesis happens in the leaf."], durations_ms=[9_000]
+    )
+    llm, mock, calls = _llm_with(
+        monkeypatch,
+        {
+            0: [
+                [("title_card", {"title": "Photosynthesis", "subtitle": "Basics Explained"})],
+                [("title_card", {"title": "Photosynthesis", "subtitle": "In the leaf"})],
+            ]
+        },
+    )
+    enq = await service.enqueue_storyboard_generation(
+        db_session,
+        project_id=project.id,
+        owner_id=project.owner_id,
+        script_id=script.id,
+        idempotency_key="k",
+    )
+
+    job = await service.run_generate_storyboard_job(db_session, llm, job_id=enq.job.id)
+
+    assert job.result["failed_segment_ids"] == []
+    assert calls == [0, 0]  # one rewrite
+    assert any(
+        "'Basics'" in text and "not in the narration" in text for text in llm.received_corrections
+    )
+    [scene] = await scenes_repo.list_by_segment_id(db_session, segments[0].id)
+    assert scene.content == {"title": "Photosynthesis", "subtitle": "In the leaf"}
