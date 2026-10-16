@@ -109,6 +109,17 @@ def test_a_narration_supported_proper_noun_is_accepted_case_insensitively() -> N
     assert not any(v.kind == "proper_noun" for v in violations)
 
 
+def test_a_proper_noun_that_is_a_plural_of_a_narration_word_is_accepted() -> None:
+    """``Chloroplasts`` in a subtitle is the narration's ``chloroplast``: a real local-model run
+    failed a whole segment over exactly this. A different name is still rejected."""
+    narration = "Photosynthesis happens in a part of the cell called the chloroplast."
+
+    assert not check_provenance({"subtitle": "Chloroplasts"}, narration)
+    assert not check_provenance({"subtitle": "Where it happens: Chloroplasts"}, narration)
+    flagged = {v.token for v in check_provenance({"subtitle": "In Mitochondria"}, narration)}
+    assert flagged == {"Mitochondria"}
+
+
 def test_a_capitalised_word_at_the_start_of_a_sentence_is_not_flagged() -> None:
     """Ordinary sentence-initial capitalisation is not treated as a proper
     noun (documented limitation) - it would otherwise flag almost every

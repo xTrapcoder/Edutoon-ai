@@ -255,6 +255,22 @@ def _strip_possessive(word: str) -> str:
     return lowered[:-2] if lowered.endswith("'s") else lowered
 
 
+def _spellings(word: str) -> set[str]:
+    """``word`` lower-cased, without a possessive, and with its plain singular / plural form:
+    ``Chloroplasts`` is the narration's ``chloroplast`` in the plural, not a new name. Only an
+    ``-s`` / ``-es`` / ``-ies`` ending is considered, so a genuinely different name still has to
+    appear in the narration."""
+    base = _strip_possessive(word)
+    forms = {base, base + "s"}
+    if len(base) > 3 and base.endswith("s"):
+        forms.add(base[:-1])
+    if len(base) > 4 and base.endswith("es"):
+        forms.add(base[:-2])
+    if len(base) > 4 and base.endswith("ies"):
+        forms.add(base[:-3] + "y")
+    return forms
+
+
 def _narration_words(narration_text: str) -> set[str]:
     words = {word.lower() for word in _WORD_RE.findall(narration_text)}
     return words | {_strip_possessive(word) for word in words}
@@ -279,7 +295,9 @@ def check_scene_text(
             allowed = token in narration_numbers or _canonical_number(token) in narration_numbers
         elif kind == "currency":
             allowed = token in narration_text
-        else:  # number_word, date_word, unit, proper_noun
+        elif kind == "proper_noun":
+            allowed = bool(_spellings(token) & narration_words)
+        else:  # number_word, date_word, unit
             allowed = (
                 token.lower() in narration_words or _strip_possessive(token) in narration_words
             )
