@@ -16,11 +16,13 @@ import {
   jobFailureMessage,
   latestJobOfKind,
   readScriptGenerationProgress,
+  readWeakCitations,
   scriptGenerationStageLabel,
 } from '@/lib/jobs';
 import { ApprovedPanel } from './approved-panel';
 import { ScriptStudio } from './script-studio';
 import { VerificationRequired } from './verification-required';
+import { WeakCitationNotice } from './weak-citation-notice';
 
 function ReviewTopicsFirst({ projectId }: { projectId: string }) {
   return (
@@ -94,8 +96,10 @@ function GenerateScriptCard({
 }
 
 function ScriptDetailView({ scriptId }: { scriptId: string }) {
-  const { project, topics, workflow } = useWorkspaceContext();
+  const { project, topics, workflow, jobs } = useWorkspaceContext();
   const detail = useScriptDetail(project.id, scriptId);
+
+  const weak = useMemo(() => readWeakCitations(jobs.data, scriptId), [jobs.data, scriptId]);
 
   if (detail.isPending) {
     return (
@@ -123,6 +127,9 @@ function ScriptDetailView({ scriptId }: { scriptId: string }) {
   return (
     <div className="space-y-6">
       {workflow.stage === 'approved' ? <ApprovedPanel projectId={project.id} /> : null}
+      {weak && weak.length > 0 ? (
+        <WeakCitationNotice script={detail.data} topics={topics.data ?? []} weak={weak} />
+      ) : null}
       <ScriptStudio project={project} script={detail.data} topics={topics.data ?? []} />
     </div>
   );

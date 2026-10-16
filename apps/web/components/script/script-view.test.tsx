@@ -143,4 +143,67 @@ describe('Script step', () => {
       expect(screen.queryByRole('button', { name: 'Approve script' })).not.toBeInTheDocument(),
     );
   });
+
+  it('shows weak-citation passages as an advisory that does not stop approval', async () => {
+    const detail = scriptDetail();
+    serveProject({
+      ...ready,
+      jobs: [
+        job({
+          kind: 'generate_script',
+          result: {
+            script_id: detail.id,
+            weak_citation_segments: [{ segment_index: 0, coverage: 0.08 }, { segment_index: 9 }],
+          },
+        }),
+        ...ready.jobs,
+      ],
+    });
+    server.use(
+      http.get(`${base}/scripts`, () =>
+        HttpResponse.json({ items: [script({ status: 'draft' })], next_cursor: null }),
+      ),
+      http.get(`${base}/scripts/:id`, () => HttpResponse.json(detail)),
+    );
+
+    renderProjectPage(<ScriptPage />, 'script');
+
+    const notice = await screen.findByTestId('weak-citation-notice');
+    expect(within(notice).getByText(/before approving \(advisory\)/i)).toBeInTheDocument();
+    expect(within(notice).getByText(/not proof either way/i)).toBeInTheDocument();
+    expect(within(notice).getByText(/Passage 1/)).toBeInTheDocument();
+    expect(within(notice).getByText(/about 8% of its words/)).toBeInTheDocument();
+    expect(
+      within(notice).getByText(/A network connects computers so they can share/),
+    ).toBeInTheDocument();
+    expect(within(notice).getByText('A network connects computers.')).toBeInTheDocument();
+    // An entry for a passage that does not exist is ignored, and approval is still offered.
+    expect(within(notice).getAllByRole('listitem').length).toBeGreaterThan(0);
+    expect(screen.getByRole('button', { name: 'Approve script' })).toBeEnabled();
+  });
+
+  it('shows no weak-citation notice when none were flagged or the script predates the flag', async () => {
+    const detail = scriptDetail();
+    serveProject({
+      ...ready,
+      jobs: [
+        job({
+          kind: 'generate_script',
+          result: { script_id: detail.id, weak_citation_segments: [] },
+        }),
+        ...ready.jobs,
+      ],
+    });
+    server.use(
+      http.get(`${base}/scripts`, () =>
+        HttpResponse.json({ items: [script({ status: 'draft' })], next_cursor: null }),
+      ),
+      http.get(`${base}/scripts/:id`, () => HttpResponse.json(detail)),
+    );
+
+    renderProjectPage(<ScriptPage />, 'script');
+
+    expect(await screen.findByRole('navigation', { name: 'Script sections' })).toBeInTheDocument();
+    expect(screen.queryByTestId('weak-citation-notice')).not.toBeInTheDocument();
+  });
 });

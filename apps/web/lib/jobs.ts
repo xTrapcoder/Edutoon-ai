@@ -328,3 +328,43 @@ export function assessWait(job: Job, now: number = Date.now()): WaitAssessment {
   }
   return { level: 'normal', elapsedMs, message: null };
 }
+
+export interface WeakCitation {
+  /** Zero-based position of the passage in the script (`ScriptSegment.segment_index`). */
+  segmentIndex: number;
+  /** Share (0 to 1) of the passage's meaningful words that appear in the claims it cites. */
+  coverage: number;
+}
+
+/**
+ * The passages a `generate_script` job flagged as having weak citations, for the script it wrote.
+ * `null` when no such job is known (an older script, or a job that predates the flag), so "none
+ * flagged" and "not checked" are never confused. The job's `result` is untyped in the API's
+ * contract, so it is read field by field and an odd entry is skipped, never an exception.
+ */
+export function readWeakCitations(
+  jobs: readonly Job[] | undefined,
+  scriptId: string,
+): WeakCitation[] | null {
+  const job = jobs?.find(
+    (candidate) =>
+      candidate.kind === 'generate_script' &&
+      candidate.status === 'succeeded' &&
+      isRecord(candidate.result) &&
+      candidate.result.script_id === scriptId,
+  );
+  if (!job || !isRecord(job.result) || !Array.isArray(job.result.weak_citation_segments)) {
+    return null;
+  }
+  const weak: WeakCitation[] = [];
+  for (const entry of job.result.weak_citation_segments) {
+    if (!isRecord(entry)) continue;
+    const segmentIndex = asCount(entry.segment_index);
+    const coverage = entry.coverage;
+    if (segmentIndex === null || typeof coverage !== 'number' || !Number.isFinite(coverage)) {
+      continue;
+    }
+    weak.push({ segmentIndex, coverage });
+  }
+  return weak;
+}
