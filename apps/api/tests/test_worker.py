@@ -166,7 +166,7 @@ def _fake_script_llm(
     is not itself about duration correction does not trigger it by accident.
     """
     client = AsyncAnthropic(api_key="sk-ant-test-not-a-real-key")
-    narration = " ".join(["word"] * narration_words)
+    narration = " ".join(["fact"] * narration_words)  # shares wording with the claim it cites
 
     async def _create(*, tool_choice: dict[str, str], **_kwargs: Any) -> Message:
         name = tool_choice["name"]

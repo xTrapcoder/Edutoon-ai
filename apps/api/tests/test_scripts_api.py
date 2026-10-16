@@ -451,7 +451,12 @@ async def test_completing_a_regeneration_supersedes_the_previous_draft(
         llm = _fake_llm(
             monkeypatch,
             claims[0].topic_id,
-            [{"narration_text": "Another sentence.", "claim_ids": [str(claims[0].id)]}],
+            [
+                {
+                    "narration_text": "Plants need light to make energy.",
+                    "claim_ids": [str(claims[0].id)],
+                }
+            ],
         )
         await _run_pending_job(db_session, project_id, llm)
 

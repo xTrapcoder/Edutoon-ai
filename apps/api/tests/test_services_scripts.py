@@ -173,6 +173,8 @@ def _mock_llm(
     """
     llm = LLM(AsyncAnthropic(api_key="sk-ant-test-not-a-real-key"), model=model)
     call_counts: dict[UUID, int] = {}
+    received_corrections: list[str] = []
+    llm.received_corrections = received_corrections  # type: ignore[attr-defined]
 
     async def _outline(
         brief: ScriptBrief, topics: Sequence[OutlineTopicBrief]
@@ -200,7 +202,10 @@ def _mock_llm(
         max_segments: int,
         max_claims: int,
         words_per_minute: int,
+        corrections: Sequence[str] = (),
     ) -> tuple[list[ScriptSegmentDraft], TokenUsage]:
+        if corrections:
+            received_corrections.extend(corrections)
         generations = sections_by_topic[topic.topic_id]
         index = call_counts.get(topic.topic_id, 0)
         call_counts[topic.topic_id] = index + 1
@@ -240,6 +245,26 @@ def _llm_raising_on_outline(monkeypatch: Any, exc: Exception, *, model: str = SC
 # --- fake segments -------------------------------------------------------------------
 
 
+# The words of every claim these tests create, so a padded segment that cites a claim shares
+# wording with it (a citation that shares none is dropped - domain.script_provenance).
+_PAD_WORDS = [
+    "fact",
+    "first",
+    "second",
+    "third",
+    "chlorophyll",
+    "absorbs",
+    "light",
+    "carbon",
+    "fixed",
+    "plants",
+    "convert",
+    "energy",
+    "another",
+    "word",
+]
+
+
 def _words_for_duration(duration_ms: int, *, wpm: int = 150) -> int:
     return max(1, round(duration_ms / 60_000 * wpm))
 
@@ -249,7 +274,8 @@ def _narration_of_duration(duration_ms: int, *, wpm: int = 150) -> str:
     so a test controls the duration the service will compute without needing
     to hand-count words in realistic prose.
     """
-    return " ".join(["word"] * _words_for_duration(duration_ms, wpm=wpm))
+    count = _words_for_duration(duration_ms, wpm=wpm)
+    return " ".join(_PAD_WORDS[index % len(_PAD_WORDS)] for index in range(count))
 
 
 def _segment(
@@ -585,22 +611,26 @@ async def test_run_never_raises_on_a_value_error_from_the_provider(db_session, m
 
 
 async def test_run_marks_failed_when_a_segment_is_unsourced(db_session, monkeypatch):
+    """Strict as ever: a passage no verified claim backs fails the generation - the writer is asked
+    once to fix it, and if the rewrite still has it, nothing is attached."""
     _owner, project, topic, claim, enq = await _enqueued(db_session)
     llm, _outline_mock, _section_mock = _mock_llm(
         monkeypatch,
         sections_by_topic={
             topic.id: [
                 [
-                    _segment("A properly cited sentence.", [str(claim.id)]),
+                    _segment("A properly cited fact.", [str(claim.id)]),
                     _segment("An unsourced assertion with no citation.", []),
                 ]
-            ]
+            ]  # the last entry repeats: the retry writes the same thing
         },
     )
 
     job = await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
 
     assert job.status == "failed"
+    assert "no supported citation" in (job.error or "")
+    assert llm.received_corrections  # it was told what was wrong, once
     script = await scripts_repo.get_by_id(db_session, enq.script.id)
     assert script.status == "failed"
     # nothing partial persisted
@@ -610,6 +640,45 @@ async def test_run_marks_failed_when_a_segment_is_unsourced(db_session, monkeypa
         )
         == []
     )
+
+
+async def test_run_accepts_a_section_that_the_writer_fixes_when_told_what_was_wrong(
+    db_session, monkeypatch
+):
+    """The retry never lowers a bar: the rewritten section passes the same checks, the rejected
+    wording is not in the script, and the job's result says the section was rewritten and why."""
+    _owner, project, topic, claim, enq = await _enqueued(db_session)
+    llm, _outline_mock, _section_mock = _mock_llm(
+        monkeypatch,
+        sections_by_topic={
+            topic.id: [
+                [
+                    _segment("A properly cited fact.", [str(claim.id)]),
+                    _segment("An unsourced assertion with no citation.", []),
+                ],
+                [
+                    _segment("A properly cited fact.", [str(claim.id)]),
+                    _segment("A short hand-off.", [], connective=True),
+                ],
+            ]
+        },
+    )
+
+    job = await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
+
+    assert job.status == "succeeded"
+    texts = [
+        segment.narration_text
+        for segment in await scripts_repo.list_segments(
+            db_session, project_id=enq.job.project_id, script_id=enq.script.id
+        )
+    ]
+    assert texts == ["A properly cited fact.", "A short hand-off."]
+    assert "unsourced" not in " ".join(texts)
+    [retry] = job.result["section_retries"]
+    assert retry["rejected_passages"] == 1
+    assert "lists no claim ids" in retry["problems"][0]
+    assert "An unsourced assertion" in retry["problems"][0]
 
 
 async def test_run_persists_nothing_when_a_later_topic_fails_even_though_an_earlier_one_succeeded(
@@ -1275,3 +1344,88 @@ async def test_ordinary_teaching_language_is_not_mistaken_for_an_added_fact(
     job = await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
 
     assert job.status == "succeeded"
+
+
+async def test_run_refuses_a_section_that_cites_no_claim_at_all(db_session, monkeypatch):
+    """A topic explained only by hand-offs is in the script by name and absent in substance: the
+    writer is asked to rewrite it, and a section that still cites nothing fails the generation."""
+    _owner, project, topic, claim, enq = await _enqueued(db_session)
+    llm, _outline_mock, _section_mock = _mock_llm(
+        monkeypatch,
+        sections_by_topic={topic.id: [[_segment("A short hand-off only.", [], connective=True)]]},
+    )
+
+    job = await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
+
+    assert job.status == "failed"
+    assert "cites none of its verified claims" in (job.error or "")
+    assert any("No passage of this section cites a claim" in c for c in llm.received_corrections)
+    assert (
+        await scripts_repo.list_segments(
+            db_session, project_id=enq.job.project_id, script_id=enq.script.id
+        )
+        == []
+    )
+
+
+async def test_run_accepts_a_hollow_section_that_is_rewritten_with_cited_content(
+    db_session, monkeypatch
+):
+    _owner, project, topic, claim, enq = await _enqueued(db_session)
+    llm, _outline_mock, _section_mock = _mock_llm(
+        monkeypatch,
+        sections_by_topic={
+            topic.id: [
+                [_segment("A short hand-off only.", [], connective=True)],
+                [
+                    _segment("A short hand-off only.", [], connective=True),
+                    _segment("A properly cited fact.", [str(claim.id)]),
+                ],
+            ]
+        },
+    )
+
+    job = await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
+
+    assert job.status == "succeeded"
+    [retry] = job.result["section_retries"]
+    assert retry["hollow"] is True and retry["rejected_passages"] == 0
+
+
+async def test_run_keeps_the_first_draft_when_the_correction_pass_cannot_pass_the_checks(
+    db_session, monkeypatch
+):
+    """The length-correction pass is optional tuning. If its rewrite breaks a script rule even after
+    its own rewrites, it is not used - but it does not cost the valid first draft either."""
+    monkeypatch.setenv("MAX_SCRIPT_CORRECTION_ATTEMPTS", "1")
+    get_settings.cache_clear()
+    try:
+        _owner, project, topic, claim, enq = await _enqueued(db_session)
+        llm, _outline_mock, _section_mock = _mock_llm(
+            monkeypatch,
+            sections_by_topic={
+                topic.id: [
+                    # first draft: valid, but far too short, so a correction pass runs
+                    [_on_target([str(claim.id)], duration_ms=10_000)],
+                    # the correction pass and its rewrites: an uncited, non-connective passage
+                    [_segment("An unsourced assertion with no citation.", [])],
+                ]
+            },
+        )
+
+        job = await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
+
+        assert job.status == "succeeded"
+        assert job.result["correction_applied"] is False
+        assert "no supported citation" in job.result["correction_failed"]
+        script = await scripts_repo.get_by_id(db_session, enq.script.id)
+        assert script.estimated_duration_ms == 10_000  # the first draft, as written
+        texts = [
+            segment.narration_text
+            for segment in await scripts_repo.list_segments(
+                db_session, project_id=enq.job.project_id, script_id=enq.script.id
+            )
+        ]
+        assert "unsourced" not in " ".join(texts)
+    finally:
+        get_settings.cache_clear()

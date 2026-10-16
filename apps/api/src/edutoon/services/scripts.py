@@ -106,7 +106,16 @@ from edutoon.domain.script_duration import (
     max_provider_calls,
     split_topic_budget,
 )
-from edutoon.domain.script_provenance import GroundingReference, filter_and_validate
+from edutoon.domain.script_provenance import (
+    WEAK_CITATION_COVERAGE,
+    GroundingReference,
+    UngroundedSegmentError,
+    UnsourcedSegmentError,
+    filter_and_validate,
+    relevant_claim_ids,
+    weak_citation_coverage,
+)
+from edutoon.domain.storyboard_provenance import content_words
 from edutoon.domain.topic_tree import accepted_topics
 from edutoon.providers.llm import (
     LLM,
@@ -253,7 +262,9 @@ async def enqueue_script_generation(
     supported_counts: list[int] = []
     for topic in eligible:
         supported = await claim_verifications_repo.list_supported_by_topic(
-            session, project_id=project_id, topic_id=topic.id
+            session,
+            project_id=project_id,
+            topic_id=topic.id,
         )
         supported_counts.append(len(supported))
         if not supported:
@@ -579,6 +590,119 @@ def _outside_tolerance(estimated_ms: int, target_ms: int, tolerance: float) -> b
     return abs(estimated_ms - target_ms) > target_ms * tolerance
 
 
+class HollowSectionError(JobError):
+    """A section whose passages cite none of the topic's verified claims, even after rewrites."""
+
+
+MAX_SECTION_REWRITES = 2
+"""How many times one section may be rewritten after the script's checks reject it. Bounded: each
+rewrite is one more provider call, and a writer that cannot satisfy the checks fails the job."""
+
+
+def _invalid_segments(
+    segments: list[ScriptSegmentDraft],
+    unit: _SectionUnit,
+    *,
+    settings: Settings,
+    grounding: GroundingReference | None,
+) -> list[tuple[int, Exception]]:
+    """Every segment of one section that the script's own checks would reject, with why: the same
+    :func:`~edutoon.domain.script_provenance.filter_and_validate` the whole script must pass,
+    applied to each segment on its own so that *all* the problems are found, not just the first."""
+    supported = {UUID(claim.id) for claim in unit.claims}
+    texts = _claim_texts(unit.claims)
+    problems: list[tuple[int, Exception]] = []
+    for position, segment in enumerate(segments):
+        try:
+            filter_and_validate(
+                ScriptDraft(title="", segments=[segment]),
+                supported,
+                settings.SCRIPT_WORDS_PER_MINUTE,
+                grounding=grounding,
+                claim_texts=texts,
+            )
+        except (UnsourcedSegmentError, UngroundedSegmentError) as exc:
+            problems.append((position, exc))
+    return problems
+
+
+HOLLOW_SECTION_CORRECTION = (
+    "No passage of this section cites a claim, so the topic is not explained from its verified "
+    "claims at all. Explain the topic using its claims and list the claim ids each passage "
+    "draws on - only claims that passage actually states."
+)
+
+
+def _claim_texts(claims: Sequence[Claim]) -> dict[UUID, str]:
+    return {UUID(claim.id): claim.text for claim in claims}
+
+
+def _is_hollow(segments: list[ScriptSegmentDraft], claims: Sequence[Claim] = ()) -> bool:
+    """A section none of whose passages cites a claim it actually shares wording with. Every
+    accepted topic has verified claims, so a section made only of hand-offs says nothing the source
+    supports: the topic would be in the script by name and absent in substance. With ``claims``, a
+    citation that shares no content word with its passage does not count (it is dropped from the
+    script anyway)."""
+    texts = _claim_texts(claims)
+    for segment in segments:
+        cited = [UUID(claim_id) for claim_id in segment.claim_ids]
+        if texts:
+            cited = list(relevant_claim_ids(segment.narration_text, cited, texts))
+        if cited:
+            return False
+    return True
+
+
+def _closest_claims(narration_text: str, claims: Sequence[Claim], limit: int = 2) -> list[Claim]:
+    """The claims whose wording overlaps ``narration_text`` most, best first; a claim sharing
+    nothing is never offered."""
+    narration_words = content_words(narration_text)
+    scored = [(len(narration_words & content_words(claim.text)), claim) for claim in claims]
+    ranked = sorted((pair for pair in scored if pair[0] > 0), key=lambda pair: -pair[0])
+    return [claim for _, claim in ranked[:limit]]
+
+
+def _corrections_for(
+    segments: list[ScriptSegmentDraft],
+    problems: list[tuple[int, Exception]],
+    claims: Sequence[Claim] = (),
+) -> list[str]:
+    """What to tell the writer was wrong, one line per rejected passage, in plain words: which
+    passage (by position and opening words), which rule it broke and what would fix it. The fix is
+    never "cite something else to make it pass" - only cite the claims it truly draws on, or take
+    the wording out. For a passage without a usable citation the claims whose wording it most
+    resembles are named (computed, not guessed), or it is said that none is close."""
+    lines: list[str] = []
+    for position, exc in problems:
+        opening = " ".join(segments[position].narration_text.split()[:10])
+        if isinstance(exc, UngroundedSegmentError):
+            named = ", ".join(f"'{token}'" for _, token in exc.tokens[:5])
+            lines.append(
+                f'Passage {position + 1} ("{opening} ...") mentions {named}, which none of the '
+                "claims contain. Use only wording the claims support; leave those out."
+            )
+        else:
+            if segments[position].claim_ids:
+                why = "cites claims that do not say what it says, and is not marked connective"
+            else:
+                why = "lists no claim ids and is not marked connective"
+            closest = _closest_claims(segments[position].narration_text, claims)
+            if closest:
+                named = " | ".join(f'"{claim.text}"' for claim in closest)
+                hint = (
+                    f"The claims closest to it are: {named}. "
+                    "Cite one only if the passage states it. "
+                )
+            else:
+                hint = "None of the claims is close to it. "
+            lines.append(
+                f'Passage {position + 1} ("{opening} ...") {why}. {hint}'
+                "If it is only an introduction, a transition or an analogy, keep it short, mark it "
+                "connective and cite nothing - never cite a claim the passage does not state."
+            )
+    return lines
+
+
 async def _generate_units(
     llm: LLM,
     brief: ScriptBrief,
@@ -592,6 +716,8 @@ async def _generate_units(
     payload: dict[str, Any],
     report: UsageReport,
     kind: str,
+    grounding: GroundingReference | None = None,
+    retries: list[dict[str, object]] | None = None,
 ) -> list[ScriptSegmentDraft]:
     """Generate every unit's section in order, stamping each returned segment
     with its unit's ``topic_id`` (never taken from the model) and carrying
@@ -637,24 +763,72 @@ async def _generate_units(
             next_topic_title=_next_topic_title(units, index),
         )
 
-        segments = await record_call(
-            report,
-            kind,
-            llm.compose_script_section(
-                brief,
-                topic_brief,
-                list(unit.claims),
-                continuity,
-                duration_ms=unit.duration_ms,
-                unit_index=unit.unit_index,
-                unit_count=unit.unit_count,
-                max_segments=settings.MAX_SCRIPT_SEGMENTS,
-                max_claims=settings.MAX_CLAIMS_PER_SECTION,
-                words_per_minute=settings.SCRIPT_WORDS_PER_MINUTE,
-            ),
-        )
+        async def _write(
+            corrections: Sequence[str] = (),
+            *,
+            unit: _SectionUnit = unit,
+            topic_brief: SectionTopicBrief = topic_brief,
+            continuity: SectionContinuity = continuity,
+        ) -> list[ScriptSegmentDraft]:
+            drafted = await record_call(
+                report,
+                kind,
+                llm.compose_script_section(
+                    brief,
+                    topic_brief,
+                    list(unit.claims),
+                    continuity,
+                    duration_ms=unit.duration_ms,
+                    unit_index=unit.unit_index,
+                    unit_count=unit.unit_count,
+                    max_segments=settings.MAX_SCRIPT_SEGMENTS,
+                    max_claims=settings.MAX_CLAIMS_PER_SECTION,
+                    words_per_minute=settings.SCRIPT_WORDS_PER_MINUTE,
+                    **({"corrections": corrections} if corrections else {}),
+                ),
+            )
+            return [replace(segment, topic_id=unit.topic.id) for segment in drafted]
 
-        stamped = [replace(segment, topic_id=unit.topic.id) for segment in segments]
+        stamped = await _write()
+        problems = _invalid_segments(stamped, unit, settings=settings, grounding=grounding)
+        hollow = _is_hollow(stamped, unit.claims)
+        rewrites = 0
+        while (problems or hollow) and rewrites < MAX_SECTION_REWRITES:
+            # A bounded rewrite, told exactly what was wrong. Nothing is left out and nothing is
+            # accepted on the strength of a rewrite: it must pass the very same checks, and if it
+            # still does not after the last one the generation fails exactly as it always did.
+            rewrites += 1
+            corrections = _corrections_for(stamped, problems, unit.claims)
+            if hollow:
+                corrections.append(HOLLOW_SECTION_CORRECTION)
+            log.warning(
+                "scripts.section_rewritten",
+                topic=unit.topic.title,
+                rejected=len(problems),
+                hollow=hollow,
+                rewrite=rewrites,
+            )
+            if retries is not None:
+                retries.append(
+                    {
+                        "topic": unit.topic.title,
+                        "rewrite": rewrites,
+                        "rejected_passages": len(problems),
+                        "hollow": hollow,
+                        "problems": corrections,
+                    }
+                )
+            stamped = await _write(corrections)
+            problems = _invalid_segments(stamped, unit, settings=settings, grounding=grounding)
+            hollow = _is_hollow(stamped, unit.claims)
+        if problems:
+            raise problems[0][1]
+        if hollow:
+            raise HollowSectionError(
+                f"The section written for the topic '{unit.topic.title}' cites none of its "
+                "verified claims, so the topic is not explained from the source. Generate the "
+                "script again."
+            )
         all_segments.extend(stamped)
         if unit.unit_index == unit.unit_count - 1:
             previous_topic_title = unit.topic.title
@@ -694,7 +868,9 @@ async def _generate_and_attach(
     claims_by_topic: dict[UUID, list[ClaimVerificationRecord]] = {}
     for topic in topics:
         supported = await claim_verifications_repo.list_supported_by_topic(
-            session, project_id=project_id, topic_id=topic.id
+            session,
+            project_id=project_id,
+            topic_id=topic.id,
         )
         # Defence in depth: enqueue-time already required every one of these
         # topics to have supported evidence; claims are append-only, so this
@@ -745,6 +921,17 @@ async def _generate_and_attach(
     )
     outline_by_topic = {topic.topic_id: topic for topic in outline_draft.topics}
 
+    # What the wording may draw on: for each topic, its title and every claim the writer was shown
+    # for it; for the lesson as a whole, the project's and the topics' own titles.
+    grounding = GroundingReference(
+        topic_texts={
+            unit.topic.id: " ".join([unit.topic.title, *(claim.text for claim in unit.claims)])
+            for unit in units
+        },
+        frame_text=" ".join([project.title, *(topic.title for topic in topics)]),
+    )
+    retried: list[dict[str, object]] = []
+
     segments = await _generate_units(
         llm,
         brief,
@@ -757,10 +944,13 @@ async def _generate_and_attach(
         payload=payload,
         report=report,
         kind="script_section",
+        grounding=grounding,
+        retries=retried,
     )
 
     estimated_total = sum(segment.estimated_duration_ms for segment in segments)
     correction_applied = False
+    correction_failed: str | None = None
     if settings.MAX_SCRIPT_CORRECTION_ATTEMPTS >= 1 and _outside_tolerance(
         estimated_total, project.target_duration_ms, settings.SCRIPT_DURATION_TOLERANCE
     ):
@@ -771,21 +961,36 @@ async def _generate_and_attach(
         rescaled_units = [
             replace(unit, duration_ms=max(1, round(unit.duration_ms * factor))) for unit in units
         ]
-        segments = await _generate_units(
-            llm,
-            brief,
-            outline_draft.title,
-            rescaled_units,
-            outline_by_topic,
-            settings,
-            sessionmaker=sessionmaker,
-            job_id=job_id,
-            payload=payload,
-            report=report,
-            kind="script_correction",
-        )
-        estimated_total = sum(segment.estimated_duration_ms for segment in segments)
-        correction_applied = True
+        corrected_retries: list[dict[str, object]] = []
+        try:
+            corrected = await _generate_units(
+                llm,
+                brief,
+                outline_draft.title,
+                rescaled_units,
+                outline_by_topic,
+                settings,
+                sessionmaker=sessionmaker,
+                job_id=job_id,
+                payload=payload,
+                report=report,
+                kind="script_correction",
+                grounding=grounding,
+                retries=corrected_retries,
+            )
+        except (UnsourcedSegmentError, UngroundedSegmentError, HollowSectionError) as exc:
+            # The correction pass only tunes the length; the first draft already passed every
+            # section check. A rewrite that cannot satisfy those same checks is not accepted - and
+            # it must not cost the valid draft either: the first draft is kept, unchanged, and the
+            # reason is recorded. Nothing is relaxed: only checked text is ever used.
+            correction_failed = str(exc)
+            log.warning("scripts.correction_pass_failed", reason=correction_failed)
+        else:
+            segments = corrected
+            # Only the pass that is kept describes the script that is kept.
+            retried = corrected_retries
+            estimated_total = sum(segment.estimated_duration_ms for segment in segments)
+            correction_applied = True
         # Duration is a target, not a hard gate (rule: TTS does not exist yet,
         # so this is a WPM estimate): the result is accepted from here on
         # regardless of whether it is still outside tolerance.
@@ -799,18 +1004,23 @@ async def _generate_and_attach(
     draft = ScriptDraft(
         title=outline_draft.title, segments=reindexed, estimated_duration_ms=estimated_total
     )
-    # What the wording may draw on: for each topic, its title and every claim the writer was shown
-    # for it; for the lesson as a whole, the project's and the topics' own titles.
-    grounding = GroundingReference(
-        topic_texts={
-            unit.topic.id: " ".join([unit.topic.title, *(claim.text for claim in unit.claims)])
-            for unit in units
-        },
-        frame_text=" ".join([project.title, *(topic.title for topic in topics)]),
-    )
+    all_claim_texts = _claim_texts([claim for unit in units for claim in unit.claims])
     validated = filter_and_validate(
-        draft, supported_claim_ids, settings.SCRIPT_WORDS_PER_MINUTE, grounding=grounding
+        draft,
+        supported_claim_ids,
+        settings.SCRIPT_WORDS_PER_MINUTE,
+        grounding=grounding,
+        claim_texts=all_claim_texts,
     )
+    weak_citations = []
+    for segment in validated.segments:
+        coverage = weak_citation_coverage(
+            segment.narration_text, segment.claim_verification_ids, all_claim_texts
+        )
+        if coverage is not None and coverage < WEAK_CITATION_COVERAGE:
+            weak_citations.append(
+                {"segment_index": segment.segment_index, "coverage": round(coverage, 2)}
+            )
 
     await _report_progress(sessionmaker, job_id=job_id, base_payload=payload, stage="finalising")
 
@@ -835,6 +1045,14 @@ async def _generate_and_attach(
         "duration_difference_ms": difference,
         "duration_difference_pct": round(difference / target * 100, 1) if target else 0.0,
         "correction_applied": correction_applied,
+        # Why the optional length-correction pass was dropped and the first draft kept, if it was.
+        "correction_failed": correction_failed,
+        # Sections whose first draft broke a script rule and were rewritten once, with what was
+        # wrong; a rewrite that still broke a rule would have failed the generation.
+        "section_retries": retried,
+        # Cited segments whose cited claims cover little of their wording: for the reviewer's
+        # second look, never a rejection (an analogy legitimately adds words).
+        "weak_citation_segments": weak_citations,
         "input_tokens": report.total.input_tokens or 0,
         "output_tokens": report.total.output_tokens or 0,
         "usage": report.as_dict(),
