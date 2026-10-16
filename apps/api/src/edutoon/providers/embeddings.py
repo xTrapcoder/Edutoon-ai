@@ -18,6 +18,7 @@ from edutoon.domain.embedding_batches import (
     pool_vectors,
     split_oversized,
 )
+from edutoon.providers.ollama import LocalEmbeddingsClient
 from edutoon.providers.retry import RetryPolicy, retry_policy_from_settings, retry_transient
 
 log = structlog.get_logger()
@@ -45,7 +46,7 @@ class Embeddings:
 
     def __init__(
         self,
-        client: AsyncOpenAI,
+        client: AsyncOpenAI | LocalEmbeddingsClient,
         *,
         model: str,
         limits: BatchLimits | None = None,
@@ -140,11 +141,25 @@ def embedding_limits_from_settings(settings: Settings) -> BatchLimits:
     return BatchLimits(
         max_inputs=settings.EMBEDDING_MAX_INPUTS_PER_REQUEST,
         max_request_tokens=settings.EMBEDDING_MAX_REQUEST_TOKENS,
+        max_input_tokens=settings.EMBEDDING_MAX_INPUT_TOKENS,
     )
 
 
 def embeddings_from_settings(settings: Settings) -> Embeddings:
-    """The embeddings client the API and the worker both use, built from configuration."""
+    """The embeddings client the API and the worker both use, built from configuration.
+    ``AI_BACKEND=local`` embeds with an Ollama model instead of OpenAI
+    (:mod:`edutoon.providers.ollama`); its vectors are zero-padded to the column's width."""
+    if settings.AI_BACKEND == "local":
+        return Embeddings(
+            LocalEmbeddingsClient(
+                base_url=settings.OLLAMA_BASE_URL,
+                timeout_seconds=settings.OLLAMA_TIMEOUT_SECONDS,
+                num_ctx=max(2048, settings.EMBEDDING_MAX_INPUT_TOKENS),
+            ),
+            model=settings.EMBEDDING_MODEL,
+            limits=embedding_limits_from_settings(settings),
+            retry=retry_policy_from_settings(settings),
+        )
     return get_embeddings_client(
         api_key=settings.OPENAI_API_KEY,
         model=settings.EMBEDDING_MODEL,

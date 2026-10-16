@@ -105,14 +105,22 @@ def test_the_tool_schema_bounds_scenes_by_max_scenes():
     assert schema["properties"]["scenes"]["maxItems"] == 4
 
 
-def test_the_tool_schema_offers_every_template_as_an_enum_choice():
-    from edutoon.domain.storyboard_template import TEMPLATES
+def _scene_variants() -> list[dict]:
+    """The tool's per-template scene schemas: each scene is one of these (``anyOf``), so a model
+    that decodes against the schema can only write content its template accepts."""
     from edutoon.providers.llm import _storyboard_tool
 
-    schema = _storyboard_tool(4)["input_schema"]
+    items = _storyboard_tool(4)["input_schema"]["properties"]["scenes"]["items"]
+    return items["anyOf"]
 
-    template_enum = schema["properties"]["scenes"]["items"]["properties"]["template"]["enum"]
-    assert set(template_enum) == TEMPLATES
+
+def test_the_tool_schema_offers_every_template_as_an_enum_choice():
+    from edutoon.domain.storyboard_template import TEMPLATES
+
+    offered = [variant["properties"]["template"]["enum"] for variant in _scene_variants()]
+    assert all(len(choice) == 1 for choice in offered)  # each variant is exactly one template
+    assert {choice[0] for choice in offered} == TEMPLATES
+    assert len(offered) == len(TEMPLATES)  # no template twice
 
 
 async def test_the_narration_text_is_sent_in_the_request(monkeypatch):
@@ -315,24 +323,35 @@ def _visual_scene(visual: object) -> dict[str, Any]:
     }
 
 
+def _illustrated_variants() -> list[dict]:
+    return [
+        variant
+        for variant in _scene_variants()
+        if "illustration" in variant["properties"]["content"]["properties"]
+    ]
+
+
 def test_the_tool_schema_gives_the_model_the_generated_visual_schema():
     from edutoon.domain.visual_schema import build_visual_json_schema
-    from edutoon.providers.llm import _storyboard_tool
 
-    scene = _storyboard_tool(4)["input_schema"]["properties"]["scenes"]["items"]
-    content = scene["properties"]["content"]
-    assert (
-        content["properties"]["illustration"]["properties"]["visual"] == build_visual_json_schema()
-    )
+    illustrated = _illustrated_variants()
+    # The three templates with an illustration slot - and only those - carry the visual schema.
+    assert {v["properties"]["template"]["enum"][0] for v in illustrated} == {
+        "labelled_diagram",
+        "split_text_illustration",
+        "full_bleed_illustration",
+    }
+    for variant in illustrated:
+        illustration = variant["properties"]["content"]["properties"]["illustration"]
+        assert illustration["properties"]["visual"] == build_visual_json_schema()
 
 
 def test_the_visual_the_model_is_shown_is_closed():
-    from edutoon.providers.llm import _storyboard_tool
-
-    scene = _storyboard_tool(4)["input_schema"]["properties"]["scenes"]["items"]
-    visual = scene["properties"]["content"]["properties"]["illustration"]["properties"]["visual"]
-    assert len(visual["anyOf"]) == 5
-    assert all(branch["additionalProperties"] is False for branch in visual["anyOf"])
+    for variant in _illustrated_variants():
+        illustration = variant["properties"]["content"]["properties"]["illustration"]
+        visual = illustration["properties"]["visual"]
+        assert len(visual["anyOf"]) == 5
+        assert all(branch["additionalProperties"] is False for branch in visual["anyOf"])
 
 
 def test_the_output_budget_covers_a_visual_on_every_scene_and_stays_under_the_cap():

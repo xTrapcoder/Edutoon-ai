@@ -99,6 +99,26 @@ class Settings(BaseSettings):
     LLM_THINKING: Literal["disabled", "omit"] = "disabled"
     LLM_TIMEOUT_SECONDS: float = Field(default=300.0, ge=10)
     #
+    # Which backend answers the language-model and embedding calls. ``cloud`` (the default, and what
+    # every deployment before this setting used) is Anthropic and OpenAI. ``local`` is an Ollama
+    # server on this machine or network: free to run, no key, nothing leaves the machine
+    # (``providers.ollama``). OPENAI_API_KEY and ANTHROPIC_API_KEY stay required settings but a
+    # local backend never sends them anywhere - leave the placeholders. LLM_MODEL,
+    # SCRIPT_LLM_MODEL and EMBEDDING_MODEL then name Ollama models (``ollama pull <name>``); use the
+    # same model for the first two so Ollama does not swap models in memory between jobs.
+    # OLLAMA_NUM_CTX is the context window requested for every call: Ollama's own default is small
+    # and silently cuts a long prompt, so a call whose prompt fills it is refused, never trusted.
+    # OLLAMA_DISABLE_THINKING sends ``think: false`` for a model that thinks by default (it is
+    # rejected by a model that does not think, so it is off by default). EMBEDDING_MAX_INPUT_TOKENS
+    # is the largest single embedding input (a byte-length bound, see ``domain.embedding_batches``);
+    # lower it to fit a local embedding model with a smaller context.
+    AI_BACKEND: Literal["cloud", "local"] = "cloud"
+    OLLAMA_BASE_URL: str = "http://localhost:11434"
+    OLLAMA_NUM_CTX: int = Field(default=16384, ge=2048, le=131_072)
+    OLLAMA_TIMEOUT_SECONDS: float = Field(default=900.0, ge=10)
+    OLLAMA_DISABLE_THINKING: bool = False
+    EMBEDDING_MAX_INPUT_TOKENS: int = Field(default=8192, ge=4, le=8192)
+    #
     # The in-process spend guard (``services.spend_guard``; the application has no billing, so
     # the provider consoles' own spend limits are the real ceiling - set them before any real
     # testing). MAX_PROVIDER_CALLS_PER_JOB is a tripwire against a runaway loop, not a budget: no

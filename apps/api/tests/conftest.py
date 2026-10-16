@@ -45,6 +45,13 @@ _TEST_ENV = {
 for key, value in _TEST_ENV.items():
     os.environ.setdefault(key, value)
 
+# A test run never reads a developer's own ``.env``: it would let choices made for local work (the
+# local AI backend, model names, smaller limits) change what the tests prove. Everything a test
+# needs is set above or is the setting's default.
+from edutoon.core.config import Settings  # noqa: E402
+
+Settings.model_config["env_file"] = None
+
 # Unconditional: a bucket named in the shell or in ``.env`` must never win in a test run.
 storage_isolation.point_settings_at_scratch_buckets()
 

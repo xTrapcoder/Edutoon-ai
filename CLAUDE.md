@@ -367,6 +367,15 @@ development database is still at 0020 until the owner runs `make migrate`.** The
 sweeper must not run alongside any other test session (see the design doc). Not built: a front end for
 assessments, reporting, certificates, multi-select, a watched-video gate.
 
+**Local AI backend (2026-10-15) - the free path for PDF projects.** `AI_BACKEND=local` sends every
+language-model and embedding call to an Ollama server instead of Anthropic/OpenAI (`providers/ollama.py`
+behind the two existing factories; schema-constrained `format` instead of a forced tool call; embeddings
+zero-padded to `vector(1536)`, no migration; `LocalModelError` with fixed messages). `cloud` stays the
+default and is unchanged. Detail: `apps/api/README.md`, "Local AI backend". **Built and unit-tested with
+the HTTP call stubbed; no Ollama model has been run through it yet** - `scripts/check_local_ai.py` is the
+proof still to be run (judge reliability, schema acceptance, speed). The two API keys remain required
+settings; a local backend never uses them.
+
 **Phase 12 has not started and needs the owner's explicit approval.**
 
 ## Commands

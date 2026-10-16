@@ -17,6 +17,7 @@ dependencies = [
     "pyjwt[crypto]>=2.13.0",
     "boto3",
     "pypdf",
+    "httpx",
     "openai",
     "pgvector",
     "anthropic",

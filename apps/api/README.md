@@ -1654,6 +1654,69 @@ length. Expanding these is a later, targeted task after the first controlled rea
 Planned, not done: a controlled educational PDF, a 3-5 minute target, the current model, usage and stop-reason
 capture, a provenance review, measured against target duration, and a manual review of the video.
 
+## Local AI backend (free, no API key)
+
+`AI_BACKEND=local` makes the language-model and embedding calls go to an [Ollama](https://ollama.com)
+server on this machine instead of Anthropic and OpenAI: no key, no recurring cost, and nothing leaves
+the machine. `AI_BACKEND=cloud` (the default) is unchanged. Everything else - Postgres, MinIO, Piper,
+FFmpeg, the PowerPoint path - was already local.
+
+**How it fits.** The whole backend is `providers/ollama.py`, behind the two factories
+(`llm_from_settings`, `embeddings_from_settings`). It offers the one method `LLM` calls on an Anthropic
+client and the one `Embeddings` calls on an OpenAI client and returns what those SDKs would, so every
+prompt, response check, id filter and domain rule runs unchanged:
+
+- **Structured output, not a forced tool call.** Ollama's Anthropic-compatible endpoint has no
+  `tool_choice`, and every language task here is a forced tool call. The tool's own `input_schema` is
+  sent as Ollama's `format` (grammar-constrained JSON) and the reply is wrapped as a `tool_use` block.
+- **Refused rather than trusted.** A reply cut off at the output limit is the existing "cut off" error.
+  A prompt that fills the context window (`OLLAMA_NUM_CTX`) is refused: Ollama would silently drop the
+  start of it. An embedding input too long for the model is an error (`truncate: false`).
+- **Embeddings are zero-padded to 1536.** The column is `vector(1536)`; a narrower local model's vectors
+  are padded with zeros, which changes no dot product and no norm and so no cosine similarity (a test
+  shows it). A wider one is an error. No migration.
+- Failures are `LocalModelError` (a kind and a status, never the server's text) with fixed messages;
+  unreachable, timed-out and 5xx are retried by the one existing policy, a missing model is not.
+
+**Set up** (nothing here is automatic - install Ollama yourself):
+
+```bash
+ollama pull qwen2.5:7b-instruct   # the language model (about 4.7 GB)
+ollama pull bge-m3                # the embedding model (1024 wide, about 1.2 GB)
+```
+
+```dotenv
+# apps/api/.env  (keep the two placeholder API keys - a local backend never uses them)
+AI_BACKEND=local
+LLM_MODEL=qwen2.5:7b-instruct
+SCRIPT_LLM_MODEL=qwen2.5:7b-instruct   # the same model, so Ollama does not swap models between jobs
+EMBEDDING_MODEL=bge-m3
+# Smaller jobs for a small machine (a 4 GB GPU runs a 7B model partly on the CPU):
+TOPIC_INPUT_BUDGET_CHARS=32000
+MAX_TOPICS_PER_EXTRACTION=12
+MAX_CLAIMS_PER_TOPIC=4
+```
+
+Then restart the API **and the worker** (a worker started earlier keeps the old settings), and prove it
+works with your models before trusting a project to it:
+
+```bash
+cd apps/api && uv run python scripts/check_local_ai.py
+```
+
+It checks the server and models, embeddings, the claim judge on a supported, a contradicted and an
+unmentioned claim, and the three largest structured answers (topics, candidate claims, storyboard
+scenes), with timings. **Nothing about a local model's quality or speed is verified until it passes
+on your machine** - the unit tests (`tests/test_ollama_backend.py`) prove only how our code handles a
+reply, with the HTTP call stubbed.
+
+**Expect, compared with a cloud model:** slower calls (a job makes many, one after another); weaker
+scripts and storyboards and more rejected answers; and a less reliable claim judge. The judge is the one
+to watch: the code requires a "supported" verdict to cite a passage but does not itself check that the
+passage supports the claim, so a weak model can wrongly approve. Chunks already indexed with another
+embedding model are not comparable with new ones - use a new project after changing `EMBEDDING_MODEL`.
+`OLLAMA_DISABLE_THINKING=True` is only for a model that thinks by default (such as `qwen3`).
+
 ## Testing, and what is not yet verified against a real provider
 
 ```bash

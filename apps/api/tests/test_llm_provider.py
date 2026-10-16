@@ -665,7 +665,9 @@ async def test_compose_script_section_puts_topic_and_continuity_in_the_prompt(mo
     assert "Introduction" in content
     assert "sets the stage" in content
     assert "Calvin cycle" in content
-    assert "[cl1]" in content and "[cl2]" in content
+    # The model sees short handles, not the 36-character ids (which it can mistype).
+    assert "[c1]" in content and "[c2]" in content
+    assert "cl1" not in content
 
 
 # --- the language a script is written in --------------------------------------------------
