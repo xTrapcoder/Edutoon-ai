@@ -30,6 +30,7 @@ from edutoon.api.policies import require_admin_for_project
 from edutoon.api.schemas.jobs import JobResponse
 from edutoon.api.schemas.source_chunks import SourceChunkListResponse, SourceChunkResponse
 from edutoon.api.schemas.uploaded_sources import (
+    PastedTextRequest,
     UploadedSourceListResponse,
     UploadedSourceResponse,
 )
@@ -167,6 +168,53 @@ async def upload_source(
             bucket=settings.BUCKET_UPLOADS,
             max_pages=settings.MAX_PDF_PAGES,
             max_slides=settings.MAX_DECK_SLIDES,
+        )
+        return status.HTTP_201_CREATED, UploadedSourceResponse.from_record(source).model_dump(
+            mode="json"
+        )
+
+    _, response_body = await idempotency_service.run_with_idempotency(
+        redis,
+        owner_id=current_user.id,
+        method="POST",
+        path=request.url.path,
+        idempotency_key=idempotency_key,
+        handler=_execute,
+        commit=session.commit,
+    )
+    return UploadedSourceResponse.model_validate(response_body)
+
+
+@router.post("/text", status_code=status.HTTP_201_CREATED)
+async def paste_text_source(
+    request: Request,
+    project_id: UUID,
+    body: PastedTextRequest,
+    current_user: CurrentUser,
+    session: Session,
+    redis: RedisDep,
+    storage: StorageDep,
+    idempotency_key: IdempotencyKey,
+) -> UploadedSourceResponse:
+    """Add text the owner pasted as the source of a ``text`` project. It is cleaned, cut into
+    chunks and indexed exactly like a PDF's pages, so every later stage - topics, claim
+    verification, script - checks against it. A project that is not a ``text`` project is a 409;
+    text too short, too long or without words is a 400; identical text sent twice is a 409."""
+    project = await projects_service.get_project(
+        session, project_id=project_id, owner_id=current_user.id
+    )
+    settings = get_settings()
+
+    async def _execute() -> tuple[int, Any]:
+        source = await uploaded_sources_service.upload_pasted_text(
+            session,
+            storage,
+            project_id=project_id,
+            project_source_type=project.source_type,
+            uploader_id=current_user.id,
+            title=body.title,
+            text=body.text,
+            bucket=settings.BUCKET_UPLOADS,
         )
         return status.HTTP_201_CREATED, UploadedSourceResponse.from_record(source).model_dump(
             mode="json"

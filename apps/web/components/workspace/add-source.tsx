@@ -1,15 +1,21 @@
 'use client';
 
-import { FileUp, Plus } from 'lucide-react';
+import { ClipboardPaste, FileUp, Plus } from 'lucide-react';
 import { useState } from 'react';
 import { toast } from 'sonner';
 import { FileDropzone } from '@/components/wizard/file-dropzone';
 import { KeywordInput } from '@/components/wizard/keyword-input';
-import { fileProblem, mergeKeywords, type FileKind } from '@/components/wizard/wizard-model';
+import {
+  fileProblem,
+  mergeKeywords,
+  textProblem,
+  type FileKind,
+} from '@/components/wizard/wizard-model';
 import { Button } from '@/components/ui/button';
 import { Alert } from '@/components/ui/feedback';
+import { Field, Textarea } from '@/components/ui/field';
 import { describeError } from '@/lib/api/errors';
-import { useAddKeywords, useUploadSource } from '@/lib/api/queries';
+import { useAddKeywords, usePasteText, useUploadSource } from '@/lib/api/queries';
 
 /**
  * Upload a PDF or a PowerPoint deck to an existing project - for one that has none yet, or
@@ -71,6 +77,70 @@ export function AddSourceForm({ projectId, kind = 'pdf' }: { projectId: string; 
         leadingIcon={<FileUp className="size-4" aria-hidden />}
       >
         Upload {word}
+      </Button>
+    </div>
+  );
+}
+
+/** Paste the material for a project made from pasted text that has none yet. */
+export function PasteTextForm({ projectId, title }: { projectId: string; title: string }) {
+  const [text, setText] = useState('');
+  const [showProblem, setShowProblem] = useState(false);
+  const paste = usePasteText(projectId);
+  const problem = textProblem(text);
+
+  const submit = () => {
+    if (problem) {
+      setShowProblem(true);
+      return;
+    }
+    paste.mutate(
+      { title, text },
+      {
+        onSuccess: () => {
+          setText('');
+          setShowProblem(false);
+          toast.success('Text added');
+        },
+      },
+    );
+  };
+
+  const copy = paste.isError ? describeError(paste.error, { action: 'add that text' }) : null;
+
+  return (
+    <div className="space-y-4">
+      <Field
+        label="Your text"
+        required
+        error={showProblem ? problem : null}
+        hint="Every claim in the video is checked against this text, and nothing is added from outside it."
+      >
+        {(control) => (
+          <Textarea
+            {...control}
+            rows={10}
+            value={text}
+            disabled={paste.isPending}
+            placeholder="Paste or type the material here"
+            onChange={(event) => {
+              setText(event.target.value);
+              paste.reset();
+            }}
+          />
+        )}
+      </Field>
+      {copy ? (
+        <Alert tone="danger" title={copy.title}>
+          {copy.message}
+        </Alert>
+      ) : null}
+      <Button
+        onClick={submit}
+        loading={paste.isPending}
+        leadingIcon={<ClipboardPaste className="size-4" aria-hidden />}
+      >
+        Add text
       </Button>
     </div>
   );

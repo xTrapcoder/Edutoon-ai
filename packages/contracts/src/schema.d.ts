@@ -550,6 +550,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/sources/text": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Paste Text Source
+         * @description Add text the owner pasted as the source of a ``text`` project. It is cleaned, cut into
+         *     chunks and indexed exactly like a PDF's pages, so every later stage - topics, claim
+         *     verification, script - checks against it. A project that is not a ``text`` project is a 409;
+         *     text too short, too long or without words is a 400; identical text sent twice is a 409.
+         */
+        post: operations["paste_text_source_v1_projects__project_id__sources_text_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/sources/{source_id}/index": {
         parameters: {
             query?: never;
@@ -1758,6 +1781,20 @@ export interface components {
             locked: boolean;
             lock: components["schemas"]["ModuleLockResponse"] | null;
         };
+        /**
+         * PastedTextRequest
+         * @description The body of ``POST .../sources/text``: material to build a video from, pasted as text.
+         *
+         *     ``title`` names the source in lists (a default is used when it is blank). The bounds on the
+         *     text itself, after cleaning, are ``domain.pasted_text``'s; the ceiling here only stops a body
+         *     far larger than any accepted text from being processed at all.
+         */
+        PastedTextRequest: {
+            /** Title */
+            title?: string | null;
+            /** Text */
+            text: string;
+        };
         /** ProjectCreateRequest */
         ProjectCreateRequest: {
             /** Title */
@@ -1766,7 +1803,7 @@ export interface components {
              * Source Type
              * @enum {string}
              */
-            source_type: "pdf" | "topic" | "pptx";
+            source_type: "pdf" | "topic" | "pptx" | "text";
             /** Description */
             description?: string | null;
             /**
@@ -1814,7 +1851,7 @@ export interface components {
              * Source Type
              * @enum {string}
              */
-            source_type: "pdf" | "topic" | "pptx";
+            source_type: "pdf" | "topic" | "pptx" | "text";
             /**
              * Status
              * @enum {string}
@@ -2502,7 +2539,7 @@ export interface components {
              * Kind
              * @enum {string}
              */
-            kind: "pdf" | "pptx";
+            kind: "pdf" | "pptx" | "text";
             /** Original Filename */
             original_filename: string;
             /** Content Type */
@@ -4139,6 +4176,44 @@ export interface operations {
         requestBody: {
             content: {
                 "multipart/form-data": components["schemas"]["Body_upload_source_v1_projects__project_id__sources_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UploadedSourceResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    paste_text_source_v1_projects__project_id__sources_text_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "idempotency-key": string;
+                authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PastedTextRequest"];
             };
         };
         responses: {

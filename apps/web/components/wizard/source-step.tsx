@@ -1,10 +1,10 @@
 'use client';
 
-import { FilePlus2, FileText, ListChecks, Presentation } from 'lucide-react';
+import { ClipboardPaste, FilePlus2, FileText, ListChecks, Presentation } from 'lucide-react';
 import { useId } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardBody, CardHeader } from '@/components/ui/card';
-import { Field, Input } from '@/components/ui/field';
+import { Field, Input, Textarea } from '@/components/ui/field';
 import { RadioCard } from '@/components/ui/radio-card';
 import { FileDropzone } from './file-dropzone';
 import { KeywordInput } from './keyword-input';
@@ -12,11 +12,14 @@ import {
   fileKindOf,
   isModeAvailable,
   KEYWORD_ONLY_UNSUPPORTED_MESSAGE,
+  MAX_TEXT_CHARS,
   MAX_TITLE_CHARS,
+  MIN_TEXT_CHARS,
   suggestTitle,
   usesDeck,
   usesFile,
   usesKeywords,
+  usesText,
   type SourceErrors,
   type SourceMode,
   type WizardValues,
@@ -51,9 +54,15 @@ const MODES: readonly {
     icon: Presentation,
   },
   {
+    value: 'text',
+    title: 'Paste text',
+    description: 'Paste the material to explain - every claim is checked against it',
+    icon: ClipboardPaste,
+  },
+  {
     value: 'keywords',
     title: 'Keywords',
-    description: 'Not available yet - use a PDF and add keywords to guide it',
+    description: 'Not available yet - paste text, or add keywords to a PDF',
     icon: ListChecks,
   },
   {
@@ -110,7 +119,7 @@ export function SourceStep({
             description="What should the video be about?"
           />
           <CardBody className="space-y-6">
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
               {MODES.map((mode) => (
                 <RadioCard
                   key={mode.value}
@@ -131,8 +140,8 @@ export function SourceStep({
             <p className="text-[13px] text-ink-500">
               Keyword-only projects are not supported yet: every claim in a video is checked against
               your own source material, and keywords alone give nothing to check against. Upload a
-              PDF or a PowerPoint deck; with a PDF you can also add keywords to steer which topics
-              it covers.
+              PDF or a PowerPoint deck, or paste your own text; with a PDF you can also add keywords
+              to steer which topics it covers.
             </p>
             {errors.mode ? (
               <p role="alert" className="text-[13px] font-medium text-danger-700">
@@ -172,6 +181,36 @@ export function SourceStep({
                       });
                     }}
                   />
+                </section>
+              ) : null}
+
+              {usesText(values.mode) ? (
+                <section aria-labelledby={`${name}-text`} className="space-y-3">
+                  <h3 id={`${name}-text`} className="text-sm font-semibold text-ink-950">
+                    Paste your material
+                  </h3>
+                  <p className="text-[13px] text-ink-500">
+                    Paste the text the video should be about - notes, an article, a chapter. Every
+                    claim in the video is checked against it, and nothing is added from outside. A
+                    topic name on its own is not enough: there would be nothing to check against.
+                  </p>
+                  <Field
+                    label="Your text"
+                    required
+                    error={errors.text}
+                    hint={`${values.text.trim().length.toLocaleString('en-GB')} characters - at least ${MIN_TEXT_CHARS}, at most ${MAX_TEXT_CHARS.toLocaleString('en-GB')}.`}
+                  >
+                    {(control) => (
+                      <Textarea
+                        {...control}
+                        rows={12}
+                        value={values.text}
+                        disabled={disabled}
+                        placeholder="Paste or type the material here"
+                        onChange={(event) => onChange({ text: event.target.value })}
+                      />
+                    )}
+                  </Field>
                 </section>
               ) : null}
 

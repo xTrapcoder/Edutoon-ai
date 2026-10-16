@@ -23,9 +23,10 @@ def project_storage_prefix(project_id: UUID) -> str:
     return f"projects/{project_id}/"
 
 
-def source_storage_key(project_id: UUID, checksum_sha256: str) -> str:
-    """The key an uploaded PDF with this checksum is stored at."""
-    return f"{project_storage_prefix(project_id)}{checksum_sha256}.pdf"
+def source_storage_key(project_id: UUID, checksum_sha256: str, extension: str = "pdf") -> str:
+    """The key an uploaded source with this checksum is stored at (a PDF unless ``extension``
+    says otherwise; pasted text is stored as ``txt``)."""
+    return f"{project_storage_prefix(project_id)}{checksum_sha256}.{extension}"
 
 
 def belongs_to_project(key: str, project_id: UUID) -> bool:

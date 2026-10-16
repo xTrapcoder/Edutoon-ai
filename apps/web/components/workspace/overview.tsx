@@ -17,10 +17,10 @@ import { Card, CardBody, CardHeader } from '@/components/ui/card';
 import { ErrorState, Progress, Skeleton } from '@/components/ui/feedback';
 import { formatBytes, formatDateTime, formatDuration, pluralise } from '@/lib/format';
 import { languageLabel, orientationLabel } from '@/lib/generation-settings';
-import { isDeckProject, isFileProject, sourceWords } from '@/lib/source-kind';
+import { isDeckProject, isFileProject, isTextProject, sourceWords } from '@/lib/source-kind';
 import { STAGES, type StageId, type Tone } from '@/lib/workflow';
 import { ActivityCard } from './activity-card';
-import { AddSourceForm } from './add-source';
+import { AddSourceForm, PasteTextForm } from './add-source';
 import { DeleteProjectCard } from './delete-project';
 import { EditSettingsModal } from './edit-settings-modal';
 import { useWorkspaceContext } from './workspace-context';
@@ -160,7 +160,11 @@ function NextStepCard() {
         </div>
         {meta.busy ? <Progress label={guidance.title} /> : null}
         {showSourceForm ? (
-          <AddSourceForm projectId={project.id} kind={isDeckProject(project) ? 'pptx' : 'pdf'} />
+          isTextProject(project) ? (
+            <PasteTextForm projectId={project.id} title={project.title} />
+          ) : (
+            <AddSourceForm projectId={project.id} kind={isDeckProject(project) ? 'pptx' : 'pdf'} />
+          )
         ) : null}
       </CardBody>
     </Card>

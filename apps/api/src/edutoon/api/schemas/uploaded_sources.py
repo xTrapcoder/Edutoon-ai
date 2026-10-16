@@ -17,12 +17,13 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from edutoon.core.config import get_settings
+from edutoon.domain.pasted_text import MAX_CHARS
 from edutoon.services.uploaded_sources import UploadedSourceRecord
 
-SourceKind = Literal["pdf", "pptx"]
+SourceKind = Literal["pdf", "pptx", "text"]
 SourceStatus = Literal["pending", "processing", "parsed", "failed"]
 
 
@@ -38,6 +39,8 @@ def failure_reason(record: UploadedSourceRecord, *, max_pages: int) -> str | Non
         return None
     if record.kind == "pptx":
         return _deck_failure_reason(record)
+    if record.kind == "text":
+        return "The pasted text could not be used. Paste it again."
     if record.page_count is None:
         return (
             "This PDF could not be read. It may be damaged or password-protected; "
@@ -93,6 +96,20 @@ class UploadedSourceResponse(BaseModel):
         response = cls.model_validate(record)
         response.failure_reason = failure_reason(record, max_pages=get_settings().MAX_PDF_PAGES)
         return response
+
+
+class PastedTextRequest(BaseModel):
+    """The body of ``POST .../sources/text``: material to build a video from, pasted as text.
+
+    ``title`` names the source in lists (a default is used when it is blank). The bounds on the
+    text itself, after cleaning, are ``domain.pasted_text``'s; the ceiling here only stops a body
+    far larger than any accepted text from being processed at all.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: str | None = Field(default=None, max_length=200)
+    text: str = Field(min_length=1, max_length=MAX_CHARS * 2)
 
 
 class UploadedSourceListResponse(BaseModel):

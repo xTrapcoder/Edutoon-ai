@@ -3090,6 +3090,87 @@
         }
       }
     },
+    "/v1/projects/{project_id}/sources/text": {
+      "post": {
+        "tags": [
+          "uploaded-sources"
+        ],
+        "summary": "Paste Text Source",
+        "description": "Add text the owner pasted as the source of a ``text`` project. It is cleaned, cut into\nchunks and indexed exactly like a PDF's pages, so every later stage - topics, claim\nverification, script - checks against it. A project that is not a ``text`` project is a 409;\ntext too short, too long or without words is a 400; identical text sent twice is a 409.",
+        "operationId": "paste_text_source_v1_projects__project_id__sources_text_post",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255,
+              "title": "Idempotency-Key"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PastedTextRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadedSourceResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/sources/{source_id}/index": {
       "post": {
         "tags": [
@@ -7066,6 +7147,35 @@
         ],
         "title": "MyModuleResponse"
       },
+      "PastedTextRequest": {
+        "properties": {
+          "title": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "text": {
+            "type": "string",
+            "maxLength": 400000,
+            "minLength": 1,
+            "title": "Text"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "text"
+        ],
+        "title": "PastedTextRequest",
+        "description": "The body of ``POST .../sources/text``: material to build a video from, pasted as text.\n\n``title`` names the source in lists (a default is used when it is blank). The bounds on the\ntext itself, after cleaning, are ``domain.pasted_text``'s; the ceiling here only stops a body\nfar larger than any accepted text from being processed at all."
+      },
       "ProjectCreateRequest": {
         "properties": {
           "title": {
@@ -7077,7 +7187,8 @@
             "enum": [
               "pdf",
               "topic",
-              "pptx"
+              "pptx",
+              "text"
             ],
             "title": "Source Type"
           },
@@ -7186,7 +7297,8 @@
             "enum": [
               "pdf",
               "topic",
-              "pptx"
+              "pptx",
+              "text"
             ],
             "title": "Source Type"
           },
@@ -8944,7 +9056,8 @@
             "type": "string",
             "enum": [
               "pdf",
-              "pptx"
+              "pptx",
+              "text"
             ],
             "title": "Kind"
           },

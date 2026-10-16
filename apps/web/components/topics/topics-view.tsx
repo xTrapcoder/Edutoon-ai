@@ -12,11 +12,11 @@ import { useStartExtraction } from '@/lib/api/queries';
 import { claimsForTopic } from '@/lib/claims';
 import { pluralise } from '@/lib/format';
 import { isActiveJob, jobFailureMessage, latestJobOfKind, readExtractionSummary } from '@/lib/jobs';
-import { AddKeywordsForm, AddSourceForm } from '@/components/workspace/add-source';
+import { AddKeywordsForm, AddSourceForm, PasteTextForm } from '@/components/workspace/add-source';
 import { JobProgressCard, stepsForJob } from '@/components/workspace/job-progress';
 import { QueryGate } from '@/components/workspace/query-gate';
 import { useWorkspaceContext } from '@/components/workspace/workspace-context';
-import { isDeckProject, isFileProject, sourceWords } from '@/lib/source-kind';
+import { isDeckProject, isFileProject, isTextProject, sourceWords } from '@/lib/source-kind';
 import { ClaimExtractionPanel } from './claim-extraction-panel';
 import { TopicDetail } from './topic-detail';
 import { TopicList } from './topic-list';
@@ -149,7 +149,9 @@ function TopicsView() {
           icon={<FilePlus2 className="size-4" aria-hidden />}
         />
         <CardBody>
-          {isFileProject(project) ? (
+          {isTextProject(project) ? (
+            <PasteTextForm projectId={project.id} title={project.title} />
+          ) : isFileProject(project) ? (
             <AddSourceForm projectId={project.id} kind={isDeckProject(project) ? 'pptx' : 'pdf'} />
           ) : (
             <AddKeywordsForm projectId={project.id} />

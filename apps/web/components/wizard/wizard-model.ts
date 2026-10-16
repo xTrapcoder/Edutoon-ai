@@ -12,8 +12,11 @@ export const MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024;
 export const MAX_KEYWORDS = 30;
 export const MAX_KEYWORD_CHARS = 120;
 export const MAX_TITLE_CHARS = 200;
+/** Mirrors `domain.pasted_text` in the API: the least and most pasted text it accepts. */
+export const MIN_TEXT_CHARS = 300;
+export const MAX_TEXT_CHARS = 200_000;
 
-export type SourceMode = 'pdf' | 'pptx' | 'keywords' | 'both';
+export type SourceMode = 'pdf' | 'pptx' | 'text' | 'keywords' | 'both';
 
 /**
  * Whether a project can be built from keywords alone. It cannot yet: every claim in a video is
@@ -34,6 +37,8 @@ export interface WizardValues {
   mode: SourceMode;
   file: File | null;
   keywords: string[];
+  /** The pasted material, for the 'text' mode. */
+  text: string;
   orientation: Orientation;
   /** The target length in milliseconds - any whole number of seconds in range. */
   durationMs: number;
@@ -45,6 +50,7 @@ export const usesDeck = (mode: SourceMode): boolean => mode === 'pptx';
 /** Whether the project is made from an uploaded file (a PDF or a PowerPoint deck). */
 export const usesFile = (mode: SourceMode): boolean => usesPdf(mode) || usesDeck(mode);
 export const usesKeywords = (mode: SourceMode): boolean => mode === 'keywords' || mode === 'both';
+export const usesText = (mode: SourceMode): boolean => mode === 'text';
 
 /**
  * The API has three source types; "PDF + keywords" is a PDF project that also has keywords.
@@ -52,6 +58,7 @@ export const usesKeywords = (mode: SourceMode): boolean => mode === 'keywords' |
  */
 export function projectSourceType(mode: SourceMode): ProjectSourceType {
   if (mode === 'pptx') return 'pptx';
+  if (mode === 'text') return 'text';
   return mode === 'keywords' ? 'topic' : 'pdf';
 }
 
@@ -129,10 +136,22 @@ export function suggestTitle(fileName: string): string {
   return stem.length === 0 ? '' : stem.charAt(0).toUpperCase() + stem.slice(1);
 }
 
+/** A readable problem with pasted text, or null if it is fine. The API cleans the text first. */
+export function textProblem(text: string): string | null {
+  const length = text.trim().length;
+  if (length === 0) return 'Paste the material you want explained.';
+  if (length < MIN_TEXT_CHARS)
+    return `Paste at least ${MIN_TEXT_CHARS} characters so there is enough to check a video against - you have ${length}.`;
+  if (length > MAX_TEXT_CHARS)
+    return `That is ${length.toLocaleString('en-GB')} characters; the limit is ${MAX_TEXT_CHARS.toLocaleString('en-GB')}. Paste the parts you need.`;
+  return null;
+}
+
 export interface SourceErrors {
   title?: string;
   mode?: string;
   file?: string;
+  text?: string;
   keywords?: string;
 }
 
@@ -154,6 +173,10 @@ export function sourceErrors(values: WizardValues): SourceErrors {
       const problem = fileProblem(values.file, kind);
       if (problem) errors.file = problem;
     }
+  }
+  if (usesText(values.mode)) {
+    const problem = textProblem(values.text);
+    if (problem) errors.text = problem;
   }
   if (usesKeywords(values.mode) && values.keywords.length === 0) {
     errors.keywords = 'Add at least one keyword.';

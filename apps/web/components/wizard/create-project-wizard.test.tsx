@@ -174,6 +174,55 @@ describe('Create project wizard', () => {
     expect(calls[1]?.body).toEqual({ file: 'safety_induction.pptx' });
   });
 
+  it('creates a pasted-text project: no file, the text sent as the source, no keywords', async () => {
+    const calls: Call[] = shared.calls;
+    const text = 'Photosynthesis is how plants make food from light. '.repeat(10);
+    server.use(
+      http.post(`${API}/v1/projects`, async ({ request }) => {
+        calls.push({
+          path: 'project',
+          key: request.headers.get('idempotency-key'),
+          body: await request.json(),
+        });
+        return HttpResponse.json(project({ source_type: 'text' }), { status: 201 });
+      }),
+      http.post(`${API}/v1/projects/${PROJECT_ID}/sources/text`, async ({ request }) => {
+        calls.push({
+          path: 'text',
+          key: request.headers.get('idempotency-key'),
+          body: await request.json(),
+        });
+        return HttpResponse.json(source({ kind: 'text', page_count: null }), { status: 201 });
+      }),
+    );
+    renderWithClient(<CreateProjectWizard />);
+
+    await userEvent.type(screen.getByLabelText(/project title/i), 'Plants');
+    await userEvent.click(screen.getByRole('radio', { name: /^Paste text/ }));
+    expect(screen.queryByLabelText(/drag and drop/i)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Add a keyword')).not.toBeInTheDocument();
+
+    // Too little is refused before anything is sent, and says how much is needed.
+    await userEvent.click(screen.getByLabelText(/your text/i));
+    await userEvent.paste('Too short.');
+    await userEvent.click(screen.getByRole('button', { name: 'Next' }));
+    expect(await screen.findByText(/paste at least 300 characters/i)).toBeInTheDocument();
+    expect(calls).toHaveLength(0);
+
+    await userEvent.clear(screen.getByLabelText(/your text/i));
+    await userEvent.paste(text);
+    await userEvent.click(screen.getByRole('button', { name: 'Next' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Next' }));
+    expect(await screen.findByText('Pasted text')).toBeInTheDocument();
+    await userEvent.click(await screen.findByRole('button', { name: 'Create project' }));
+
+    await waitFor(() => expect(router.push).toHaveBeenCalledWith(`/projects/${PROJECT_ID}/topics`));
+    expect(calls.map((call) => call.path)).toEqual(['project', 'text']);
+    expect(calls[0]?.body).toMatchObject({ source_type: 'text', title: 'Plants' });
+    expect(calls[1]?.body).toEqual({ title: 'Plants', text });
+    expect(new Set(calls.map((call) => call.key)).size).toBe(2);
+  });
+
   it('says what is wrong with a file that is not a deck, including an older .ppt', async () => {
     renderWithClient(<CreateProjectWizard />);
     await userEvent.click(screen.getByRole('radio', { name: /^PowerPoint deck/ }));

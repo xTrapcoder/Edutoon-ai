@@ -6,9 +6,15 @@ import * as api from '@/lib/api/endpoints';
 import { newIdempotencyKey } from '@/lib/api/client';
 import { ApiError } from '@/lib/api/errors';
 import { queryKeys } from '@/lib/api/queries';
-import { projectSourceType, usesFile, usesKeywords, type WizardValues } from './wizard-model';
+import {
+  projectSourceType,
+  usesFile,
+  usesKeywords,
+  usesText,
+  type WizardValues,
+} from './wizard-model';
 
-export type CreationStepKey = 'project' | 'upload' | 'keywords';
+export type CreationStepKey = 'project' | 'upload' | 'text' | 'keywords';
 export type CreationStatus = 'pending' | 'running' | 'done' | 'error';
 
 export interface CreationStep {
@@ -20,6 +26,7 @@ export interface CreationStep {
 const LABELS: Record<CreationStepKey, string> = {
   project: 'Creating your project',
   upload: 'Uploading and reading your file',
+  text: 'Saving and reading your text',
   keywords: 'Saving your keywords',
 };
 
@@ -27,6 +34,7 @@ function planFor(values: WizardValues): CreationStepKey[] {
   return [
     'project',
     ...(usesFile(values.mode) ? (['upload'] as const) : []),
+    ...(usesText(values.mode) ? (['text'] as const) : []),
     ...(usesKeywords(values.mode) ? (['keywords'] as const) : []),
   ];
 }
@@ -39,7 +47,7 @@ function signatureOf(values: WizardValues): string {
 }
 
 /**
- * Creates a project in up to three requests: the project, then its file, then its keywords.
+ * Creates a project in up to three requests: the project, then its file (or pasted text), then its keywords.
  * Each request has its own idempotency key, kept while the same form is retried, so a request
  * whose outcome was unknown (a timeout) is replayed rather than done twice. If a later step
  * fails the project already exists: the failure is reported per step and the person can retry
@@ -59,6 +67,7 @@ export function useProjectCreation() {
     signature: string;
     project: string;
     upload: string;
+    text: string;
     keywords: string;
   } | null>(null);
 
@@ -73,6 +82,7 @@ export function useProjectCreation() {
         signature,
         project: newIdempotencyKey(),
         upload: newIdempotencyKey(),
+        text: newIdempotencyKey(),
         keywords: newIdempotencyKey(),
       };
     }
@@ -102,6 +112,12 @@ export function useProjectCreation() {
           setProjectId(project.id);
         } else if (step === 'upload' && projectIdRef.current && values.file) {
           await api.uploadSource(projectIdRef.current, values.file, attemptKeys.upload);
+        } else if (step === 'text' && projectIdRef.current) {
+          await api.pasteTextSource(
+            projectIdRef.current,
+            { title: values.title.trim(), text: values.text },
+            attemptKeys.text,
+          );
         } else if (step === 'keywords' && projectIdRef.current) {
           await api.addKeywords(projectIdRef.current, values.keywords, attemptKeys.keywords);
         }

@@ -6,14 +6,18 @@ import {
   KEYWORD_ONLY_SUPPORTED,
   KEYWORD_ONLY_UNSUPPORTED_MESSAGE,
   MAX_KEYWORDS,
+  MAX_TEXT_CHARS,
   mergeKeywords,
+  MIN_TEXT_CHARS,
   projectSourceType,
   settingsErrors,
   sourceErrors,
   suggestTitle,
+  textProblem,
   usesDeck,
   usesFile,
   usesKeywords,
+  usesText,
   type WizardValues,
 } from './wizard-model';
 
@@ -25,6 +29,7 @@ const values = (over: Partial<WizardValues> = {}): WizardValues => ({
   mode: 'pdf',
   file: pdf(),
   keywords: [],
+  text: '',
   orientation: 'horizontal',
   durationMs: 300_000,
   language: 'en-IN',
@@ -152,6 +157,33 @@ describe('PowerPoint decks', () => {
   it('asks for a deck, not a PDF, when none is chosen', () => {
     const errors = sourceErrors({ ...values(), mode: 'pptx', file: null });
     expect(errors.file).toBe('Choose a PowerPoint deck to upload.');
+  });
+});
+
+describe('pasted text', () => {
+  const enough = 'Plants make food from light. '.repeat(20);
+
+  it('is a project source of its own, needs no file and no keywords', () => {
+    expect(projectSourceType('text')).toBe('text');
+    expect(usesText('text')).toBe(true);
+    expect(usesFile('text')).toBe(false);
+    expect(usesKeywords('text')).toBe(false);
+    expect(isModeAvailable('text')).toBe(true);
+    expect(sourceErrors(values({ mode: 'text', file: null, text: enough }))).toEqual({});
+  });
+
+  it("asks for text, and says how much is needed, using the API's own limits", () => {
+    expect([MIN_TEXT_CHARS, MAX_TEXT_CHARS]).toEqual([300, 200_000]);
+    expect(textProblem('   ')).toMatch(/paste the material/i);
+    expect(textProblem('x'.repeat(MIN_TEXT_CHARS - 1))).toMatch(/at least 300 characters.*299/);
+    expect(textProblem('x'.repeat(MIN_TEXT_CHARS))).toBeNull();
+    expect(textProblem('x'.repeat(MAX_TEXT_CHARS))).toBeNull();
+    expect(textProblem('x'.repeat(MAX_TEXT_CHARS + 1))).toMatch(/limit is 200,000/);
+  });
+
+  it('counts the text without its surrounding blank space', () => {
+    expect(textProblem(`\n\n  ${'x'.repeat(MIN_TEXT_CHARS)}  \n`)).toBeNull();
+    expect(sourceErrors(values({ mode: 'text', file: null, text: 'short' })).text).toBeDefined();
   });
 });
 

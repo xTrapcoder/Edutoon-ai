@@ -28,7 +28,7 @@ from edutoon.domain.generation_settings import (
 from edutoon.domain.project_status import ProjectStatus
 from edutoon.services.projects import ProjectRecord
 
-SourceType = Literal["pdf", "topic", "pptx"]
+SourceType = Literal["pdf", "topic", "pptx", "text"]
 
 # ``strict`` so only a real integer is a duration: ``"180000"``, ``180000.0`` and
 # ``true`` are all refused rather than coerced.

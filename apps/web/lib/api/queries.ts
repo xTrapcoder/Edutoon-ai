@@ -458,6 +458,19 @@ export function useUploadSource(projectId: string) {
   });
 }
 
+export function usePasteText(projectId: string) {
+  const queryClient = useQueryClient();
+  return useIdempotentMutation(
+    (input: { title: string; text: string }, key) => api.pasteTextSource(projectId, input, key),
+    {
+      onSuccess: () => {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.sources(projectId) });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.jobs(projectId) });
+      },
+    },
+  );
+}
+
 export function useAddKeywords(projectId: string) {
   const queryClient = useQueryClient();
   return useIdempotentMutation(

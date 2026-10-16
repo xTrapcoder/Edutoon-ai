@@ -8,11 +8,12 @@ import { describeError } from '@/lib/api/errors';
 import { formatBytes, formatTargetDuration } from '@/lib/format';
 import { languageLabel, orientationLabel } from '@/lib/generation-settings';
 import type { CreationStep } from './use-project-creation';
-import { usesDeck, usesFile, usesKeywords, type WizardValues } from './wizard-model';
+import { usesDeck, usesFile, usesKeywords, usesText, type WizardValues } from './wizard-model';
 
 const MODE_LABEL = {
   pdf: 'PDF document',
   pptx: 'PowerPoint deck',
+  text: 'Pasted text',
   keywords: 'Keywords',
   both: 'PDF + Keywords',
 } as const;
@@ -41,6 +42,12 @@ export function ReviewSummary({ values }: { values: WizardValues }) {
             <Row label={usesDeck(values.mode) ? 'Deck' : 'PDF'}>
               {values.file.name}{' '}
               <span className="font-normal text-ink-500">({formatBytes(values.file.size)})</span>
+            </Row>
+          ) : null}
+          {usesText(values.mode) ? (
+            <Row label="Text">
+              {values.text.trim().length.toLocaleString('en-GB')} characters{' '}
+              <span className="font-normal text-ink-500">(every claim is checked against it)</span>
             </Row>
           ) : null}
           {usesKeywords(values.mode) ? (

@@ -1,6 +1,6 @@
 'use client';
 
-import { ChevronRight, FileText, ListChecks, Presentation } from 'lucide-react';
+import { ChevronRight, ClipboardPaste, FileText, ListChecks, Presentation } from 'lucide-react';
 import Link from 'next/link';
 import type { Project } from '@edutoon/contracts';
 import { Skeleton } from '@/components/ui/feedback';
@@ -12,16 +12,23 @@ import { StageBadge } from './stage-badge';
 export const SOURCE_LABEL: Record<Project['source_type'], string> = {
   pdf: 'PDF document',
   pptx: 'PowerPoint deck',
+  text: 'Pasted text',
   topic: 'Keywords',
 };
 
 const SOURCE_SHORT: Record<Project['source_type'], string> = {
   pdf: 'PDF',
   pptx: 'PowerPoint',
+  text: 'Pasted text',
   topic: 'Keywords',
 };
 
-const SOURCE_ICON = { pdf: FileText, pptx: Presentation, topic: ListChecks } as const;
+const SOURCE_ICON = {
+  pdf: FileText,
+  pptx: Presentation,
+  text: ClipboardPaste,
+  topic: ListChecks,
+} as const;
 
 export function ProjectRow({ project }: { project: Project }) {
   const workflow = useProjectStage(project);

@@ -5,8 +5,9 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from edutoon.core.errors import NotFoundError
+from edutoon.core.errors import ConflictError, NotFoundError, ValidationError
 from edutoon.core.pagination import Page
+from edutoon.domain import pasted_text
 from edutoon.domain.deck import has_content, slide_text, slide_to_json
 from edutoon.domain.source_storage import source_storage_key
 from edutoon.providers import pdf, pptx
@@ -20,6 +21,8 @@ from edutoon.services import spend_guard
 
 PDF_CONTENT_TYPE = "application/pdf"
 PPTX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+TEXT_CONTENT_TYPE = "text/plain; charset=utf-8"
+TEXT_SOURCE_TYPE = "text"
 
 
 def detect_kind(content: bytes) -> str | None:
@@ -151,6 +154,82 @@ async def upload_source(
         project_id=project_id,
         status="parsed",
         page_count=len(pages),
+    )
+    await evidence_service.enqueue_indexing_job(session, project_id=project_id, source_id=source.id)
+    return parsed
+
+
+async def upload_pasted_text(
+    session: AsyncSession,
+    storage: Storage,
+    *,
+    project_id: UUID,
+    project_source_type: str,
+    uploader_id: UUID,
+    title: str | None,
+    text: str,
+    bucket: str,
+) -> UploadedSourceRecord:
+    """Record text the owner pasted as a source and cut it into evidence chunks.
+
+    The same promise as a PDF: the chunks are what every claim is later checked against, and the
+    ``build_evidence`` job embeds them. Unlike a PDF, bad input is refused *before* anything is
+    stored or spent (the text arrives in the request, so a too-short or word-free paste is the
+    caller's to fix, not a failed upload to record). Only a project of source type ``text`` takes
+    pasted text. Re-sending identical text to the same project is a 409, by the same checksum
+    constraint a re-uploaded PDF meets.
+    """
+    if project_source_type != TEXT_SOURCE_TYPE:
+        raise ConflictError("Pasted text can only be added to a project made from pasted text.")
+
+    cleaned = pasted_text.clean(text)
+    try:
+        pasted_text.validate(cleaned)
+    except pasted_text.PastedTextError as problem:
+        raise ValidationError(str(problem)) from problem
+
+    await spend_guard.ensure_can_start_provider_job(session, project_id=project_id)
+
+    content = cleaned.encode("utf-8")
+    checksum = hashlib.sha256(content).hexdigest()
+    storage_key = source_storage_key(project_id, checksum, "txt")
+    await storage.put_object(
+        bucket=bucket, key=storage_key, body=content, content_type=TEXT_CONTENT_TYPE
+    )
+    source = await create_uploaded_source(
+        session,
+        project_id=project_id,
+        original_filename=(title or "").strip() or pasted_text.DEFAULT_TITLE,
+        storage_bucket=bucket,
+        storage_key=storage_key,
+        byte_size=len(content),
+        checksum_sha256=checksum,
+        uploader_id=uploader_id,
+        content_type=TEXT_CONTENT_TYPE,
+        kind="text",
+    )
+
+    chunks = pasted_text.split_chunks(cleaned)
+    await source_chunks_service.create_source_chunks(
+        session,
+        [
+            NewSourceChunk(
+                source_id=source.id,
+                project_id=project_id,
+                chunk_index=index,
+                content=chunk,
+                page_from=None,
+                page_to=None,
+            )
+            for index, chunk in enumerate(chunks)
+        ],
+    )
+    parsed = await update_uploaded_source(
+        session,
+        source_id=source.id,
+        project_id=project_id,
+        status="parsed",
+        page_count=None,
     )
     await evidence_service.enqueue_indexing_job(session, project_id=project_id, source_id=source.id)
     return parsed
