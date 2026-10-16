@@ -193,6 +193,8 @@ export function SourceStep({
                     Paste the text the video should be about - notes, an article, a chapter. Every
                     claim in the video is checked against it, and nothing is added from outside. A
                     topic name on its own is not enough: there would be nothing to check against.
+                    Finding the topics reads about 40,000 characters, sampled evenly from start to
+                    end when the text is longer; claims are verified against all of the pasted text.
                   </p>
                   <Field
                     label="Your text"

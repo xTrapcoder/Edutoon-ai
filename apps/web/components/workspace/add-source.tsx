@@ -114,7 +114,7 @@ export function PasteTextForm({ projectId, title }: { projectId: string; title: 
         label="Your text"
         required
         error={showProblem ? problem : null}
-        hint="Every claim in the video is checked against this text, and nothing is added from outside it."
+        hint="Every claim in the video is checked against all of this text, and nothing is added from outside it. Finding the topics reads about 40,000 characters, sampled evenly from start to end when the text is longer."
       >
         {(control) => (
           <Textarea
