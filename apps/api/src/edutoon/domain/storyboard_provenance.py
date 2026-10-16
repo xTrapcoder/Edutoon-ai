@@ -130,6 +130,9 @@ MONTH_WORDS: Final[frozenset[str]] = frozenset(
     }
 )  # fmt: skip
 
+AMBIGUOUS_MONTH_WORDS: Final[frozenset[str]] = frozenset({"may", "march", "august"})
+"""Month names that are also ordinary English words; see ``_protected_tokens``."""
+
 UNIT_WORDS: Final[frozenset[str]] = frozenset(
     {
         "km", "kg", "m", "cm", "mm", "g", "mg", "l", "ml", "kmh", "mph",
@@ -206,9 +209,21 @@ def _protected_tokens(text: str) -> list[tuple[str, str]]:
     for symbol in CURRENCY_SYMBOLS:
         if symbol in text:
             tokens.append((symbol, "currency"))
-    words_lower = {word.lower() for word in _WORD_RE.findall(text)}
+    cased_words = set(_WORD_RE.findall(text))
+    words_lower = {word.lower() for word in cased_words}
     tokens.extend((word, "number_word") for word in words_lower & NUMBER_WORDS)
-    tokens.extend((word, "date_word") for word in words_lower & MONTH_WORDS)
+    # Three month names are also everyday words: "may" (the modal verb), "march" (to walk; a
+    # procession) and "august" (dignified). Each counts as a month only when written as one -
+    # capitalised ("May", "March", "August") or in capitals - and lower-case it is ordinary
+    # explanation ("investors may choose") that would otherwise reject a great many honest
+    # sentences. The cost is that a month typed in lower case is not noticed; the dates that
+    # matter are written capitalised, and a capitalised word is still checked, so a sentence-initial
+    # modal ("May this help...") errs on the side of rejection, never of letting a date through.
+    months = words_lower & MONTH_WORDS
+    for ambiguous in AMBIGUOUS_MONTH_WORDS:
+        if ambiguous in months and not cased_words & {ambiguous.capitalize(), ambiguous.upper()}:
+            months = months - {ambiguous}
+    tokens.extend((word, "date_word") for word in months)
     tokens.extend((word, "unit") for word in words_lower & UNIT_WORDS)
     tokens.extend((word, "proper_noun") for word in _capitalised_candidates(text))
     return tokens
@@ -444,6 +459,22 @@ def resolve_provenance(
     if replacement is not None and not check_provenance(replacement, narration_text):
         return ProvenanceResolution("bullet_points", replacement, "text_only")
     raise FabricatedContentError(violations)
+
+
+def content_words(text: str, *, min_word_length: int = 4) -> frozenset[str]:
+    """The meaningful words of ``text``, lower-cased: at least ``min_word_length`` letters, not a
+    stopword, with a trailing possessive or plural "s" folded so "investor" and "investors"
+    match. Deliberately plain - no stemming - because a looser match would let unrelated claims in
+    the same subject (all "investment" claims) look related."""
+    words: set[str] = set()
+    for raw in _WORD_RE.findall(text):
+        word = raw.lower().removesuffix("'s")
+        if len(word) < min_word_length or word in _STOPWORDS:
+            continue
+        if len(word) > min_word_length and word.endswith("s") and not word.endswith("ss"):
+            word = word[:-1]
+        words.add(word)
+    return frozenset(words)
 
 
 def has_lexical_overlap(
