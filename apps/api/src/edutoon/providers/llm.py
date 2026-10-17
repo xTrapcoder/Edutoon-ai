@@ -848,11 +848,11 @@ def _parse_section_draft(
                 _resolve_handle(claim_id, claim_handles or {}, known_claim_ids) or claim_id
             )
 
-        unknown = sorted({cid for cid in claim_ids if cid not in known_claim_ids})
-        if unknown:
-            raise LLMResponseError(
-                f"Segment {index} cites claim ids that were not supplied: {unknown}."
-            )
+        # A citation the model invented (a handle past the last claim, an id with a typo) cites
+        # nothing that was shown, so it is dropped - never guessed at and never kept. A passage left
+        # with no real citation then meets the script's own rule (uncited and not connective), which
+        # sends it back for a rewrite instead of failing the whole generation on a typo.
+        claim_ids = [cid for cid in claim_ids if cid in known_claim_ids]
 
         connective = raw_segment.get("connective", False)
         if not isinstance(connective, bool):

@@ -426,12 +426,14 @@ async def test_a_section_cites_claims_by_short_handle_and_gets_real_ids_back() -
     ]
 
 
-async def test_a_section_citing_something_that_was_never_shown_still_fails() -> None:
+async def test_a_citation_of_something_that_was_never_shown_is_dropped_not_kept() -> None:
     def handler(_: httpx.Request) -> httpx.Response:
-        return _section_reply(["c1", "aaaaaaaa-1111-2222-3333-4444444444419"])  # an id with a typo
+        # an id with a typo, a handle past the last claim, and a real handle
+        return _section_reply(["c1", "aaaaaaaa-1111-2222-3333-4444444444419", "[c9]"])
 
-    with pytest.raises(LLMResponseError, match="not supplied"):
-        await _section(handler)
+    [segment] = await _section(handler)
+
+    assert segment.claim_ids == ["aaaaaaaa-1111-2222-3333-444444444441"]
 
 
 async def test_a_rewrite_is_asked_for_at_a_higher_temperature_and_says_what_was_wrong() -> None:

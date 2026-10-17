@@ -26,7 +26,11 @@ from pydantic import BaseModel, ConfigDict, field_validator
 
 from edutoon.services.evidence import ClaimCitationRecord, ClaimVerificationRecord
 
-VerdictStatus = Literal["supported", "partially_supported", "unsupported", "contradicted"]
+# ``general_knowledge`` is the model's own knowledge in a topic-only lesson: never verified, never
+# cited (``domain.general_knowledge``). The database allows it (migration 0022), so the API says it.
+VerdictStatus = Literal[
+    "supported", "partially_supported", "unsupported", "contradicted", "general_knowledge"
+]
 
 
 class VerifyClaimRequest(BaseModel):

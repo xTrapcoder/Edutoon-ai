@@ -5776,7 +5776,8 @@
               "supported",
               "partially_supported",
               "unsupported",
-              "contradicted"
+              "contradicted",
+              "general_knowledge"
             ],
             "title": "Status"
           },
@@ -5900,7 +5901,8 @@
               "supported",
               "partially_supported",
               "unsupported",
-              "contradicted"
+              "contradicted",
+              "general_knowledge"
             ],
             "title": "Status"
           },

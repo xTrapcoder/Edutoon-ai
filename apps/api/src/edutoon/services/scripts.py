@@ -262,9 +262,10 @@ async def enqueue_script_generation(
         )
     if len(eligible) * settings.MIN_SECTION_DURATION_MS > project.target_duration_ms:
         raise ValidationError(
-            f"{len(eligible)} accepted topics cannot each receive a section within "
-            f"a {project.target_duration_ms}ms target duration. Accept fewer "
-            "topics, or increase the target duration."
+            f"{len(eligible)} accepted topics cannot each receive a section of at least "
+            f"{settings.MIN_SECTION_DURATION_MS // 1000} seconds within a "
+            f"{format_clock(project.target_duration_ms)} target. Accept fewer topics, or "
+            "increase the target duration."
         )
 
     missing_evidence: list[str] = []

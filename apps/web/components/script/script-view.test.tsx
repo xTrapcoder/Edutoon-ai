@@ -64,7 +64,7 @@ describe('Script step', () => {
             error: {
               code: 'validation_error',
               message:
-                '9 accepted topics cannot each receive a section within a 240000ms target duration. Accept fewer topics, or increase the target duration.',
+                '9 accepted topics cannot each receive a section of at least 30 seconds within a 4:00 target. Accept fewer topics, or increase the target duration.',
             },
           },
           { status: 400 },

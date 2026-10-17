@@ -517,7 +517,7 @@ async def test_compose_script_section_deduplicates_claim_ids_within_a_segment(mo
     assert segments[0].claim_ids == ["cl1", "cl2"]
 
 
-async def test_compose_script_section_rejects_a_claim_id_that_was_not_supplied(monkeypatch):
+async def test_compose_script_section_drops_a_claim_id_that_was_not_supplied(monkeypatch):
     llm, _ = _llm_for_section(
         monkeypatch,
         {
@@ -527,8 +527,9 @@ async def test_compose_script_section_rejects_a_claim_id_that_was_not_supplied(m
         },
     )
 
-    with pytest.raises(LLMResponseError):
-        await _section(llm)
+    segments, _ = await _section(llm)
+
+    assert segments[0].claim_ids == ["cl1"]  # the invented one is gone, never kept or guessed
 
 
 async def test_compose_script_section_rejects_a_section_with_too_many_segments(monkeypatch):

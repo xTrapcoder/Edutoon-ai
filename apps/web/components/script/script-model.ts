@@ -6,6 +6,7 @@ export const VERDICT: Record<VerdictStatus, { label: string; tone: Tone }> = {
   partially_supported: { label: 'Partly supported', tone: 'warning' },
   unsupported: { label: 'Not supported', tone: 'danger' },
   contradicted: { label: 'Contradicted', tone: 'danger' },
+  general_knowledge: { label: 'General knowledge, not checked', tone: 'warning' },
 };
 
 /** A section's name: the topic it covers, or "Section N" if it is not tied to one. */

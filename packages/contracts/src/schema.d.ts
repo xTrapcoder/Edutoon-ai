@@ -1180,7 +1180,7 @@ export interface components {
              * Status
              * @enum {string}
              */
-            status: "supported" | "partially_supported" | "unsupported" | "contradicted";
+            status: "supported" | "partially_supported" | "unsupported" | "contradicted" | "general_knowledge";
             /** Rationale */
             rationale: string | null;
             /**
@@ -1242,7 +1242,7 @@ export interface components {
              * Status
              * @enum {string}
              */
-            status: "supported" | "partially_supported" | "unsupported" | "contradicted";
+            status: "supported" | "partially_supported" | "unsupported" | "contradicted" | "general_knowledge";
             /** Rationale */
             rationale: string | null;
             /** Embedding Model */

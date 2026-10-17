@@ -7,6 +7,7 @@ export const CLAIM_STATUS_META: Record<VerdictStatus, { label: string; tone: Ton
   partially_supported: { label: 'Partially supported', tone: 'warning' },
   unsupported: { label: 'Unsupported', tone: 'neutral' },
   contradicted: { label: 'Contradicted', tone: 'danger' },
+  general_knowledge: { label: 'General knowledge, not checked', tone: 'warning' },
 };
 
 export interface ClaimStatusCounts {
@@ -15,6 +16,8 @@ export interface ClaimStatusCounts {
   partiallySupported: number;
   unsupported: number;
   contradicted: number;
+  /** The AI's own knowledge in a topic-only lesson: never checked against a source. */
+  generalKnowledge: number;
 }
 
 /** How many claims fall into each verdict, out of the total given. */
@@ -25,6 +28,7 @@ export function summariseClaimStatuses(claims: readonly ClaimVerification[]): Cl
     partiallySupported: claims.filter((claim) => claim.status === 'partially_supported').length,
     unsupported: claims.filter((claim) => claim.status === 'unsupported').length,
     contradicted: claims.filter((claim) => claim.status === 'contradicted').length,
+    generalKnowledge: claims.filter((claim) => claim.status === 'general_knowledge').length,
   };
 }
 

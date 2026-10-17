@@ -202,7 +202,11 @@ export function useSupportedClaimCount(projectId: string) {
   return useQuery({
     queryKey: queryKeys.claims(projectId),
     queryFn: () => api.listClaimVerifications(projectId),
-    select: (claims) => claims.filter((claim) => claim.status === 'supported').length,
+    // A topic-only lesson has no document, so its statements are general knowledge: they are
+    // what a script may be written from there, and are labelled as unchecked wherever shown.
+    select: (claims) =>
+      claims.filter((claim) => claim.status === 'supported' || claim.status === 'general_knowledge')
+        .length,
   });
 }
 

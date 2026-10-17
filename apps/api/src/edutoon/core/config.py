@@ -65,13 +65,13 @@ class Settings(BaseSettings):
     CLERK_INVITATION_REDIRECT_URL: str = ""
     INVITATION_TTL_DAYS: int = Field(default=7, ge=1, le=60)
 
-    # Keyword-only projects (``source_type: topic``, or a topic extraction with keywords and no
-    # parsed material) are switched off: with nothing to verify against, the evidence pipeline
-    # cannot produce a verified script from keywords alone, and the product's promise is that
-    # every video is. Off by default; the switch exists so the mode can be re-enabled deliberately
-    # (and, if it returns, as a separate mode that says its output is unverified) rather than by
-    # deleting code. PDF projects with keywords are unaffected.
-    KEYWORD_ONLY_PROJECTS_ENABLED: bool = False
+    # Topic-only projects (``source_type: topic``, or a topic extraction with keywords and no parsed
+    # material). With nothing to verify against, the lesson rests on the model's general knowledge:
+    # its claims are recorded ``general_knowledge`` (never ``supported``), the script opens with a
+    # fixed spoken notice saying so, and the UI labels it (``domain.general_knowledge``). Checked
+    # end to end on the local model on 2026-10-17, so on by default; set false to refuse the mode.
+    # PDF projects with keywords are unaffected either way.
+    KEYWORD_ONLY_PROJECTS_ENABLED: bool = True
     MAX_PDF_PAGES: int = 300
     # Local text recognition (OCR) for scanned or image-only PDF pages (``providers.ocr``): nothing
     # leaves this machine. A page whose own text layer has next to nothing is read by OCR, but only

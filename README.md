@@ -17,7 +17,7 @@ before relying on that.
 | **Pasted text / notes** | Paste (300 to 200,000 characters) | Topics are found from about 40,000 characters, sampled evenly; claims are checked against all of it. |
 | **PDF + keywords** | Upload and type topics | Keywords become your own topics. A keyword the PDF does not back is reported as *not in your document* and is never taught as if the PDF said it. |
 | **PDF (or text) + instructions** | Free-text box | "Make it suitable for a beginner", "Focus on chapter 2", "Use simple examples". See [Instructions](#instructions). |
-| **Topic only** | Name a topic | Written from the model's general knowledge. Nothing is checked against a document; the claims are marked `general_knowledge`, the script says so in its first spoken sentence and the UI labels it. Needs `KEYWORD_ONLY_PROJECTS_ENABLED=true`. |
+| **Topic only** | Name a topic | Written from the model's general knowledge. Nothing is checked against a document; the claims are marked `general_knowledge`, the script says so in its first spoken sentence and the UI labels it. On by default (`KEYWORD_ONLY_PROJECTS_ENABLED=false` refuses the mode). |
 | **PowerPoint** | Upload `.pptx` | A deterministic deck-to-video path; no model writes it, so instructions do not apply. |
 
 The pipeline for every mode: source, topics (you accept or reject), claims, script (you review and
@@ -57,7 +57,7 @@ set to *something* but a local backend never uses them. Useful switches:
 | `OCR_ENABLED` | `true` | Read scanned PDF pages with local OCR. |
 | `OCR_MAX_PAGES` | `30` | Most scanned pages read in one document (about 5 s a page). Longer scans are refused with a message, never half-read. |
 | `SCRIPT_SUPPORT_CHECK_ENABLED` | `true` | Judge every script sentence against the verified claims (see below). Costs minutes per script. |
-| `KEYWORD_ONLY_PROJECTS_ENABLED` | see `config.py` | Topic-only lessons. |
+| `KEYWORD_ONLY_PROJECTS_ENABLED` | `true` | Topic-only lessons. |
 
 Sign-in uses Clerk (`apps/web/.env.local`). To try the product without Clerk, development only:
 

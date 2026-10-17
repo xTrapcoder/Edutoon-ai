@@ -912,3 +912,38 @@ async def test_list_filters_by_topic_id(client_factory, auth_headers, db_session
     [item] = response.json()["items"]
     assert item["id"] == str(for_a.id)
     assert item["topic_id"] == str(topic_a.id)
+
+
+async def test_a_general_knowledge_claim_is_listed_with_its_own_status_never_as_supported(
+    client_factory, auth_headers, db_session
+) -> None:
+    """Regression: the list route answered 500 for a topic-only project, because its claims carry
+    the status ``general_knowledge`` and the response type did not allow it."""
+    from uuid import UUID
+
+    from edutoon.repositories import claim_verifications as claim_verifications_repo
+
+    headers = auth_headers()
+    async with client_factory() as client:
+        created = await client.post(
+            "/v1/projects",
+            json={"title": "Machine learning", "source_type": "topic"},
+            headers={**headers, "Idempotency-Key": "gk-list-1"},
+        )
+        project_id = created.json()["id"]
+        await claim_verifications_repo.create(
+            db_session,
+            project_id=UUID(project_id),
+            claim_text="Machine learning finds patterns in examples.",
+            status="general_knowledge",
+            embedding_model="none",
+            llm_model="m",
+            rationale="General knowledge from the language model.",
+        )
+        response = await client.get(
+            f"/v1/projects/{project_id}/claim-verifications", headers=headers
+        )
+
+    assert response.status_code == 200
+    [item] = response.json()["items"]
+    assert item["status"] == "general_knowledge" and item["citations"] == []

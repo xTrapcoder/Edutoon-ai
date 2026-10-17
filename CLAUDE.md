@@ -376,6 +376,24 @@ the HTTP call stubbed; no Ollama model has been run through it yet** - `scripts/
 proof still to be run (judge reliability, schema acceptance, speed). The two API keys remain required
 settings; a local backend never uses them.
 
+**MVP completion pass (2026-10-17, migration 0024; details in `apps/api/README.md`, "Input modes, OCR,
+instructions and the sentence-level check", and the root `README.md`).** Added on top of everything above:
+scanned/image-only PDFs are read by local OCR (`providers/ocr.py`, RapidOCR + pypdfium2, offline;
+`uploaded_sources.extraction_method` / `ocr_page_count` / `failure_code`); `projects.instructions` (free text,
+2,000 chars) understood by `domain/instructions.py` and applied by `services/instructions.py` to topic
+selection, script audience/tone and scene style, with `instructions_notes` saying what was applied, guidance
+only, or impossible; `GET .../topics/coverage` (`domain/keyword_coverage.py`) reports which typed keywords the
+document does and does not back; a sentence-level support check (`domain/narration_support.py`,
+`services/narration_support.py`, `LLM.judge_sentence_support`) judges every script sentence against the
+section's claims - an unsupported one is rewritten once, then removed, and a section nothing can be supported
+for reads its own verified claims out (`SCRIPT_FALLBACK_TO_CLAIMS`); topic-only lessons (`general_knowledge`
+claims, a fixed spoken notice, `services/general_knowledge.py`); `Earth`/`Sun`/`Moon` are not invented names;
+an invented claim citation is dropped, not fatal. Web: Topic-only mode, instructions, coverage and notices,
+and the training UI - `/learn` (employee: locked/open modules, video, single-answer assessment, 70% default
+pass mark, answers lock on submit) and `/admin/training` (courses, modules from a rendered video, assessments,
+enrolments). Migration head is **0024**. **Still true:** the claim judge and the sentence judge are a 7B local
+model - not proof; no human has listened to the narration; real Clerk sign-in is unverified.
+
 **Phase 12 has not started and needs the owner's explicit approval.**
 
 ## Commands
@@ -406,7 +424,7 @@ apps/
   api/        FastAPI service (uv, src/edutoon)
     src/edutoon/          api/ (routers, schemas) · services/ · domain/ (pure; deck*.py = the deck engine) ·
                           repositories/ · providers/ · worker/ · db/ · core/
-    alembic/              migration environment + versions/0001..0021
+    alembic/              migration environment + versions/0001..0024
   parser/     PDF/topic parser — not yet initialised
   render/     placeholder - the renderer lives in apps/api/src/edutoon/providers/renderer
 packages/
