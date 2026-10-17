@@ -33,6 +33,10 @@ export interface ApiErrorInit {
   serverMessage: string | null;
   fieldErrors: FieldError[];
   requestId?: string | null;
+  /** `error.details.reason`: a machine-readable cause, when the API gives one. */
+  reason?: string | null;
+  /** `error.details.topics`: the topic titles a refusal is about, when it names any. */
+  topics?: string[];
 }
 
 export class ApiError extends Error {
@@ -43,6 +47,8 @@ export class ApiError extends Error {
   readonly serverMessage: string | null;
   readonly fieldErrors: FieldError[];
   readonly requestId: string | null;
+  readonly reason: string | null;
+  readonly topics: string[];
 
   constructor(init: ApiErrorInit) {
     super(`API request failed (${init.status ?? init.kind})`);
@@ -53,6 +59,8 @@ export class ApiError extends Error {
     this.serverMessage = init.serverMessage;
     this.fieldErrors = init.fieldErrors;
     this.requestId = init.requestId ?? null;
+    this.reason = init.reason ?? null;
+    this.topics = init.topics ?? [];
   }
 
   /**
@@ -122,6 +130,15 @@ function readFieldErrors(details: unknown): FieldError[] {
   return result;
 }
 
+function readReason(details: unknown): string | null {
+  return isRecord(details) && typeof details.reason === 'string' ? details.reason : null;
+}
+
+function readTopics(details: unknown): string[] {
+  if (!isRecord(details) || !Array.isArray(details.topics)) return [];
+  return details.topics.filter((topic): topic is string => typeof topic === 'string');
+}
+
 /** Build an {@link ApiError} from a non-2xx response and whatever body it carried. */
 export function apiErrorFromResponse(response: Response, body: unknown): ApiError {
   const envelope = isRecord(body) && isRecord(body.error) ? body.error : null;
@@ -132,6 +149,8 @@ export function apiErrorFromResponse(response: Response, body: unknown): ApiErro
     serverMessage: envelope ? safeServerMessage(envelope.message) : null,
     fieldErrors: envelope ? readFieldErrors(envelope.details) : [],
     requestId: response.headers.get('X-Request-Id'),
+    reason: envelope ? readReason(envelope.details) : null,
+    topics: envelope ? readTopics(envelope.details) : [],
   });
 }
 

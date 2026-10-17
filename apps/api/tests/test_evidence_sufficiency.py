@@ -287,8 +287,12 @@ async def test_the_guard_does_not_change_the_no_evidence_message(db_session, rea
         db_session, project_id=project.id, title="Empty", status="accepted", position=0
     )
 
-    with pytest.raises(ValidationError, match="no verified evidence yet"):
+    with pytest.raises(ValidationError, match="no verified evidence yet") as refusal:
         await _enqueue(db_session, project, owner)
+
+    # Regression: the web client does not show a sentence over 280 characters, and this one grew
+    # past it, so the page lost the reason. The refusal now carries it as data.
+    assert refusal.value.details == {"reason": "no_verified_evidence", "topics": ["Empty"]}
 
 
 # --- the longest supported length ---------------------------------------------------------------

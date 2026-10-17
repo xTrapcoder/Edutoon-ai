@@ -84,6 +84,38 @@ describe('Script step', () => {
     expect(screen.getByRole('button', { name: /generate script/i })).toBeInTheDocument();
   });
 
+  it('names the topics that have no verified claim, even when the sentence is too long to show', async () => {
+    // Regression: the API's sentence grew past the 280 characters the client shows, so the page lost
+    // the reason and said only "some of the details were not accepted". The refusal now carries the
+    // reason and the topic titles as data.
+    serveProject({ ...ready, scripts: [], claims: [claim()] });
+    const long = `These accepted topics have no verified evidence yet: 'Cryptocurrency mining'. ${'Extract and verify claims for them, or reject them. '.repeat(6)}`;
+    server.use(
+      http.post(`${base}/scripts`, () =>
+        HttpResponse.json(
+          {
+            error: {
+              code: 'validation_error',
+              message: long,
+              details: { reason: 'no_verified_evidence', topics: ['Cryptocurrency mining'] },
+            },
+          },
+          { status: 400 },
+        ),
+      ),
+    );
+
+    renderProjectPage(<ScriptPage />, 'script');
+    await userEvent.click(await screen.findByRole('button', { name: /generate script/i }));
+
+    expect(
+      await screen.findByRole('heading', { name: 'Verification required' }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/"Cryptocurrency mining"/)).toBeInTheDocument();
+    expect(screen.getByText(/Leave it out/)).toBeInTheDocument();
+    expect(screen.queryByText(/doesn.t have any verified claims yet/i)).not.toBeInTheDocument();
+  });
+
   it('starts generation with an idempotency key and the signed-in token, then shows real progress', async () => {
     let started = false;
     let seen: { key: string | null; auth: string | null } | undefined;

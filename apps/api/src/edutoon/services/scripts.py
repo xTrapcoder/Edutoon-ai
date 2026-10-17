@@ -289,7 +289,13 @@ async def enqueue_script_generation(
             f"These accepted topics have no verified evidence yet: {names}. Extract "
             "and verify claims for them, or reject them, before generating a script. A keyword "
             "you typed that your document does not cover shows as 'not in your document' under "
-            "the keyword coverage: reject it to leave it out of the lesson."
+            "the keyword coverage: reject it to leave it out of the lesson.",
+            # Machine-readable, so a client can name the topics without reading the sentence (a
+            # long sentence is not shown by every client).
+            details={
+                "reason": NO_VERIFIED_EVIDENCE_REASON,
+                "topics": missing_evidence[:MAX_TOPICS_NAMED_IN_REFUSAL],
+            },
         )
 
     # Enough evidence for the length asked for? Refused here, from counts alone, before a job or
@@ -339,6 +345,12 @@ async def enqueue_script_generation(
     )
     return ScriptGenerationEnqueued(script=script, job=job, replayed=False)
 
+
+NO_VERIFIED_EVIDENCE_REASON = "no_verified_evidence"
+"""``error.details.reason`` of the refusal to write a script while an accepted topic has no
+verified claim."""
+
+MAX_TOPICS_NAMED_IN_REFUSAL = 20
 
 EVIDENCE_COVERAGE_FLOOR = 0.7
 """The share of a script's claims its narration must already cite before a short script is put down

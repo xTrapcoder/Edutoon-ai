@@ -154,11 +154,16 @@ function ScriptView() {
   // The API answers "no verified claims" with a 400; treat it exactly like finding out up front.
   // Any other 400 (too many topics for the target length, evidence too thin for the length, ...)
   // is a different problem with its own message, which is shown as it is - never as "no claims".
+  // The API names the cause in `details.reason`; the sentence is only a fallback, because the
+  // client does not show a long one.
   const refused =
     generate.error instanceof ApiError &&
     generate.error.kind === 'invalid' &&
     generate.error.status === 400 &&
-    /no verified evidence/i.test(generate.error.serverMessage ?? '');
+    (generate.error.reason === 'no_verified_evidence' ||
+      /no verified evidence/i.test(generate.error.serverMessage ?? ''));
+  const topicsWithoutEvidence =
+    refused && generate.error instanceof ApiError ? generate.error.topics : [];
   const generateError =
     generate.isError && !refused
       ? describeError(generate.error, { action: 'start your script' })
@@ -210,6 +215,7 @@ function ScriptView() {
       {claims.data === 0 || refused ? (
         <VerificationRequired
           projectId={project.id}
+          topicsWithoutEvidence={topicsWithoutEvidence}
           onCheckAgain={() => {
             generate.reset();
             void claims.refetch();
