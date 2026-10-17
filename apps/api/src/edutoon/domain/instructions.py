@@ -158,6 +158,8 @@ _VAGUE_TERM = re.compile(
     re.IGNORECASE,
 )
 _PAGES_OR_CHAPTER_TERM = re.compile(r"^(?:pages?|chapters?|ch\.?|sections?)\s+\d", re.IGNORECASE)
+# What is left of a page reference once it is split on "and" / commas: "4", "4 only", "10-12".
+_NUMBER_TERM = re.compile(r"^\d[\d\s\-–]*(?:only)?$", re.IGNORECASE)
 _MAX_FOCUS_TERMS: Final = 8
 _MAX_FOCUS_TERM_CHARS: Final = 60
 
@@ -221,6 +223,7 @@ def _split_terms(raw: str) -> list[str]:
             or len(term) > _MAX_FOCUS_TERM_CHARS
             or _VAGUE_TERM.match(term)
             or _PAGES_OR_CHAPTER_TERM.match(term)
+            or _NUMBER_TERM.match(term)
         ):
             continue
         if term.lower() not in {existing.lower() for existing in terms}:
@@ -257,6 +260,9 @@ def interpret(text: str | None) -> Interpretation:
 
     focus_terms: list[str] = []
     for match in _FOCUS.finditer(text):
+        # "Focus on pages 3 and 4 only" is a page range, not a topic to look for.
+        if _PAGES_OR_CHAPTER_TERM.match(match.group("terms").strip()):
+            continue
         for term in _split_terms(match.group("terms")):
             if term.lower() not in {existing.lower() for existing in focus_terms}:
                 focus_terms.append(term)
@@ -448,7 +454,11 @@ def notes(
         result.append(
             Note("applied", "Audience: written for complete beginners.")
             if interpretation.audience == "beginner"
-            else Note("applied", "Audience: written for learners who know the basics.")
+            else Note(
+                "applied",
+                "Audience: written for advanced learners (precise terms, fundamentals not "
+                "re-explained).",
+            )
         )
     if interpretation.concise:
         result.append(Note("applied", "Tone: concise, each point made once."))

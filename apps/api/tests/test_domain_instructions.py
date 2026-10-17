@@ -149,3 +149,31 @@ def test_instructions_nothing_in_code_can_check_are_still_reported_as_guidance_o
     notes = instr.notes("Make it engaging.", instr.interpret("Make it engaging."))
     assert [note.kind for note in notes] == ["guidance"]
     assert "cannot be guaranteed" in notes[0].text
+
+
+def test_a_page_reference_is_a_page_range_and_never_a_topic_to_look_for() -> None:
+    """Regression: "Focus on pages 3 and 4 only" produced the focus term "4 only", and the notes
+    told the owner that "pages that mention 4 only are read first"."""
+    text = (
+        "Explain this to an advanced earth-science student using precise technical terminology and "
+        "definitions. Focus on pages 3 and 4 only."
+    )
+    result = instr.interpret(text)
+
+    assert result.page_range == instr.PageRange(3, 4)
+    assert result.focus_terms == ()
+    assert not any("mention" in note.text for note in instr.notes(text, result))
+
+
+def test_a_focus_phrase_with_real_topics_keeps_them_beside_a_page_range() -> None:
+    result = instr.interpret("Focus on subduction and volcanoes. Use pages 3 to 4.")
+
+    assert result.focus_terms == ("subduction", "volcanoes")
+    assert result.page_range == instr.PageRange(3, 4)
+
+
+def test_the_advanced_audience_note_says_advanced() -> None:
+    text = "Explain this for an advanced earth-science student."
+    [audience, *_] = instr.notes(text, instr.interpret(text))
+
+    assert "advanced learners" in audience.text
