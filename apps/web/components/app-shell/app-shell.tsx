@@ -3,6 +3,7 @@
 import { UserButton, useUser } from '@clerk/nextjs';
 import {
   FolderKanban,
+  GraduationCap,
   LayoutDashboard,
   Menu,
   Plus,
@@ -14,6 +15,7 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { Logo } from '@/components/brand/logo';
+import { useMe } from '@/lib/api/training-queries';
 import { cn } from '@/lib/cn';
 
 interface NavItem {
@@ -22,6 +24,16 @@ interface NavItem {
   icon: LucideIcon;
   isActive: (pathname: string) => boolean;
 }
+
+/** What an employee sees: their own learning, nothing else. */
+const EMPLOYEE_NAV_ITEMS: NavItem[] = [
+  {
+    href: '/learn',
+    label: 'My learning',
+    icon: GraduationCap,
+    isActive: (pathname) => pathname.startsWith('/learn'),
+  },
+];
 
 const NAV_ITEMS: NavItem[] = [
   {
@@ -42,12 +54,21 @@ const NAV_ITEMS: NavItem[] = [
     icon: Plus,
     isActive: (pathname) => pathname === '/projects/new',
   },
+  {
+    href: '/admin/training',
+    label: 'Training',
+    icon: GraduationCap,
+    isActive: (pathname) => pathname.startsWith('/admin/training'),
+  },
 ];
 
 function NavLinks({ pathname }: { pathname: string }) {
+  const me = useMe();
+  // Until the API says who this is, show nothing rather than links that may not be theirs.
+  const items = me.data ? (me.data.role === 'admin' ? NAV_ITEMS : EMPLOYEE_NAV_ITEMS) : [];
   return (
     <nav aria-label="Main" className="flex flex-col gap-1">
-      {NAV_ITEMS.map((item) => {
+      {items.map((item) => {
         const active = item.isActive(pathname);
         return (
           <Link
@@ -204,9 +225,49 @@ function Topbar({ onMenu }: { onMenu: () => void }) {
   );
 }
 
+/**
+ * Sends each person to the part of the product that is theirs: an employee only ever sees
+ * `/learn`, an administrator never lands there. The API enforces the same split on every route
+ * (an employee gets a 404 for a project), so this is only about not showing a dead end.
+ */
+function useRoleRedirect(pathname: string) {
+  const router = useRouter();
+  const me = useMe();
+  const role = me.data?.role;
+  useEffect(() => {
+    if (role === 'employee' && !pathname.startsWith('/learn')) router.replace('/learn');
+    if (role === 'admin' && pathname.startsWith('/learn')) router.replace('/dashboard');
+  }, [role, pathname, router]);
+}
+
+/** UI QA mode only: act as the administrator or as the employee, to see both sides. */
+function QaPersonaSwitch() {
+  const me = useMe();
+  const role = me.data?.role;
+  if (!role) return null;
+  const other = role === 'admin' ? 'employee' : 'admin';
+  return (
+    <button
+      type="button"
+      className="ml-3 underline"
+      onClick={() => {
+        try {
+          window.localStorage.setItem('edutoon-qa-persona', other);
+        } catch {
+          // Without storage the switch cannot persist; the page stays as it is.
+        }
+        window.location.href = other === 'employee' ? '/learn' : '/dashboard';
+      }}
+    >
+      Acting as {role === 'admin' ? 'administrator' : 'employee'} - switch to {other}
+    </button>
+  );
+}
+
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const [menuOpen, setMenuOpen] = useState(false);
+  useRoleRedirect(pathname);
 
   useEffect(() => {
     setMenuOpen(false);
@@ -228,6 +289,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         {process.env.NEXT_PUBLIC_EDUTOON_UI_QA === '1' ? (
           <p className="bg-warning-100 px-4 py-1.5 text-center text-xs font-semibold text-warning-700">
             UI QA mode: sample data and no real sign-in. Never enabled in a build.
+            <QaPersonaSwitch />
           </p>
         ) : null}
         <Topbar onMenu={() => setMenuOpen(true)} />
