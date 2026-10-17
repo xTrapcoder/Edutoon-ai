@@ -16,12 +16,14 @@ import {
   jobFailureMessage,
   latestJobOfKind,
   readScriptGenerationProgress,
+  readScriptChecks,
   readWeakCitations,
   scriptGenerationStageLabel,
 } from '@/lib/jobs';
 import { ApprovedPanel } from './approved-panel';
 import { ScriptStudio } from './script-studio';
 import { VerificationRequired } from './verification-required';
+import { SupportCheckNotice } from './support-check-notice';
 import { WeakCitationNotice } from './weak-citation-notice';
 
 function ReviewTopicsFirst({ projectId }: { projectId: string }) {
@@ -100,6 +102,7 @@ function ScriptDetailView({ scriptId }: { scriptId: string }) {
   const detail = useScriptDetail(project.id, scriptId);
 
   const weak = useMemo(() => readWeakCitations(jobs.data, scriptId), [jobs.data, scriptId]);
+  const checks = useMemo(() => readScriptChecks(jobs.data, scriptId), [jobs.data, scriptId]);
 
   if (detail.isPending) {
     return (
@@ -127,6 +130,7 @@ function ScriptDetailView({ scriptId }: { scriptId: string }) {
   return (
     <div className="space-y-6">
       {workflow.stage === 'approved' ? <ApprovedPanel projectId={project.id} /> : null}
+      {checks ? <SupportCheckNotice checks={checks} /> : null}
       {weak && weak.length > 0 ? (
         <WeakCitationNotice script={detail.data} topics={topics.data ?? []} weak={weak} />
       ) : null}
@@ -148,10 +152,13 @@ function ScriptView() {
     generate.mutate(undefined, { onSuccess: () => toast.success('Writing your script') });
 
   // The API answers "no verified claims" with a 400; treat it exactly like finding out up front.
+  // Any other 400 (too many topics for the target length, evidence too thin for the length, ...)
+  // is a different problem with its own message, which is shown as it is - never as "no claims".
   const refused =
     generate.error instanceof ApiError &&
     generate.error.kind === 'invalid' &&
-    generate.error.status === 400;
+    generate.error.status === 400 &&
+    /no verified evidence/i.test(generate.error.serverMessage ?? '');
   const generateError =
     generate.isError && !refused
       ? describeError(generate.error, { action: 'start your script' })

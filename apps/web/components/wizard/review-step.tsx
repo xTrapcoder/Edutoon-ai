@@ -8,13 +8,20 @@ import { describeError } from '@/lib/api/errors';
 import { formatBytes, formatTargetDuration } from '@/lib/format';
 import { languageLabel, orientationLabel } from '@/lib/generation-settings';
 import type { CreationStep } from './use-project-creation';
-import { usesDeck, usesFile, usesKeywords, usesText, type WizardValues } from './wizard-model';
+import {
+  usesDeck,
+  usesFile,
+  usesInstructions,
+  usesKeywords,
+  usesText,
+  type WizardValues,
+} from './wizard-model';
 
 const MODE_LABEL = {
   pdf: 'PDF document',
   pptx: 'PowerPoint deck',
   text: 'Pasted text',
-  keywords: 'Keywords',
+  keywords: 'Topic only',
   both: 'PDF + Keywords',
 } as const;
 
@@ -50,8 +57,16 @@ export function ReviewSummary({ values }: { values: WizardValues }) {
               <span className="font-normal text-ink-500">(every claim is checked against it)</span>
             </Row>
           ) : null}
+          {values.mode === 'keywords' ? (
+            <Row label="Checking">
+              <span className="font-normal text-ink-700">
+                Nothing is checked against a document: the lesson is written from the AI&apos;s
+                general knowledge, and the video says so in its first sentence.
+              </span>
+            </Row>
+          ) : null}
           {usesKeywords(values.mode) ? (
-            <Row label="Keywords">
+            <Row label={values.mode === 'keywords' ? 'Topics' : 'Keywords'}>
               <ul className="flex flex-wrap gap-1.5">
                 {values.keywords.map((keyword) => (
                   <li
@@ -62,6 +77,11 @@ export function ReviewSummary({ values }: { values: WizardValues }) {
                   </li>
                 ))}
               </ul>
+            </Row>
+          ) : null}
+          {usesInstructions(values.mode) && values.instructions.trim() !== '' ? (
+            <Row label="Instructions">
+              <span className="font-normal whitespace-pre-wrap">{values.instructions.trim()}</span>
             </Row>
           ) : null}
           <Row label="Orientation">{orientationLabel(values.orientation)}</Row>

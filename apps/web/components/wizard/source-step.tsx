@@ -12,12 +12,14 @@ import {
   fileKindOf,
   isModeAvailable,
   KEYWORD_ONLY_UNSUPPORTED_MESSAGE,
+  MAX_INSTRUCTIONS_CHARS,
   MAX_TEXT_CHARS,
   MAX_TITLE_CHARS,
   MIN_TEXT_CHARS,
   suggestTitle,
   usesDeck,
   usesFile,
+  usesInstructions,
   usesKeywords,
   usesText,
   type SourceErrors,
@@ -61,8 +63,9 @@ const MODES: readonly {
   },
   {
     value: 'keywords',
-    title: 'Keywords',
-    description: 'Not available yet - paste text, or add keywords to a PDF',
+    title: 'Topic only',
+    description:
+      "Name a topic - written from the AI's general knowledge, not checked against a document",
     icon: ListChecks,
   },
   {
@@ -138,10 +141,11 @@ export function SourceStep({
               ))}
             </div>
             <p className="text-[13px] text-ink-500">
-              Keyword-only projects are not supported yet: every claim in a video is checked against
-              your own source material, and keywords alone give nothing to check against. Upload a
-              PDF or a PowerPoint deck, or paste your own text; with a PDF you can also add keywords
-              to steer which topics it covers.
+              With a PDF, a PowerPoint deck or your own text, every claim in the video is checked
+              against that material. With a topic only there is nothing to check against, so the
+              lesson is written from the AI&apos;s general knowledge, those statements are marked as
+              unchecked, and the video says so in its first sentence. With a PDF you can also add
+              keywords to steer which topics it covers.
             </p>
             {errors.mode ? (
               <p role="alert" className="text-[13px] font-medium text-danger-700">
@@ -219,12 +223,12 @@ export function SourceStep({
               {usesKeywords(values.mode) ? (
                 <section aria-labelledby={`${name}-keywords`} className="space-y-3">
                   <h3 id={`${name}-keywords`} className="text-sm font-semibold text-ink-950">
-                    {values.mode === 'both' ? 'Add keywords' : 'Your keywords'}
+                    {values.mode === 'both' ? 'Add keywords' : 'Your topic'}
                   </h3>
                   <p className="text-[13px] text-ink-500">
                     {values.mode === 'both'
-                      ? 'Topics you definitely want covered. They are kept as they are, alongside what we find in the PDF.'
-                      : 'The topics you want covered. We can suggest related subtopics, which are clearly marked as not coming from a source.'}
+                      ? 'Topics you definitely want covered, taught from your PDF. A keyword your PDF says nothing about is reported to you, never taught as if the PDF said it.'
+                      : 'The subject you want explained, for example "Machine learning". We can suggest subtopics, which are clearly marked as not coming from a source.'}
                   </p>
                   <KeywordInput
                     keywords={values.keywords}
@@ -239,6 +243,29 @@ export function SourceStep({
           </CardBody>
         </fieldset>
       </Card>
+
+      {usesInstructions(values.mode) ? (
+        <Card>
+          <CardBody>
+            <Field
+              label="Instructions (optional)"
+              error={errors.instructions}
+              hint={`Tell us how you want the lesson, in your own words - for example "Make it suitable for a beginner", "Explain the difficult concepts with simple examples" or "Focus on chapter 2". They guide the topics, the script and the scenes; they can never add a fact your source does not contain. ${values.instructions.trim().length.toLocaleString('en-GB')} of ${MAX_INSTRUCTIONS_CHARS.toLocaleString('en-GB')} characters.`}
+            >
+              {(control) => (
+                <Textarea
+                  {...control}
+                  rows={3}
+                  value={values.instructions}
+                  disabled={disabled}
+                  placeholder="For example: Make it suitable for a beginner and explain every term."
+                  onChange={(event) => onChange({ instructions: event.target.value })}
+                />
+              )}
+            </Field>
+          </CardBody>
+        </Card>
+      ) : null}
     </div>
   );
 }

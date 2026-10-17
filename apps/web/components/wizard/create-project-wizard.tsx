@@ -40,6 +40,7 @@ const INITIAL_VALUES: WizardValues = {
   file: null,
   keywords: [],
   text: '',
+  instructions: '',
   orientation: DEFAULT_ORIENTATION,
   durationMs: DEFAULT_DURATION_MS,
   language: DEFAULT_LANGUAGE,

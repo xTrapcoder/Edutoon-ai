@@ -42,6 +42,7 @@ export const queryKeys = {
   chunks: (id: string, sourceId: string) =>
     ['projects', id, 'sources', sourceId, 'chunks'] as const,
   topics: (id: string) => ['projects', id, 'topics'] as const,
+  coverage: (id: string) => ['projects', id, 'topics', 'coverage'] as const,
   jobs: (id: string) => ['projects', id, 'jobs'] as const,
   scripts: (id: string) => ['projects', id, 'scripts'] as const,
   script: (id: string, scriptId: string) => ['projects', id, 'scripts', scriptId] as const,
@@ -88,6 +89,16 @@ export function useTopics(projectId: string) {
   return useQuery({
     queryKey: queryKeys.topics(projectId),
     queryFn: () => api.listTopics(projectId),
+  });
+}
+
+/** Whether the document backs each keyword the person typed. Reads the claims, so it is
+ * refreshed whenever topics or claims change (they share the `topics` key prefix). */
+export function useKeywordCoverage(projectId: string, enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.coverage(projectId),
+    queryFn: () => api.getKeywordCoverage(projectId),
+    enabled,
   });
 }
 

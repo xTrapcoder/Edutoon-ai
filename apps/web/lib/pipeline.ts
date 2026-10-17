@@ -150,10 +150,7 @@ export function pickRenderStatus(
 }
 
 function sourceOutcome(input: PipelineInput): Outcome {
-  const { project, workflow, sources, topics } = input;
-  if (workflow.stage === 'keywords_unsupported') {
-    return blocked('A PDF is required - keyword-only projects are not supported yet.');
-  }
+  const { project, sources, topics } = input;
   if (!isFileProject(project)) {
     const keywords = topics?.filter((topic) => topic.origin === 'user').length ?? 0;
     return outcome('completed', keywords > 0 ? pluralise(keywords, 'keyword') : null);

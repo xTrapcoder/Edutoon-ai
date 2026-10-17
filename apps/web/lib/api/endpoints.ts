@@ -1,6 +1,7 @@
 import type {
   ClaimVerification,
   Job,
+  KeywordCoverage,
   Orientation,
   Project,
   ProjectCreateRequest,
@@ -157,6 +158,16 @@ export async function listTopics(projectId: string): Promise<Topic[]> {
     }),
   );
   return data.items;
+}
+
+/** Whether the document backs each keyword the person typed. */
+export function getKeywordCoverage(projectId: string): Promise<KeywordCoverage> {
+  return unwrap(
+    getApiClient().GET('/v1/projects/{project_id}/topics/coverage', {
+      params: { path: { project_id: projectId } },
+      signal: timeoutSignal(),
+    }),
+  );
 }
 
 export async function addKeywords(

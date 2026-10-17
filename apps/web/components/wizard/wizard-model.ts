@@ -15,19 +15,21 @@ export const MAX_TITLE_CHARS = 200;
 /** Mirrors `domain.pasted_text` in the API: the least and most pasted text it accepts. */
 export const MIN_TEXT_CHARS = 300;
 export const MAX_TEXT_CHARS = 200_000;
+/** Mirrors `domain.instructions` in the API: the most instruction text it accepts. */
+export const MAX_INSTRUCTIONS_CHARS = 2_000;
 
 export type SourceMode = 'pdf' | 'pptx' | 'text' | 'keywords' | 'both';
 
 /**
- * Whether a project can be built from keywords alone. It cannot yet: every claim in a video is
- * checked against the person's own material, and keywords alone give nothing to check against, so
- * the API refuses to create one. The choice stays visible (people ask for it) but cannot be picked.
- * PDF + keywords, where the keywords guide a PDF, is supported.
+ * A project can be built from a topic alone ("topic only"). With no document to check against, its
+ * lesson rests on the AI's general knowledge: the API records those statements as exactly that
+ * (never "supported"), and the video says so in its first sentence. If the server has the mode
+ * switched off it refuses to create the project and says why (`KEYWORD_ONLY_UNSUPPORTED_MESSAGE`).
  */
-export const KEYWORD_ONLY_SUPPORTED = false;
+export const KEYWORD_ONLY_SUPPORTED = true;
 
 export const KEYWORD_ONLY_UNSUPPORTED_MESSAGE =
-  'Keyword-only projects are not supported yet. Every claim in a video must be checked against your own source material, and keywords alone give nothing to check against. Upload a PDF - you can add keywords to guide it.';
+  'Topic-only projects are not available on this server. Upload a PDF, a PowerPoint deck or paste your own text instead.';
 
 export const isModeAvailable = (mode: SourceMode): boolean =>
   mode !== 'keywords' || KEYWORD_ONLY_SUPPORTED;
@@ -39,6 +41,8 @@ export interface WizardValues {
   keywords: string[];
   /** The pasted material, for the 'text' mode. */
   text: string;
+  /** What the person asks of the lesson in their own words; blank means none. */
+  instructions: string;
   orientation: Orientation;
   /** The target length in milliseconds - any whole number of seconds in range. */
   durationMs: number;
@@ -51,6 +55,11 @@ export const usesDeck = (mode: SourceMode): boolean => mode === 'pptx';
 export const usesFile = (mode: SourceMode): boolean => usesPdf(mode) || usesDeck(mode);
 export const usesKeywords = (mode: SourceMode): boolean => mode === 'keywords' || mode === 'both';
 export const usesText = (mode: SourceMode): boolean => mode === 'text';
+/**
+ * Whether the person may give instructions. A PowerPoint deck is turned into a lesson by fixed
+ * rules from its own slides (no model writes it), so there is nothing for instructions to steer.
+ */
+export const usesInstructions = (mode: SourceMode): boolean => mode !== 'pptx';
 
 /**
  * The API has three source types; "PDF + keywords" is a PDF project that also has keywords.
@@ -153,6 +162,15 @@ export interface SourceErrors {
   file?: string;
   text?: string;
   keywords?: string;
+  instructions?: string;
+}
+
+/** A readable problem with instruction text, or null if it is fine (it is optional). */
+export function instructionsProblem(text: string): string | null {
+  const length = text.replace(/\s+/g, ' ').trim().length;
+  return length > MAX_INSTRUCTIONS_CHARS
+    ? `Keep the instructions under ${MAX_INSTRUCTIONS_CHARS.toLocaleString('en-GB')} characters - you have ${length.toLocaleString('en-GB')}.`
+    : null;
 }
 
 export function sourceErrors(values: WizardValues): SourceErrors {
@@ -179,7 +197,14 @@ export function sourceErrors(values: WizardValues): SourceErrors {
     if (problem) errors.text = problem;
   }
   if (usesKeywords(values.mode) && values.keywords.length === 0) {
-    errors.keywords = 'Add at least one keyword.';
+    errors.keywords =
+      values.mode === 'keywords'
+        ? 'Add the topic you want explained.'
+        : 'Add at least one keyword.';
+  }
+  if (usesInstructions(values.mode)) {
+    const problem = instructionsProblem(values.instructions);
+    if (problem) errors.instructions = problem;
   }
   return errors;
 }

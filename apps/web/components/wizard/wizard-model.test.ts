@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest';
 import {
   fileKindOf,
   fileProblem,
+  instructionsProblem,
   isModeAvailable,
   KEYWORD_ONLY_SUPPORTED,
   KEYWORD_ONLY_UNSUPPORTED_MESSAGE,
+  MAX_INSTRUCTIONS_CHARS,
   MAX_KEYWORDS,
   MAX_TEXT_CHARS,
   mergeKeywords,
@@ -16,6 +18,7 @@ import {
   textProblem,
   usesDeck,
   usesFile,
+  usesInstructions,
   usesKeywords,
   usesText,
   type WizardValues,
@@ -30,6 +33,7 @@ const values = (over: Partial<WizardValues> = {}): WizardValues => ({
   file: pdf(),
   keywords: [],
   text: '',
+  instructions: '',
   orientation: 'horizontal',
   durationMs: 300_000,
   language: 'en-IN',
@@ -86,25 +90,50 @@ describe('sourceErrors', () => {
   });
 });
 
-describe('keyword-only projects', () => {
-  it('are not supported yet, and the only mode that is refused', () => {
-    expect(KEYWORD_ONLY_SUPPORTED).toBe(false);
-    expect(isModeAvailable('keywords')).toBe(false);
-    expect(isModeAvailable('pdf')).toBe(true);
-    expect(isModeAvailable('both')).toBe(true);
+describe('topic-only projects', () => {
+  it('are available, and need no file and no text', () => {
+    expect(KEYWORD_ONLY_SUPPORTED).toBe(true);
+    for (const mode of ['pdf', 'pptx', 'text', 'keywords', 'both'] as const) {
+      expect(isModeAvailable(mode)).toBe(true);
+    }
+    expect(sourceErrors(values({ mode: 'keywords', file: null, keywords: ['a'] }))).toEqual({});
+    expect(projectSourceType('keywords')).toBe('topic');
   });
 
-  it('cannot be submitted even with keywords filled in', () => {
-    const errors = sourceErrors(values({ mode: 'keywords', file: null, keywords: ['a'] }));
-    expect(errors.mode).toBe(KEYWORD_ONLY_UNSUPPORTED_MESSAGE);
-    expect(Object.keys(errors)).toEqual(['mode']);
+  it('ask for the topic, in words that fit a topic-only lesson', () => {
+    expect(sourceErrors(values({ mode: 'keywords', file: null, keywords: [] }))).toEqual({
+      keywords: 'Add the topic you want explained.',
+    });
   });
 
-  it('say why, and what to do instead, in the same words the API uses', () => {
-    expect(KEYWORD_ONLY_UNSUPPORTED_MESSAGE).toContain(
-      'Keyword-only projects are not supported yet',
-    );
+  it('say where it is unavailable and what to do instead, if the server switched it off', () => {
+    expect(KEYWORD_ONLY_UNSUPPORTED_MESSAGE).toContain('not available on this server');
     expect(KEYWORD_ONLY_UNSUPPORTED_MESSAGE).toContain('Upload a PDF');
+  });
+});
+
+describe('instructions', () => {
+  it('are optional, and a PowerPoint deck takes none', () => {
+    expect(sourceErrors(values({ instructions: '' }))).toEqual({});
+    expect(sourceErrors(values({ instructions: 'Make it suitable for a beginner.' }))).toEqual({});
+    for (const mode of ['pdf', 'text', 'keywords', 'both'] as const) {
+      expect(usesInstructions(mode)).toBe(true);
+    }
+    expect(usesInstructions('pptx')).toBe(false);
+    expect(
+      sourceErrors(values({ mode: 'pptx', instructions: 'x'.repeat(5000), file: pdf('d.pptx') }))
+        .instructions,
+    ).toBeUndefined();
+  });
+
+  it('are refused over the limit, with the limit in the message, counting collapsed spaces', () => {
+    expect(instructionsProblem('x'.repeat(MAX_INSTRUCTIONS_CHARS))).toBeNull();
+    expect(instructionsProblem('   a   b   ')).toBeNull();
+    const problem = instructionsProblem('x'.repeat(MAX_INSTRUCTIONS_CHARS + 1));
+    expect(problem).toContain('2,000');
+    expect(sourceErrors(values({ instructions: 'x'.repeat(2500) })).instructions).toContain(
+      '2,000',
+    );
   });
 });
 

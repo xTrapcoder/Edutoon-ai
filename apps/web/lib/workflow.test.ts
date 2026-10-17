@@ -36,12 +36,12 @@ describe('deriveStage', () => {
       'ready_for_topics',
     ],
     [
-      'a keyword-only project with no keywords (not supported yet)',
+      'a topic-only project with no topic yet',
       { project: keywords, sources: [], topics: [], jobs: [], scripts: [] },
-      'keywords_unsupported',
+      'needs_source',
     ],
     [
-      'a keyword-only project with keywords is a dead end, not a way forward',
+      'a topic-only project with a topic is ready for topics, like any other',
       {
         project: keywords,
         sources: [],
@@ -49,13 +49,9 @@ describe('deriveStage', () => {
         jobs: [],
         scripts: [],
       },
-      'keywords_unsupported',
+      'ready_for_topics',
     ],
-    [
-      'a keyword-only project whose data has not loaded yet',
-      { project: keywords },
-      'keywords_unsupported',
-    ],
+    ['a topic-only project whose data has not loaded yet', { project: keywords }, 'unknown'],
     [
       'an extraction that is queued',
       {

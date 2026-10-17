@@ -23,6 +23,7 @@ import { ActivityCard } from './activity-card';
 import { AddSourceForm, PasteTextForm } from './add-source';
 import { DeleteProjectCard } from './delete-project';
 import { EditSettingsModal } from './edit-settings-modal';
+import { InstructionsCard } from './instructions-card';
 import { useWorkspaceContext } from './workspace-context';
 
 const SOURCE_STATUS: Record<Source['status'], { label: string; tone: Tone }> = {
@@ -63,13 +64,9 @@ const GUIDANCE: Record<StageId, Guidance> = {
     title: 'Add your source material',
     body: 'Everything in the video will be traced back to what you add here.',
   },
-  keywords_unsupported: {
-    title: 'Keyword-only projects are not supported yet',
-    body: 'Every claim in a video is checked against your own source material, and keywords alone give nothing to check against. Start a new project from a PDF - you can add keywords to guide it.',
-  },
   source_failed: {
     title: "We couldn't read that PDF",
-    body: 'It may be a scanned image, protected, or damaged. Try a different PDF.',
+    body: 'The reason is shown under the file below. A scanned PDF is read with text recognition on this machine; if that could not find words, rescan it at a higher quality, or try a different PDF.',
   },
   reading_source: {
     title: 'Reading your PDF',
@@ -219,6 +216,19 @@ function SourceCard({ sources, topics }: { sources: readonly Source[]; topics: r
                     <Badge tone={status.tone} dot>
                       {status.label}
                     </Badge>
+                    {source.status === 'parsed' && source.extraction_method === 'ocr' ? (
+                      <p className="basis-full text-[13px] text-ink-600">
+                        Read with text recognition (OCR) on this machine:{' '}
+                        {pluralise(source.ocr_page_count ?? 0, 'page')} of {source.page_count ?? 0}{' '}
+                        were scans. Scanned text can contain small reading errors, so check the
+                        script against your document.
+                      </p>
+                    ) : null}
+                    {source.status === 'failed' && source.failure_reason ? (
+                      <p role="alert" className="basis-full text-[13px] text-danger-700">
+                        {source.failure_reason}
+                      </p>
+                    ) : null}
                   </li>
                 );
               })}
@@ -376,6 +386,7 @@ export function ProjectOverview() {
       </div>
       <div className="space-y-6">
         <SettingsCard />
+        <InstructionsCard />
         <DeleteProjectCard project={project} />
       </div>
     </div>

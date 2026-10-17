@@ -55,35 +55,93 @@ describe('Create project wizard', () => {
     expect(screen.getByRole('heading', { name: 'Add your source material' })).toBeInTheDocument();
   });
 
-  it('does not offer keyword-only projects, and says why and what to do instead', async () => {
+  it('offers a topic-only project and says plainly that nothing is checked against a document', async () => {
     renderWithClient(<CreateProjectWizard />);
 
-    const keywordsOnly = screen.getByRole('radio', { name: /^Keywords/ });
-    expect(keywordsOnly).toBeDisabled();
-    expect(keywordsOnly).not.toBeChecked();
+    const topicOnly = screen.getByRole('radio', { name: /^Topic only/ });
+    expect(topicOnly).toBeEnabled();
+    expect(topicOnly).not.toBeChecked();
     expect(screen.getByRole('radio', { name: /^PDF document/ })).toBeChecked(); // the default
-    expect(screen.getByText('Not yet')).toBeInTheDocument();
-    expect(screen.getByText(/keyword-only projects are not supported yet/i)).toBeInTheDocument();
-    expect(screen.getByText(/upload a pdf or a powerpoint deck/i)).toBeInTheDocument();
+    expect(screen.queryByText('Not yet')).not.toBeInTheDocument();
+    expect(screen.getAllByText(/general knowledge/i).length).toBeGreaterThan(0);
+    expect(screen.getByText(/the video says so in its first sentence/i)).toBeInTheDocument();
   });
 
-  it('never sends a keyword-only project to the API, even if the choice were forced', async () => {
-    let creations = 0;
+  it('creates a topic-only project with its topic and the instructions, and no file', async () => {
+    const calls: Call[] = shared.calls;
     server.use(
-      http.post(`${API}/v1/projects`, () => {
-        creations += 1;
-        return HttpResponse.json(project({ source_type: 'topic' }), { status: 201 });
+      http.post(`${API}/v1/projects`, async ({ request }) => {
+        calls.push({
+          path: 'project',
+          key: request.headers.get('idempotency-key'),
+          body: await request.json(),
+        });
+        return HttpResponse.json(project({ source_type: 'topic', title: 'Machine learning' }), {
+          status: 201,
+        });
+      }),
+      http.post(`${API}/v1/projects/${PROJECT_ID}/topics`, async ({ request }) => {
+        calls.push({
+          path: 'keywords',
+          key: request.headers.get('idempotency-key'),
+          body: await request.json(),
+        });
+        return HttpResponse.json({ items: [topic({ origin: 'user' })] }, { status: 201 });
       }),
     );
     renderWithClient(<CreateProjectWizard />);
 
-    await userEvent.type(screen.getByLabelText(/project title/i), 'Digital Electronics');
-    // The radio is disabled, so the only way in is not to be able to click it.
-    await userEvent.click(screen.getByRole('radio', { name: /^Keywords/ }));
+    await userEvent.type(screen.getByLabelText(/project title/i), 'Machine learning');
+    await userEvent.click(screen.getByRole('radio', { name: /^Topic only/ }));
+    expect(screen.queryByLabelText(/drag and drop your pdf/i)).not.toBeInTheDocument();
+    await userEvent.type(screen.getByLabelText('Add a keyword'), 'Machine learning{Enter}');
+    await userEvent.type(
+      screen.getByLabelText(/^Instructions/),
+      'Explain it to a complete beginner.',
+    );
     await userEvent.click(screen.getByRole('button', { name: 'Next' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Next' }));
 
-    expect(await screen.findByText('Choose a PDF to upload.')).toBeInTheDocument();
-    expect(creations).toBe(0);
+    expect(await screen.findByText('Topic only')).toBeInTheDocument();
+    expect(screen.getByText(/general knowledge/i)).toBeInTheDocument();
+    expect(screen.getByText('Explain it to a complete beginner.')).toBeInTheDocument();
+    await userEvent.click(await screen.findByRole('button', { name: 'Create project' }));
+
+    await waitFor(() => expect(router.push).toHaveBeenCalledWith(`/projects/${PROJECT_ID}/topics`));
+    expect(calls.map((call) => call.path)).toEqual(['project', 'keywords']);
+    expect(calls[0]?.body).toMatchObject({
+      source_type: 'topic',
+      instructions: 'Explain it to a complete beginner.',
+    });
+    expect(calls[1]?.body).toEqual({ keywords: ['Machine learning'] });
+  });
+
+  it('offers instructions for a PDF but never for a PowerPoint deck, and sends none when blank', async () => {
+    const calls: Call[] = shared.calls;
+    server.use(
+      http.post(`${API}/v1/projects`, async ({ request }) => {
+        calls.push({
+          path: 'project',
+          key: request.headers.get('idempotency-key'),
+          body: await request.json(),
+        });
+        return HttpResponse.json(project(), { status: 201 });
+      }),
+    );
+    renderWithClient(<CreateProjectWizard />);
+
+    expect(screen.getByLabelText(/^Instructions/)).toBeInTheDocument(); // PDF is the default
+    await userEvent.click(screen.getByRole('radio', { name: /^PowerPoint deck/ }));
+    expect(screen.queryByLabelText(/^Instructions/)).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('radio', { name: /^PDF document/ }));
+    await userEvent.type(screen.getByLabelText(/project title/i), 'Chapter 2');
+    await userEvent.upload(screen.getByLabelText(/drag and drop your pdf/i), PDF);
+    await userEvent.click(screen.getByRole('button', { name: 'Next' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Next' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Create project' }));
+
+    await waitFor(() => expect(router.push).toHaveBeenCalled());
+    expect(calls[0]?.body).not.toHaveProperty('instructions');
   });
 
   it('creates a PDF + keywords project with the chosen settings, uploads the PDF, then saves the keywords', async () => {

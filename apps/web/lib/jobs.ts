@@ -329,6 +329,73 @@ export function assessWait(job: Job, now: number = Date.now()): WaitAssessment {
   return { level: 'normal', elapsedMs, message: null };
 }
 
+export interface RemovedSentence {
+  sentence: string;
+  reason: string;
+  topic: string | null;
+  /** The rest of that passage was too short to read out, so the whole passage went. */
+  segmentDropped: boolean;
+}
+
+export interface SupportCheck {
+  /** Whether the AI judge ran (the rule-based removals are recorded either way). */
+  enabled: boolean;
+  judgedSentences: number;
+  uncheckedSentences: number;
+  removed: RemovedSentence[];
+}
+
+export interface ScriptChecks {
+  /** The lesson rests on the AI's general knowledge: it was built from a topic alone. */
+  generalKnowledge: boolean;
+  /** The sentence-level support check, or `null` when it did not run for this script. */
+  support: SupportCheck | null;
+}
+
+/**
+ * What the server's own checks did to a script: whether it is a general-knowledge lesson, and the
+ * sentence-level support check (how many sentences were judged, which were removed and why).
+ * `null` when no `generate_script` job result is known for the script (an older script), so "no
+ * check ran" is never shown as "nothing was found".
+ */
+export function readScriptChecks(
+  jobs: readonly Job[] | undefined,
+  scriptId: string,
+): ScriptChecks | null {
+  const job = jobs?.find(
+    (candidate) =>
+      candidate.kind === 'generate_script' &&
+      candidate.status === 'succeeded' &&
+      isRecord(candidate.result) &&
+      candidate.result.script_id === scriptId,
+  );
+  if (!job || !isRecord(job.result)) return null;
+  const generalKnowledge = job.result.general_knowledge === true;
+  const raw = job.result.support_check;
+  let support: SupportCheck | null = null;
+  if (isRecord(raw)) {
+    const removed: RemovedSentence[] = [];
+    if (Array.isArray(raw.removed_sentences)) {
+      for (const entry of raw.removed_sentences) {
+        if (!isRecord(entry) || typeof entry.sentence !== 'string') continue;
+        removed.push({
+          sentence: entry.sentence,
+          reason: typeof entry.reason === 'string' ? entry.reason : '',
+          topic: typeof entry.topic === 'string' ? entry.topic : null,
+          segmentDropped: entry.segment_dropped === true,
+        });
+      }
+    }
+    support = {
+      enabled: raw.enabled !== false,
+      judgedSentences: asCount(raw.judged_sentences) ?? 0,
+      uncheckedSentences: asCount(raw.unchecked_sentences) ?? 0,
+      removed,
+    };
+  }
+  return { generalKnowledge, support };
+}
+
 export interface WeakCitation {
   /** Zero-based position of the passage in the script (`ScriptSegment.segment_index`). */
   segmentIndex: number;

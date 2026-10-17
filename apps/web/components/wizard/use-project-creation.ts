@@ -9,6 +9,7 @@ import { queryKeys } from '@/lib/api/queries';
 import {
   projectSourceType,
   usesFile,
+  usesInstructions,
   usesKeywords,
   usesText,
   type WizardValues,
@@ -105,6 +106,9 @@ export function useProjectCreation() {
               language: values.language,
               orientation: values.orientation,
               target_duration_ms: values.durationMs,
+              ...(usesInstructions(values.mode) && values.instructions.trim() !== ''
+                ? { instructions: values.instructions.trim() }
+                : {}),
             },
             attemptKeys.project,
           );

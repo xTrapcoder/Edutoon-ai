@@ -18,6 +18,7 @@ import { QueryGate } from '@/components/workspace/query-gate';
 import { useWorkspaceContext } from '@/components/workspace/workspace-context';
 import { isDeckProject, isFileProject, isTextProject, sourceWords } from '@/lib/source-kind';
 import { ClaimExtractionPanel } from './claim-extraction-panel';
+import { KeywordCoverageCard } from './keyword-coverage';
 import { TopicDetail } from './topic-detail';
 import { TopicList } from './topic-list';
 import { buildTree, countTopics, findTopic } from './topic-tree';
@@ -113,28 +114,6 @@ function TopicsView() {
     ? describeError(start.error, { action: 'start topic extraction' })
     : null;
   const failed = extraction?.status === 'failed';
-
-  // --- a keyword-only project: there is nothing to verify claims against ------------------
-  if (workflow.stage === 'keywords_unsupported' && !hasTopics) {
-    return (
-      <Card>
-        <CardHeader
-          title="Keyword-only projects are not supported yet"
-          description="Every claim in a video is checked against your own source material, and keywords alone give nothing to check against."
-          icon={<FilePlus2 className="size-4" aria-hidden />}
-        />
-        <CardBody className="space-y-3">
-          <p className="text-sm text-ink-600">
-            Start a new project from a PDF. You can add keywords to it to steer which topics it
-            covers.
-          </p>
-          <ButtonLink href="/projects/new" leadingIcon={<Plus className="size-4" aria-hidden />}>
-            Start a PDF project
-          </ButtonLink>
-        </CardBody>
-      </Card>
-    );
-  }
 
   // --- the source is not ready ---------------------------------------------------------
   const sourceMissing = workflow.stage === 'needs_source' || workflow.stage === 'source_failed';
@@ -363,6 +342,8 @@ function TopicsView() {
         onRefreshJobs={() => void jobs.refetch()}
         refreshingJobs={jobs.isRefetching}
       />
+
+      {isFileProject(project) ? <KeywordCoverageCard projectId={project.id} /> : null}
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)]">
         <Card className="lg:sticky lg:top-24 lg:max-h-[calc(100vh-8rem)] lg:self-start lg:overflow-hidden">

@@ -39,7 +39,7 @@ describe('Script step', () => {
             error: {
               code: 'validation_error',
               message:
-                'This project has no supported claims yet - verify some source material before generating a script.',
+                "These accepted topics have no verified evidence yet: 'Plate boundaries'. Extract and verify claims for them, or reject them, before generating a script.",
             },
           },
           { status: 400 },
@@ -53,6 +53,35 @@ describe('Script step', () => {
     expect(
       await screen.findByRole('heading', { name: 'Verification required' }),
     ).toBeInTheDocument();
+  });
+
+  it('shows any other refusal in its own words, never as "no verified claims"', async () => {
+    serveProject({ ...ready, scripts: [], claims: [claim()] });
+    server.use(
+      http.post(`${base}/scripts`, () =>
+        HttpResponse.json(
+          {
+            error: {
+              code: 'validation_error',
+              message:
+                '9 accepted topics cannot each receive a section within a 240000ms target duration. Accept fewer topics, or increase the target duration.',
+            },
+          },
+          { status: 400 },
+        ),
+      ),
+    );
+
+    renderProjectPage(<ScriptPage />, 'script');
+    await userEvent.click(await screen.findByRole('button', { name: /generate script/i }));
+
+    expect(
+      await screen.findByText(/9 accepted topics cannot each receive a section/),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('heading', { name: 'Verification required' }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /generate script/i })).toBeInTheDocument();
   });
 
   it('starts generation with an idempotency key and the signed-in token, then shows real progress', async () => {
