@@ -172,13 +172,33 @@ describe('readScriptChecks', () => {
         ],
         fallbackTopics: ['Hotspots'],
       },
+      shortfall: null,
     });
+  });
+
+  it('says a script is short because of the evidence only when the server says so', () => {
+    const short = {
+      estimated_duration_ms: 143_000,
+      target_duration_ms: 300_000,
+      shortfall_reason: 'evidence_limited',
+    };
+    expect(readScriptChecks([scriptJob(short)], 's1')?.shortfall).toEqual({
+      estimatedMs: 143_000,
+      targetMs: 300_000,
+    });
+    expect(
+      readScriptChecks([scriptJob({ ...short, shortfall_reason: null })], 's1')?.shortfall,
+    ).toBeNull();
+    expect(
+      readScriptChecks([scriptJob({ shortfall_reason: 'evidence_limited' })], 's1')?.shortfall,
+    ).toBeNull();
   });
 
   it('knows a general-knowledge lesson, and never confuses "no check ran" with "nothing found"', () => {
     expect(readScriptChecks([scriptJob({ general_knowledge: true })], 's1')).toEqual({
       generalKnowledge: true,
       support: null,
+      shortfall: null,
     });
     expect(readScriptChecks([scriptJob({})], 'other-script')).toBeNull();
     expect(readScriptChecks(undefined, 's1')).toBeNull();

@@ -1,5 +1,6 @@
 import type { ScriptChecks } from '@/lib/jobs';
 import { Alert } from '@/components/ui/feedback';
+import { formatClock } from '@/lib/generation-settings';
 
 /*
  * What the server's checks did to this script, said plainly. Two separate things:
@@ -14,7 +15,7 @@ import { Alert } from '@/components/ui/feedback';
  */
 
 export function SupportCheckNotice({ checks }: { checks: ScriptChecks }) {
-  const { generalKnowledge, support } = checks;
+  const { generalKnowledge, support, shortfall } = checks;
   const removed = support?.removed ?? [];
   const unchecked = support?.uncheckedSentences ?? 0;
 
@@ -26,6 +27,21 @@ export function SupportCheckNotice({ checks }: { checks: ScriptChecks }) {
           about the topic, written as cautiously as it could. The video says so in its first
           sentence. Read it with a teacher&rsquo;s eye before approving, and check anything you plan
           to rely on.
+        </Alert>
+      ) : null}
+
+      {shortfall ? (
+        <Alert
+          tone="info"
+          title={`This script runs about ${formatClock(shortfall.estimatedMs)}, shorter than your ${formatClock(shortfall.targetMs)} target`}
+        >
+          {generalKnowledge
+            ? 'The facts the lesson can state'
+            : 'The facts verified from your source'}{' '}
+          carry about this much narration. Asking the writer for more would have meant repeating
+          them or adding things your {generalKnowledge ? 'topic' : 'source'} does not say, so
+          nothing was added to reach the target. For a longer lesson, add more source material, add
+          keywords for more detail, or choose a shorter target.
         </Alert>
       ) : null}
 

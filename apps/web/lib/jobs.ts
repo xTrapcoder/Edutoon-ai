@@ -347,11 +347,22 @@ export interface SupportCheck {
   fallbackTopics: string[];
 }
 
+/** How the script's length compares with what the owner asked for, when the evidence is why it is short. */
+export interface ScriptLength {
+  estimatedMs: number;
+  targetMs: number;
+}
+
 export interface ScriptChecks {
   /** The lesson rests on the AI's general knowledge: it was built from a topic alone. */
   generalKnowledge: boolean;
   /** The sentence-level support check, or `null` when it did not run for this script. */
   support: SupportCheck | null;
+  /**
+   * Set only when the script is shorter than the target *because the verified claims cannot carry
+   * more* (the server removed or rewrote unsupported text and did not pad). `null` otherwise.
+   */
+  shortfall: ScriptLength | null;
 }
 
 /**
@@ -405,7 +416,13 @@ export function readScriptChecks(
         : [],
     };
   }
-  return { generalKnowledge, support };
+  const estimatedMs = asCount(job.result.estimated_duration_ms);
+  const targetMs = asCount(job.result.target_duration_ms);
+  const shortfall =
+    job.result.shortfall_reason === 'evidence_limited' && estimatedMs !== null && targetMs !== null
+      ? { estimatedMs, targetMs }
+      : null;
+  return { generalKnowledge, support, shortfall };
 }
 
 export interface WeakCitation {
