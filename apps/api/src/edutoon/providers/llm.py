@@ -184,8 +184,6 @@ _SUPPORT_SYSTEM_PROMPT = (
     "requirement, purpose, reason, importance (crucial, essential, key), consequence, direction "
     "of effect, quantity, place, scope word (only, always, most, all) or example that the "
     "sentence adds or changes. Write 'none' only if the sentence adds nothing beyond the claims. "
-    "Saying less than the claims, or only part of what a claim says, is fine: only what the "
-    "sentence ADDS or CHANGES counts. "
     "Step 3: verdict - 'supported' only if the difference is none or is just different wording; "
     "otherwise 'unsupported'. "
     "Never use outside knowledge: a sentence that is true in the real world but not stated by the "
