@@ -21,7 +21,7 @@ from collections.abc import Sequence
 from typing import Final
 
 MAX_TITLES_NAMED: Final = 6
-"""More topics than this are named by count and by their first and last, not one by one."""
+"""More topics than this are named by their first and last, not one by one."""
 
 # A sentence that ends a lesson - not merely one that looks back at an earlier part of it.
 _CLOSING: Final = re.compile(
@@ -61,7 +61,9 @@ def closing_text(topic_titles: Sequence[str]) -> str:
     if not titles:
         return "That brings us to the end of this lesson."
     if len(titles) > MAX_TITLES_NAMED:
-        covered = f"{len(titles)} topics, from {titles[0]} to {titles[-1]}"
+        # No count: a digit would be a figure no claim contains, which the script's own
+        # rule rejects.
+        covered = f"everything from {titles[0]} to {titles[-1]}"
     else:
         covered = _join(titles)
     return f"That brings us to the end of this lesson. We covered {covered}."

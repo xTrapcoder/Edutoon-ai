@@ -116,6 +116,7 @@ from edutoon.domain.script_duration import (
     split_topic_budget,
 )
 from edutoon.domain.script_provenance import (
+    GROUNDED_KINDS,
     WEAK_CITATION_COVERAGE,
     GroundingReference,
     UngroundedSegmentError,
@@ -124,7 +125,7 @@ from edutoon.domain.script_provenance import (
     relevant_claim_ids,
     weak_citation_coverage,
 )
-from edutoon.domain.storyboard_provenance import content_words
+from edutoon.domain.storyboard_provenance import content_words, unsupported_tokens
 from edutoon.domain.topic_tree import accepted_topics
 from edutoon.providers.llm import (
     LLM,
@@ -750,7 +751,13 @@ def _closing_segment(
     topics: Sequence[ProjectTopicRecord], settings: Settings
 ) -> ScriptSegmentDraft:
     """The fixed closing of a lesson that does not end in one (``domain.script_closing``)."""
-    narration = closing_text([topic.title for topic in topics])
+    titles = [topic.title for topic in topics]
+    narration = closing_text(titles)
+    # A fixed sentence must never fail a generation: it is held to the script's own rule (no
+    # figure or name outside the titles it may mention), and falls back to a closing with no
+    # titles at all.
+    if unsupported_tokens(narration, " ".join(titles), kinds=GROUNDED_KINDS):
+        narration = closing_text([])
     words = len(narration.split())
     return ScriptSegmentDraft(
         segment_index=0,

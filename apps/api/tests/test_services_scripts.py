@@ -1552,3 +1552,39 @@ async def test_the_closing_can_be_switched_off(db_session, monkeypatch):
     job = await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
 
     assert job.result["closing_added"] is False
+
+
+async def test_a_closing_over_many_topics_cannot_fail_the_generation(db_session, monkeypatch):
+    """Regression: with eight topics the closing said "We covered 8 topics" and the figure rule
+    rejected it, failing the whole generation at the end."""
+    monkeypatch.setenv("SCRIPT_FIXED_CLOSING", "true")
+    monkeypatch.setenv("MIN_SECTION_DURATION_MS", "1000")
+    get_settings.cache_clear()
+    specs = [(f"Topic {chr(65 + n)}", [f"Fact number {chr(65 + n)} is stated."]) for n in range(8)]
+    owner, project, topics, claims_by_topic = await _project_with_topics(db_session, specs)
+    enq = await scripts_service.enqueue_script_generation(
+        db_session, project_id=project.id, owner_id=owner.id, idempotency_key="idem-many"
+    )
+    llm, _outline, _section = _mock_llm(
+        monkeypatch,
+        sections_by_topic={
+            topic.id: [
+                [
+                    _segment(
+                        claims_by_topic[topic.id][0].claim_text,
+                        [str(claims_by_topic[topic.id][0].id)],
+                    )
+                ]
+            ]
+            for topic in topics
+        },
+    )
+
+    job = await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
+
+    assert job.status == "succeeded"
+    assert job.result["closing_added"] is True
+    segments = await scripts_repo.list_segments(
+        db_session, project_id=enq.job.project_id, script_id=enq.script.id
+    )
+    assert segments[-1].narration_text.endswith("We covered everything from Topic A to Topic H.")

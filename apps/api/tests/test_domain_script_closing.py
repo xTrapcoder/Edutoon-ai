@@ -52,12 +52,18 @@ def test_the_closing_names_the_topics_in_order() -> None:
     assert closing_text(["Valves"]).endswith("We covered Valves.")
 
 
-def test_many_topics_are_named_by_count_and_first_and_last() -> None:
-    titles = [f"Topic {n}" for n in range(1, MAX_TITLES_NAMED + 2)]
+def test_many_topics_are_named_by_first_and_last_and_never_counted() -> None:
+    """Regression: "We covered 8 topics, from ..." put a digit in the closing, which the script's
+    own rule (a figure must come from a claim) rejected, failing a 17-minute generation at its last
+    step."""
+    titles = [f"Topic {n}" for n in range(1, MAX_TITLES_NAMED + 3)]
 
     text = closing_text(titles)
 
-    assert "We covered 7 topics, from Topic 1 to Topic 7." in text
+    assert text.endswith("We covered everything from Topic 1 to Topic 8.")
+    assert not any(
+        character.isdigit() for character in closing_text(["Valves"] * 1 + ["Heart"] * 9)
+    )
 
 
 def test_repeated_and_blank_titles_are_left_out() -> None:
@@ -70,3 +76,12 @@ def test_repeated_and_blank_titles_are_left_out() -> None:
 
 def test_the_closing_is_itself_recognised_as_a_closing() -> None:
     assert has_closing(closing_text(["Valves", "Circulation"])) is True
+
+
+def test_the_closing_never_adds_a_figure_of_its_own() -> None:
+    from edutoon.domain.storyboard_provenance import unsupported_tokens
+
+    for count in range(0, 14):
+        titles = [f"Topic {chr(65 + n)}" for n in range(count)]
+        text = closing_text(titles)
+        assert unsupported_tokens(text, " ".join(titles), kinds=frozenset({"number"})) == [], text
