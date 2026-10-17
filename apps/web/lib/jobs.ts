@@ -394,9 +394,14 @@ export function readScriptChecks(
       uncheckedSentences: asCount(raw.unchecked_sentences) ?? 0,
       removed,
       fallbackTopics: Array.isArray(raw.fallback_sections)
-        ? raw.fallback_sections.flatMap((entry) =>
-            isRecord(entry) && typeof entry.topic === 'string' ? [entry.topic] : [],
-          )
+        ? // The same topic can fall back in the first pass and again in the length correction.
+          [
+            ...new Set(
+              raw.fallback_sections.flatMap((entry) =>
+                isRecord(entry) && typeof entry.topic === 'string' ? [entry.topic] : [],
+              ),
+            ),
+          ]
         : [],
     };
   }
