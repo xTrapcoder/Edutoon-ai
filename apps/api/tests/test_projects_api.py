@@ -1050,3 +1050,113 @@ async def test_a_project_owned_by_someone_else_cannot_have_its_settings_changed(
 
     assert response.status_code == 404
     assert fetched.json()["orientation"] == "horizontal"
+
+
+# --- free-text instructions ------------------------------------------------------------------
+
+
+async def test_instructions_are_stored_cleaned_and_explained_back(client_factory, auth_headers):
+    headers = auth_headers()
+    async with client_factory() as client:
+        created = await client.post(
+            "/v1/projects",
+            json=_create_payload(
+                source_type="pdf",
+                instructions="  Make it  suitable for a beginner.\n\nFocus on the Calvin cycle, "
+                "and show photos of leaves.  ",
+            ),
+            headers={**headers, "Idempotency-Key": "instr-1"},
+        )
+        assert created.status_code == 201
+        body = created.json()
+        fetched = await client.get(f"/v1/projects/{body['id']}", headers=headers)
+
+    assert body["instructions"] == (
+        "Make it suitable for a beginner. Focus on the Calvin cycle, and show photos of leaves."
+    )
+    kinds = {(note["kind"], note["text"]) for note in body["instructions_notes"]}
+    assert ("applied", "Audience: written for complete beginners.") in kinds
+    assert any(kind == "unsupported" and "Images" in text for kind, text in kinds)
+    assert fetched.json() == body
+
+
+async def test_a_project_without_instructions_has_none_and_no_notes(client_factory, auth_headers):
+    async with client_factory() as client:
+        response = await client.post(
+            "/v1/projects",
+            json=_create_payload(),
+            headers={**auth_headers(), "Idempotency-Key": "instr-2"},
+        )
+
+    assert response.json()["instructions"] is None
+    assert response.json()["instructions_notes"] == []
+
+
+async def test_blank_instructions_are_the_same_as_none(client_factory, auth_headers):
+    async with client_factory() as client:
+        response = await client.post(
+            "/v1/projects",
+            json=_create_payload(instructions="   \n  "),
+            headers={**auth_headers(), "Idempotency-Key": "instr-3"},
+        )
+
+    assert response.status_code == 201
+    assert response.json()["instructions"] is None
+
+
+async def test_over_long_instructions_are_refused_with_the_limit_named(
+    client_factory, auth_headers
+):
+    async with client_factory() as client:
+        response = await client.post(
+            "/v1/projects",
+            json=_create_payload(instructions="word " * 500),
+            headers={**auth_headers(), "Idempotency-Key": "instr-4"},
+        )
+
+    assert response.status_code == 422
+    assert "2000" in response.text
+
+
+async def test_instructions_can_be_changed_and_cleared(client_factory, auth_headers):
+    headers = auth_headers()
+    async with client_factory() as client:
+        created = await client.post(
+            "/v1/projects",
+            json=_create_payload(instructions="Keep it concise."),
+            headers={**headers, "Idempotency-Key": "instr-5"},
+        )
+        project_id = created.json()["id"]
+        changed = await client.patch(
+            f"/v1/projects/{project_id}",
+            json={"instructions": "Explain the difficult concepts with simple examples."},
+            headers={**headers, "Idempotency-Key": "instr-6"},
+        )
+        untouched = await client.patch(
+            f"/v1/projects/{project_id}",
+            json={"title": "Renamed"},
+            headers={**headers, "Idempotency-Key": "instr-7"},
+        )
+        cleared = await client.patch(
+            f"/v1/projects/{project_id}",
+            json={"instructions": None},
+            headers={**headers, "Idempotency-Key": "instr-8"},
+        )
+
+    assert changed.json()["instructions"].startswith("Explain the difficult concepts")
+    assert untouched.json()["instructions"] == changed.json()["instructions"]
+    assert cleared.json()["instructions"] is None
+    assert cleared.json()["instructions_notes"] == []
+
+
+async def test_unknown_project_fields_are_still_refused_alongside_instructions(
+    client_factory, auth_headers
+):
+    async with client_factory() as client:
+        response = await client.post(
+            "/v1/projects",
+            json=_create_payload(instructions="ok", free_text="no"),
+            headers={**auth_headers(), "Idempotency-Key": "instr-9"},
+        )
+
+    assert response.status_code == 422

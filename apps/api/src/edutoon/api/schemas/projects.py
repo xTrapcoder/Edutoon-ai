@@ -16,6 +16,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from edutoon.domain import instructions as instructions_domain
 from edutoon.domain.generation_settings import (
     DEFAULT_LANGUAGE,
     DEFAULT_ORIENTATION,
@@ -47,6 +48,14 @@ def _not_blank(value: str | None) -> str | None:
     return value
 
 
+def _clean_instructions(value: str | None) -> str | None:
+    """Instructions are optional: blank is the same as none, and over-long text is a 422."""
+    try:
+        return instructions_domain.clean(value)
+    except instructions_domain.InstructionsError as problem:
+        raise ValueError(str(problem)) from problem
+
+
 class ProjectCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -56,12 +65,20 @@ class ProjectCreateRequest(BaseModel):
     language: Language = DEFAULT_LANGUAGE
     orientation: Orientation = DEFAULT_ORIENTATION
     target_duration_ms: TargetDurationMs = DEFAULT_TARGET_DURATION_MS
+    # What the owner asks of the lesson, in their own words (``domain.instructions``). Guidance
+    # only: it never relaxes a grounding rule.
+    instructions: str | None = None
 
     @field_validator("title")
     @classmethod
     def _title_not_blank(cls, value: str) -> str:
         _not_blank(value)
         return value
+
+    @field_validator("instructions")
+    @classmethod
+    def _tidy_instructions(cls, value: str | None) -> str | None:
+        return _clean_instructions(value)
 
 
 class ProjectUpdateRequest(BaseModel):
@@ -81,6 +98,7 @@ class ProjectUpdateRequest(BaseModel):
     language: Language | None = None
     orientation: Orientation | None = None
     target_duration_ms: TargetDurationMs | None = None
+    instructions: str | None = None
 
     @field_validator("title")
     @classmethod
@@ -88,12 +106,25 @@ class ProjectUpdateRequest(BaseModel):
         _not_blank(value)
         return value
 
+    @field_validator("instructions")
+    @classmethod
+    def _tidy_instructions(cls, value: str | None) -> str | None:
+        return _clean_instructions(value)
+
     @model_validator(mode="after")
     def _reject_explicit_null_for_not_null_columns(self) -> ProjectUpdateRequest:
         for name in _NOT_NULL_FIELDS:
             if name in self.model_fields_set and getattr(self, name) is None:
                 raise ValueError(f"{name} cannot be null - omit it to leave it unchanged.")
         return self
+
+
+class InstructionNoteResponse(BaseModel):
+    """One thing said back about the owner's instructions: ``applied`` (done in code),
+    ``guidance`` (passed to the writers, not guaranteed) or ``unsupported`` (cannot be done)."""
+
+    kind: Literal["applied", "guidance", "unsupported"]
+    text: str
 
 
 class ProjectResponse(BaseModel):
@@ -110,10 +141,19 @@ class ProjectResponse(BaseModel):
     target_duration_ms: int
     created_at: datetime
     updated_at: datetime
+    instructions: str | None = None
+    instructions_notes: list[InstructionNoteResponse] = []
 
     @classmethod
     def from_record(cls, record: ProjectRecord) -> ProjectResponse:
-        return cls.model_validate(record)
+        response = cls.model_validate(record)
+        if record.instructions:
+            understood = instructions_domain.interpret(record.instructions)
+            response.instructions_notes = [
+                InstructionNoteResponse(kind=note.kind, text=note.text)
+                for note in instructions_domain.notes(record.instructions, understood)
+            ]
+        return response
 
 
 class ProjectListResponse(BaseModel):

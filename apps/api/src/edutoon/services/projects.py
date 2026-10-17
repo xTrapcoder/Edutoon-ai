@@ -40,6 +40,7 @@ async def create_project(
     language: Language = DEFAULT_LANGUAGE,
     orientation: Orientation = DEFAULT_ORIENTATION,
     target_duration_ms: int = DEFAULT_TARGET_DURATION_MS,
+    instructions: str | None = None,
 ) -> ProjectRecord:
     if source_type == "topic" and not get_settings().KEYWORD_ONLY_PROJECTS_ENABLED:
         raise ValidationError(KEYWORD_ONLY_UNSUPPORTED)
@@ -52,6 +53,7 @@ async def create_project(
         language=language,
         orientation=orientation,
         target_duration_ms=target_duration_ms,
+        instructions=instructions,
     )
 
 

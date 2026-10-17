@@ -135,6 +135,7 @@ from edutoon.repositories.jobs import JobRecord
 from edutoon.repositories.project_topics import ProjectTopicRecord
 from edutoon.repositories.scripts import ScriptRecord, ScriptSegmentRecord
 from edutoon.services import audit_logs as audit_logs_service
+from edutoon.services import instructions as instructions_service
 from edutoon.services import projects as projects_service
 from edutoon.services import spend_guard
 from edutoon.services.job_errors import describe_job_failure
@@ -905,7 +906,14 @@ async def _generate_and_attach(
             "the number of accepted topics or the target duration."
         )
 
-    brief = ScriptBrief(topic=project.title, language=project.language)
+    audience, tone = instructions_service.audience_and_tone(project)
+    brief = ScriptBrief(
+        topic=project.title,
+        language=project.language,
+        audience=audience,
+        tone=tone,
+        instructions=instructions_service.prompt_block(project),
+    )
     outline_topics = [
         OutlineTopicBrief(
             topic_id=topic.id,

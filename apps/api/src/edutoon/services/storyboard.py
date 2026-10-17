@@ -101,6 +101,7 @@ from edutoon.repositories.script_segment_audio import ScriptSegmentAudioRecord
 from edutoon.repositories.script_segment_scenes import NewScene, ScriptSegmentSceneRecord
 from edutoon.repositories.scripts import ScriptRecord, ScriptSegmentRecord
 from edutoon.services import audit_logs as audit_logs_service
+from edutoon.services import instructions as instructions_service
 from edutoon.services import projects as projects_service
 from edutoon.services import script_audio as script_audio_service
 from edutoon.services.job_errors import describe_job_failure, public_job_error
@@ -593,6 +594,7 @@ async def _generate_storyboard(
                     narration_text=segment.narration_text,
                     orientation=project.orientation,
                     lesson_title=project.title,
+                    style_hints=instructions_service.storyboard_hints(project),
                 )
                 corrections: list[str] = []
                 rewrites = 0
