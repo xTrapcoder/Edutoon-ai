@@ -1,16 +1,19 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
+from dataclasses import dataclass
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from edutoon.core.config import get_settings
 from edutoon.core.errors import ConflictError, NotFoundError, ValidationError
 from edutoon.core.pagination import Page
-from edutoon.domain import pasted_text
+from edutoon.domain import pasted_text, pdf_pages
 from edutoon.domain.deck import has_content, slide_text, slide_to_json
 from edutoon.domain.source_storage import source_storage_key
-from edutoon.providers import pdf, pptx
+from edutoon.providers import ocr, pdf, pptx
 from edutoon.providers.storage import Storage
 from edutoon.repositories import uploaded_sources as uploaded_sources_repo
 from edutoon.repositories.source_chunks import NewSourceChunk
@@ -108,7 +111,7 @@ async def upload_source(
         )
 
     try:
-        pages = pdf.extract_pages(content, max_pages=max_pages)
+        pages: list[str] = [text or "" for text in pdf.extract_pages(content, max_pages=max_pages)]
     except pdf.PdfTooManyPagesError as too_long:
         return await update_uploaded_source(
             session,
@@ -116,21 +119,31 @@ async def upload_source(
             project_id=project_id,
             status="failed",
             page_count=too_long.page_count,
+            failure_code="too_many_pages",
         )
     except pdf.PdfParseError:
         return await update_uploaded_source(
-            session, source_id=source.id, project_id=project_id, status="failed"
+            session,
+            source_id=source.id,
+            project_id=project_id,
+            status="failed",
+            failure_code="unreadable",
         )
 
+    reading = await _read_scanned_pages(pages, content)
+    pages = reading.pages
+
     if not any(character.isalpha() for text in pages for character in text):
-        # A scan, or a document that is only page numbers and symbols: there is nothing to
-        # build evidence from. Fail it, accurately, instead of "parsing" zero chunks.
+        # A scan nothing could be read from, or a document that is only page numbers and symbols:
+        # there is nothing to build evidence from. Fail it, accurately, instead of "parsing" zero
+        # chunks - and say whether text recognition was tried.
         return await update_uploaded_source(
             session,
             source_id=source.id,
             project_id=project_id,
             status="failed",
             page_count=len(pages),
+            failure_code=reading.failure_code or "no_text",
         )
 
     chunks = [
@@ -154,9 +167,84 @@ async def upload_source(
         project_id=project_id,
         status="parsed",
         page_count=len(pages),
+        extraction_method="ocr" if reading.ocr_pages_kept else "text",
+        ocr_page_count=reading.ocr_pages_kept,
     )
     await evidence_service.enqueue_indexing_job(session, project_id=project_id, source_id=source.id)
     return parsed
+
+
+# One document is recognised at a time: OCR keeps every core busy for seconds a page, and two at
+# once would each take twice as long without finishing sooner.
+_ocr_gate = asyncio.Semaphore(1)
+
+# In a PDF that otherwise has text, pages with none are read by OCR only when they are at least this
+# share of it: a text PDF with a few pictures is not worth minutes of recognition, a PDF that is
+# a fifth scans has lost a fifth of its content.
+_MIXED_OCR_MIN_SHARE = 0.2
+
+
+@dataclass(frozen=True, slots=True)
+class _PageReading:
+    """The pages to chunk, how many of them OCR supplied (``None`` if it was not used), and, when no
+    usable text came out at all, the reason text recognition could not help."""
+
+    pages: list[str]
+    ocr_pages_kept: int | None = None
+    failure_code: str | None = None
+
+
+async def _read_scanned_pages(pages: list[str], content: bytes) -> _PageReading:
+    """Fill in the pages whose own text layer is empty by reading them with local OCR.
+
+    Never invents text: a page OCR cannot read confidently stays empty. A PDF made entirely of
+    scans needs OCR, so every way it can fail is named (``ocr_unavailable``,
+    ``ocr_too_many_pages``, ``ocr_failed``, ``ocr_no_text``); a PDF with text of its own simply
+    keeps that text when OCR is skipped or fails.
+    """
+    candidates = pdf_pages.pages_without_text(pages)
+    if not candidates:
+        return _PageReading(pages)
+
+    settings = get_settings()
+    scanned_only = len(candidates) == len(pages)
+    if scanned_only:
+        if not settings.OCR_ENABLED or not ocr.is_available():
+            return _PageReading(pages, failure_code="ocr_unavailable")
+        if len(candidates) > settings.OCR_MAX_PAGES:
+            return _PageReading(pages, failure_code="ocr_too_many_pages")
+    elif (
+        not settings.OCR_ENABLED
+        or len(candidates) / len(pages) < _MIXED_OCR_MIN_SHARE
+        or len(candidates) > settings.OCR_MAX_PAGES
+        or not ocr.is_available()
+    ):
+        return _PageReading(pages)
+
+    try:
+        async with _ocr_gate:
+            recognised = await asyncio.to_thread(
+                ocr.recognise_pages,
+                content,
+                candidates,
+                scale=settings.OCR_RENDER_SCALE,
+                min_line_confidence=pdf_pages.MIN_OCR_CONFIDENCE,
+            )
+    except ocr.OcrUnavailableError:
+        return _PageReading(pages, failure_code="ocr_unavailable" if scanned_only else None)
+    except ocr.OcrFailedError:
+        return _PageReading(pages, failure_code="ocr_failed" if scanned_only else None)
+
+    filled = list(pages)
+    kept = 0
+    for page in recognised:
+        text = pdf_pages.tidy_ocr_text(page.lines)
+        if pdf_pages.page_is_readable(text, page.mean_confidence):
+            filled[page.index] = text
+            kept += 1
+    if kept == 0:
+        return _PageReading(pages, failure_code="ocr_no_text" if scanned_only else None)
+    return _PageReading(filled, ocr_pages_kept=kept)
 
 
 async def upload_pasted_text(

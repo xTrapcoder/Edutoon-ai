@@ -64,6 +64,7 @@ projects = sa.Table(
     sa.Column("language", sa.Text, nullable=False),
     sa.Column("orientation", sa.Text, nullable=False),
     sa.Column("target_duration_ms", sa.BigInteger, nullable=False),
+    sa.Column("instructions", sa.Text),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
 )
@@ -124,6 +125,9 @@ uploaded_sources = sa.Table(
     sa.Column("checksum_sha256", sa.Text, nullable=False),
     sa.Column("page_count", sa.Integer),
     sa.Column("status", sa.Text, nullable=False),
+    sa.Column("extraction_method", sa.Text, nullable=False),
+    sa.Column("ocr_page_count", sa.Integer),
+    sa.Column("failure_code", sa.Text),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
 )

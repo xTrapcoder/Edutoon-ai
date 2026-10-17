@@ -39,13 +39,13 @@ from edutoon.core.config import get_settings
 from edutoon.db.session import get_session
 from edutoon.domain.source_storage import source_storage_key
 from edutoon.main import create_app
-from edutoon.providers import clerk
+from edutoon.providers import clerk, ocr
 from edutoon.providers.cache import get_redis_client
 from edutoon.providers.storage import Storage, get_storage_client
 from edutoon.repositories import jobs as jobs_repo
 from edutoon.repositories import users as users_repo
 from tests.idempotency_helpers import INVALID_KEYS, idempotency_status
-from tests.pdf_helpers import make_pdf
+from tests.pdf_helpers import make_pdf, make_scanned_pdf
 
 TEST_ISSUER = "https://test.clerk.accounts.dev"
 IDEMPOTENCY_HEADERS = {"Idempotency-Key": "test-key-1"}
@@ -1130,7 +1130,8 @@ async def test_a_scanned_pdf_fails_clearly_and_is_never_queued_for_indexing(
     body = response.json()
     assert response.status_code == 201
     assert (body["status"], body["page_count"]) == ("failed", 3)
-    assert "No text could be read from this PDF" in body["failure_reason"]
+    # Nothing could be read from its pages either, and the owner is told what to do about it.
+    assert "No words could be read from this PDF" in body["failure_reason"]
     assert "scan" in body["failure_reason"] and "OCR" in body["failure_reason"]
     assert chunks.json()["items"] == []
     job = await jobs_repo.get_by_idempotency_key(
@@ -1148,7 +1149,7 @@ async def test_a_pdf_of_nothing_but_page_numbers_is_also_no_text(
         response = await _upload(client, headers, project_id, _make_pdf(["1", "2", "3", "- 4 -"]))
 
     assert response.json()["status"] == "failed"
-    assert "No text could be read" in response.json()["failure_reason"]
+    assert "No words could be read" in response.json()["failure_reason"]
 
 
 async def test_a_pdf_with_some_text_and_some_blank_pages_is_still_parsed(
@@ -1207,3 +1208,208 @@ async def test_a_stored_file_of_a_failed_source_is_kept_for_traceability(
         response = await _upload(client, headers, project_id, _scan())
 
     assert response.status_code == 201 and response.json()["byte_size"] > 0
+
+
+# --- scanned PDFs: local text recognition (OCR) ----------------------------------------------
+
+_WATER_CYCLE_SCAN = [
+    (
+        "The Water Cycle",
+        "The water cycle describes how water moves between the oceans, the atmosphere and the "
+        "land. Heat from the sun causes evaporation, turning liquid water into water vapour. "
+        "As vapour rises it cools and condenses into tiny droplets that form clouds.",
+    ),
+    (
+        "Collection and runoff",
+        "Precipitation that lands on the ground may soak into the soil as infiltration or flow "
+        "over the surface as runoff. Runoff gathers in streams and rivers and eventually "
+        "returns to the ocean. Plants also return water to the air through transpiration.",
+    ),
+]
+
+
+async def _chunks(client, headers, project_id: str, source_id: str) -> list[dict]:
+    response = await client.get(
+        f"/v1/projects/{project_id}/sources/{source_id}/chunks", headers=headers
+    )
+    return response.json()["items"]
+
+
+async def test_a_scanned_pdf_is_read_by_local_ocr_and_becomes_evidence(
+    client_factory, auth_headers, db_session
+) -> None:
+    """Real OCR, not mocked (like Piper): a PDF of page pictures is read, keeps its page numbers
+    and is queued for indexing exactly like a text PDF."""
+    headers = auth_headers()
+    async with client_factory() as client:
+        project_id = await _create_project(client, headers)
+        response = await _upload(client, headers, project_id, make_scanned_pdf(_WATER_CYCLE_SCAN))
+        body = response.json()
+        chunks = await _chunks(client, headers, project_id, body["id"])
+
+    assert response.status_code == 201
+    assert (body["status"], body["page_count"]) == ("parsed", 2)
+    assert (body["extraction_method"], body["ocr_page_count"]) == ("ocr", 2)
+    assert body["failure_reason"] is None
+    assert [(chunk["page_from"], chunk["page_to"]) for chunk in chunks] == [(1, 1), (2, 2)]
+    first, second = (chunk["content"].lower() for chunk in chunks)
+    assert "water cycle" in first and "evaporation" in first and "clouds" in first
+    assert "runoff" in second and "transpiration" in second
+    job = await jobs_repo.get_by_idempotency_key(
+        db_session, project_id=UUID(project_id), kind="build_evidence", idempotency_key=body["id"]
+    )
+    assert job is not None
+
+
+async def test_a_scan_of_blank_pages_fails_honestly_instead_of_pretending_ocr_worked(
+    client_factory, auth_headers, db_session
+) -> None:
+    headers = auth_headers()
+    async with client_factory() as client:
+        project_id = await _create_project(client, headers)
+        scan = make_scanned_pdf([("", ""), ("", "")])
+        response = await _upload(client, headers, project_id, scan)
+        body = response.json()
+        chunks = await _chunks(client, headers, project_id, body["id"])
+
+    assert (body["status"], body["extraction_method"], body["ocr_page_count"]) == (
+        "failed",
+        "text",
+        None,
+    )
+    assert "No words could be read from this PDF" in body["failure_reason"]
+    assert chunks == []
+    job = await jobs_repo.get_by_idempotency_key(
+        db_session, project_id=UUID(project_id), kind="build_evidence", idempotency_key=body["id"]
+    )
+    assert job is None
+
+
+async def test_a_text_pdf_with_some_scanned_pages_keeps_its_text_and_reads_the_scans(
+    client_factory, auth_headers
+) -> None:
+    import io
+
+    from PIL import Image, ImageDraw, ImageFont
+
+    image = Image.new("RGB", (1000, 400), "white")
+    ImageDraw.Draw(image).text(
+        (40, 150),
+        "Glaciers store most of the fresh water on Earth.",
+        font=ImageFont.load_default(size=40),
+        fill="black",
+    )
+    png = io.BytesIO()
+    image.save(png, format="PNG")
+    doc = FPDF()
+    doc.add_page()
+    doc.set_font("Helvetica", size=14)
+    doc.cell(text="Rivers carry fresh water from the land to the sea across the whole continent.")
+    doc.add_page()
+    doc.image(png, x=10, y=20, w=180)
+
+    headers = auth_headers()
+    async with client_factory() as client:
+        project_id = await _create_project(client, headers)
+        response = await _upload(client, headers, project_id, bytes(doc.output()))
+        body = response.json()
+        chunks = await _chunks(client, headers, project_id, body["id"])
+
+    assert (body["status"], body["extraction_method"], body["ocr_page_count"]) == (
+        "parsed",
+        "ocr",
+        1,
+    )
+    by_page = {chunk["page_from"]: chunk["content"].lower() for chunk in chunks}
+    assert "rivers carry fresh water" in by_page[1]
+    assert "glaciers" in by_page[2] and "fresh water" in by_page[2]
+
+
+async def test_a_text_pdf_never_starts_text_recognition(
+    client_factory, auth_headers, monkeypatch
+) -> None:
+    def never(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise AssertionError("OCR ran on a PDF that has its own text")
+
+    monkeypatch.setattr(ocr, "recognise_pages", never)
+    headers = auth_headers()
+    async with client_factory() as client:
+        project_id = await _create_project(client, headers)
+        response = await _upload(
+            client,
+            headers,
+            project_id,
+            _make_pdf(["Plants make food from light, water and carbon dioxide in their leaves."]),
+        )
+
+    body = response.json()
+    assert (body["status"], body["extraction_method"], body["ocr_page_count"]) == (
+        "parsed",
+        "text",
+        None,
+    )
+
+
+async def test_a_scan_with_ocr_unavailable_says_exactly_what_to_install(
+    client_factory, auth_headers, monkeypatch
+) -> None:
+    monkeypatch.setattr(ocr, "is_available", lambda: False)
+    headers = auth_headers()
+    async with client_factory() as client:
+        project_id = await _create_project(client, headers)
+        response = await _upload(client, headers, project_id, _scan(2))
+
+    body = response.json()
+    assert body["status"] == "failed"
+    assert "text recognition is not available" in body["failure_reason"]
+    assert "uv sync" in body["failure_reason"]
+
+
+async def test_a_scan_longer_than_the_ocr_limit_is_refused_rather_than_partly_read(
+    client_factory, auth_headers, monkeypatch
+) -> None:
+    monkeypatch.setenv("OCR_MAX_PAGES", "2")
+    get_settings.cache_clear()
+    try:
+        headers = auth_headers()
+        async with client_factory() as client:
+            project_id = await _create_project(client, headers)
+            response = await _upload(client, headers, project_id, _scan(3))
+    finally:
+        get_settings.cache_clear()
+
+    body = response.json()
+    assert (body["status"], body["page_count"]) == ("failed", 3)
+    assert "scan of 3 pages" in body["failure_reason"] and "at most 2" in body["failure_reason"]
+
+
+async def test_ocr_can_be_switched_off(client_factory, auth_headers, monkeypatch) -> None:
+    monkeypatch.setenv("OCR_ENABLED", "false")
+    get_settings.cache_clear()
+    try:
+        headers = auth_headers()
+        async with client_factory() as client:
+            project_id = await _create_project(client, headers)
+            response = await _upload(client, headers, project_id, _scan(2))
+    finally:
+        get_settings.cache_clear()
+
+    assert response.json()["status"] == "failed"
+    assert "not available" in response.json()["failure_reason"]
+
+
+async def test_a_failure_inside_ocr_is_reported_not_raised(
+    client_factory, auth_headers, monkeypatch
+) -> None:
+    def broken(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise ocr.OcrFailedError("Page 1 could not be drawn.")
+
+    monkeypatch.setattr(ocr, "recognise_pages", broken)
+    headers = auth_headers()
+    async with client_factory() as client:
+        project_id = await _create_project(client, headers)
+        response = await _upload(client, headers, project_id, _scan(2))
+
+    assert response.status_code == 201
+    assert response.json()["status"] == "failed"
+    assert "could not be processed for text recognition" in response.json()["failure_reason"]

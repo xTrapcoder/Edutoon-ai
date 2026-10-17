@@ -26,7 +26,20 @@ SRC = Path(__file__).resolve().parents[1] / "src" / "edutoon"
 
 # The third-party packages that talk to an external provider (rule 3).
 PROVIDER_SDKS = frozenset(
-    {"anthropic", "openai", "boto3", "botocore", "redis", "pypdf", "jwt", "PIL", "numpy"}
+    {
+        "anthropic",
+        "openai",
+        "boto3",
+        "botocore",
+        "redis",
+        "pypdf",
+        "jwt",
+        "PIL",
+        "numpy",
+        "rapidocr",
+        "pypdfium2",
+        "onnxruntime",
+    }
 )
 
 

@@ -73,6 +73,14 @@ class Settings(BaseSettings):
     # deleting code. PDF projects with keywords are unaffected.
     KEYWORD_ONLY_PROJECTS_ENABLED: bool = False
     MAX_PDF_PAGES: int = 300
+    # Local text recognition (OCR) for scanned or image-only PDF pages (``providers.ocr``): nothing
+    # leaves this machine. A page whose own text layer has next to nothing is read by OCR, but only
+    # when the PDF has at most OCR_MAX_PAGES such pages - recognition costs seconds a page, and
+    # reading part of a scan silently would be worse than saying it is too long. OCR_RENDER_SCALE
+    # is how large a page is drawn for recognition (1.0 = 72 dpi); lower is faster, less accurate.
+    OCR_ENABLED: bool = True
+    OCR_MAX_PAGES: int = Field(default=30, ge=1, le=200)
+    OCR_RENDER_SCALE: float = Field(default=2.0, ge=1.0, le=4.0)
     # The most slides one uploaded PowerPoint deck may have (hidden ones included; they are counted
     # before any text is read). A lesson covers at most MAX_SCRIPT_SECTIONS topics of a few slides.
     MAX_DECK_SLIDES: int = Field(default=100, ge=1)

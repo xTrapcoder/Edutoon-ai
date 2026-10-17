@@ -27,6 +27,40 @@ SourceKind = Literal["pdf", "pptx", "text"]
 SourceStatus = Literal["pending", "processing", "parsed", "failed"]
 
 
+_PDF_FAILURE_REASONS = {
+    "unreadable": (
+        "This PDF could not be read. It may be damaged or password-protected; "
+        "try saving a fresh copy."
+    ),
+    "too_many_pages": (
+        "This PDF has {pages} pages; the limit is {max_pages}. "
+        "Split it and upload the parts you need."
+    ),
+    "no_text": (
+        "No text could be found in this PDF - it has no words, only symbols or page numbers."
+    ),
+    "ocr_unavailable": (
+        "This PDF is a scan (pictures of pages) and text recognition is not available on this "
+        "server, so nothing could be read from it. Install it with `uv sync` in apps/api "
+        "(free, runs locally, no account), restart the API and upload the PDF again - or upload "
+        "a text-based PDF."
+    ),
+    "ocr_too_many_pages": (
+        "This PDF is a scan of {pages} pages, and text recognition reads at most {ocr_max_pages} "
+        "scanned pages in one document. Split it and upload the parts you need."
+    ),
+    "ocr_no_text": (
+        "No words could be read from this PDF, either from its text or by text recognition (OCR) "
+        "of its pages. They may be blank, too faint, too small or skewed. If it is a scan, "
+        "rescan it at 300 dpi, upright, dark text on a light page, and upload it again."
+    ),
+    "ocr_failed": (
+        "This PDF is a scan and its pages could not be processed for text recognition. Save a "
+        "fresh copy and upload it again."
+    ),
+}
+
+
 def failure_reason(record: UploadedSourceRecord, *, max_pages: int) -> str | None:
     """Why a source failed, in words for its owner, or ``None`` if it did not.
 
@@ -37,6 +71,10 @@ def failure_reason(record: UploadedSourceRecord, *, max_pages: int) -> str | Non
     """
     if record.status != "failed":
         return None
+    if record.failure_code is not None:
+        return _PDF_FAILURE_REASONS[record.failure_code].format(
+            pages=record.page_count, max_pages=max_pages, ocr_max_pages=get_settings().OCR_MAX_PAGES
+        )
     if record.kind == "pptx":
         return _deck_failure_reason(record)
     if record.kind == "text":
@@ -87,6 +125,8 @@ class UploadedSourceResponse(BaseModel):
     checksum_sha256: str
     page_count: int | None
     status: SourceStatus
+    extraction_method: Literal["text", "ocr"] = "text"
+    ocr_page_count: int | None = None
     failure_reason: str | None = None
     created_at: datetime
     updated_at: datetime
