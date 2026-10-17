@@ -185,7 +185,12 @@ describe('readScriptChecks', () => {
     expect(readScriptChecks([scriptJob(short)], 's1')?.shortfall).toEqual({
       estimatedMs: 143_000,
       targetMs: 300_000,
+      reason: 'evidence_limited',
     });
+    expect(
+      readScriptChecks([scriptJob({ ...short, shortfall_reason: 'writer_short' })], 's1')?.shortfall
+        ?.reason,
+    ).toBe('writer_short');
     expect(
       readScriptChecks([scriptJob({ ...short, shortfall_reason: null })], 's1')?.shortfall,
     ).toBeNull();

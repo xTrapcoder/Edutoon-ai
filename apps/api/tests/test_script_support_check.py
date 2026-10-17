@@ -370,4 +370,6 @@ async def test_a_short_script_that_ignores_most_of_its_claims_is_still_corrected
     assert job.status == "succeeded"
     assert section.await_count > 3  # a correction pass ran after the first pass's three calls
     assert job.result["correction_applied"] is True
-    assert job.result["shortfall_reason"] is None
+    # still short after the second pass, and three of the four claims were never used: not the
+    # evidence's doing, so the page can say a new version may be longer
+    assert job.result["shortfall_reason"] == "writer_short"

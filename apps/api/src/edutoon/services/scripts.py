@@ -348,6 +348,13 @@ async def enqueue_script_generation(
     return ScriptGenerationEnqueued(script=script, job=job, replayed=False)
 
 
+def _shortfall_reason(*, short: bool, evidence_limited: bool) -> str | None:
+    """Why a script is shorter than its target (see the job result's ``shortfall_reason``)."""
+    if not short:
+        return None
+    return "evidence_limited" if evidence_limited else "writer_short"
+
+
 NO_VERIFIED_EVIDENCE_REASON = "no_verified_evidence"
 """``error.details.reason`` of the refusal to write a script while an accepted topic has no
 verified claim."""
@@ -1445,21 +1452,21 @@ async def _generate_and_attach(
         "claims_deduplicated": claims_deduplicated,
         # Whether the script was given its fixed closing because it did not end in one.
         "closing_added": closing_added,
-        # Why the script is shorter than the target when it is: ``"evidence_limited"`` means the
+        # Why the script is shorter than the target, when it is: ``"evidence_limited"`` means the
         # checks removed or rewrote unsupported text and the final script already draws on most of
-        # its claims, so the verified claims cannot honestly carry more; nothing was added to
-        # reach the target. ``None`` when the length is as asked, or short for another reason.
-        "shortfall_reason": (
-            "evidence_limited"
-            if validated.estimated_duration_ms < target * (1 - settings.SCRIPT_DURATION_TOLERANCE)
-            and _evidence_limited(
+        # its claims, so the verified claims cannot honestly carry more - nothing was added to reach
+        # the target; ``"writer_short"`` means claims were left unused, so a new version may be
+        # longer. ``None`` when the length is as asked.
+        "shortfall_reason": _shortfall_reason(
+            short=validated.estimated_duration_ms
+            < target * (1 - settings.SCRIPT_DURATION_TOLERANCE),
+            evidence_limited=_evidence_limited(
                 {
                     str(claim_id)
                     for segment in validated.segments
                     for claim_id in segment.claim_verification_ids
                 }
-            )
-            else None
+            ),
         ),
         # Why the optional length-correction pass was dropped and the first draft kept, if it was.
         "correction_failed": correction_failed,

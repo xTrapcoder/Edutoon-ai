@@ -348,9 +348,13 @@ export interface SupportCheck {
 }
 
 /** How the script's length compares with what the owner asked for, when the evidence is why it is short. */
+const SHORTFALL_REASONS = ['evidence_limited', 'writer_short'] as const;
+
 export interface ScriptLength {
   estimatedMs: number;
   targetMs: number;
+  /** `evidence_limited`: the verified claims cannot carry more. `writer_short`: claims went unused. */
+  reason: 'evidence_limited' | 'writer_short';
 }
 
 export interface ScriptChecks {
@@ -359,8 +363,8 @@ export interface ScriptChecks {
   /** The sentence-level support check, or `null` when it did not run for this script. */
   support: SupportCheck | null;
   /**
-   * Set only when the script is shorter than the target *because the verified claims cannot carry
-   * more* (the server removed or rewrote unsupported text and did not pad). `null` otherwise.
+   * Set only when the script is well short of the target, with the server's reason: the verified
+   * claims cannot carry more (nothing was padded), or claims went unused. `null` otherwise.
    */
   shortfall: ScriptLength | null;
 }
@@ -418,9 +422,11 @@ export function readScriptChecks(
   }
   const estimatedMs = asCount(job.result.estimated_duration_ms);
   const targetMs = asCount(job.result.target_duration_ms);
+  const rawReason: unknown = job.result.shortfall_reason;
+  const reason = SHORTFALL_REASONS.find((known) => known === rawReason) ?? null;
   const shortfall =
-    job.result.shortfall_reason === 'evidence_limited' && estimatedMs !== null && targetMs !== null
-      ? { estimatedMs, targetMs }
+    reason !== null && estimatedMs !== null && targetMs !== null
+      ? { estimatedMs, targetMs, reason }
       : null;
   return { generalKnowledge, support, shortfall };
 }

@@ -20,7 +20,9 @@ describe('SupportCheckNotice - a script shorter than its target', () => {
   it('says why, in minutes and seconds, and that nothing was added to reach the target', () => {
     render(
       <SupportCheckNotice
-        checks={checks({ shortfall: { estimatedMs: 152_400, targetMs: 300_000 } })}
+        checks={checks({
+          shortfall: { estimatedMs: 152_400, targetMs: 300_000, reason: 'evidence_limited' },
+        })}
       />,
     );
 
@@ -37,7 +39,7 @@ describe('SupportCheckNotice - a script shorter than its target', () => {
         checks={checks({
           generalKnowledge: true,
           support: null,
-          shortfall: { estimatedMs: 143_000, targetMs: 240_000 },
+          shortfall: { estimatedMs: 143_000, targetMs: 240_000, reason: 'evidence_limited' },
         })}
       />,
     );
@@ -50,5 +52,23 @@ describe('SupportCheckNotice - a script shorter than its target', () => {
     render(<SupportCheckNotice checks={checks()} />);
 
     expect(screen.queryByText(/shorter than your/i)).not.toBeInTheDocument();
+  });
+});
+
+describe('SupportCheckNotice - a script that is short for another reason', () => {
+  it('says the writer left facts unused and that a new version may be longer', () => {
+    render(
+      <SupportCheckNotice
+        checks={checks({
+          shortfall: { estimatedMs: 123_000, targetMs: 240_000, reason: 'writer_short' },
+        })}
+      />,
+    );
+
+    expect(
+      screen.getByText('This script runs about 2:03, shorter than your 4:00 target'),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/did not use all of the verified facts/i)).toBeInTheDocument();
+    expect(screen.queryByText(/nothing was added to reach the target/i)).not.toBeInTheDocument();
   });
 });

@@ -35,13 +35,23 @@ export function SupportCheckNotice({ checks }: { checks: ScriptChecks }) {
           tone="info"
           title={`This script runs about ${formatClock(shortfall.estimatedMs)}, shorter than your ${formatClock(shortfall.targetMs)} target`}
         >
-          {generalKnowledge
-            ? 'The facts the lesson can state'
-            : 'The facts verified from your source'}{' '}
-          carry about this much narration. Asking the writer for more would have meant repeating
-          them or adding things your {generalKnowledge ? 'topic' : 'source'} does not say, so
-          nothing was added to reach the target. For a longer lesson, add more source material, add
-          keywords for more detail, or choose a shorter target.
+          {shortfall.reason === 'evidence_limited' ? (
+            <>
+              {generalKnowledge
+                ? 'The facts the lesson can state'
+                : 'The facts verified from your source'}{' '}
+              carry about this much narration. Asking the writer for more would have meant repeating
+              them or adding things your {generalKnowledge ? 'topic' : 'source'} does not say, so
+              nothing was added to reach the target. For a longer lesson, add more source material,
+              add keywords for more detail, or choose a shorter target.
+            </>
+          ) : (
+            <>
+              The writer did not use all of the verified facts there are, so a new version may come
+              out longer. Choose &ldquo;Write a new version&rdquo; to try again, or a shorter
+              target. Nothing unsupported was added to reach the length.
+            </>
+          )}
         </Alert>
       ) : null}
 
