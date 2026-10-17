@@ -165,6 +165,10 @@ class Settings(BaseSettings):
     # removals), read the topic's verified claims out as they stand instead of failing the whole
     # script. Off to get the old behaviour: the generation fails.
     SCRIPT_FALLBACK_TO_CLAIMS: bool = True
+    # When the model keeps writing scene text the narration does not contain (even after its
+    # rewrites), give the segment one bullet scene made only of the narration's own words
+    # instead of leaving it without scenes. Off to get the old behaviour: the segment fails.
+    STORYBOARD_FALLBACK_TO_TEXT: bool = True
     MAX_CLAIMS_PER_GENERATION: int = 40
     SCRIPT_WORDS_PER_MINUTE: int = 150
     # How many words a minute a *PowerPoint deck* lesson is planned at (``domain.deck_plan``). A

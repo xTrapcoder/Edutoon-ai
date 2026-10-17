@@ -73,8 +73,10 @@ from edutoon.domain.llm_usage import UsageReport
 from edutoon.domain.storyboard_provenance import (
     FALLBACK_MARKER,
     FabricatedContentError,
+    check_provenance,
     has_lexical_overlap,
     resolve_provenance,
+    safe_text_only_content,
 )
 from edutoon.domain.storyboard_template import StoryboardContentError, validate_scene_content
 from edutoon.domain.storyboard_timing import (
@@ -622,7 +624,30 @@ async def _generate_storyboard(
                         # rewrite is checked by the very same rules, and a segment whose rewrite
                         # still breaks them fails as it always did.
                         if rewrites >= MAX_SEGMENT_REWRITES:
-                            raise
+                            # The model keeps writing scene text the narration does not contain
+                            # (typically for a very short hand-off like "Now, let's talk about X").
+                            # Nothing unsupported is shown, and the segment is not left without
+                            # scenes: one bullet scene made only of the narration's own words, which
+                            # passes the provenance check by construction.
+                            safe = safe_text_only_content(segment.narration_text)
+                            if (
+                                not settings.STORYBOARD_FALLBACK_TO_TEXT
+                                or safe is None
+                                or check_provenance(safe, segment.narration_text)
+                                or not isinstance(
+                                    exc, FabricatedContentError | StoryboardContentError
+                                )
+                            ):
+                                raise
+                            prepared = [("bullet_points", safe)]
+                            dropped_here = 0
+                            attempt_fallbacks = {"visual_dropped": 0, "text_only": 1}
+                            log.warning(
+                                "storyboard.segment_fell_back_to_text",
+                                job_id=str(job_id),
+                                script_segment_id=str(segment.id),
+                            )
+                            break
                         rewrites += 1
                         corrections = _storyboard_corrections(exc)
                         log.warning(
@@ -634,9 +659,7 @@ async def _generate_storyboard(
                 for kind_of_fallback, count in attempt_fallbacks.items():
                     provenance_fallbacks[kind_of_fallback] += count
 
-                durations = allocate_scene_durations(
-                    audio.measured_duration_ms or 0, len(draft.scenes)
-                )
+                durations = allocate_scene_durations(audio.measured_duration_ms or 0, len(prepared))
                 timings = scene_timings(segment_starts[index], durations)
                 new_scenes = [
                     NewScene(

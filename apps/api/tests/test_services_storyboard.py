@@ -1330,3 +1330,48 @@ async def test_a_rewrite_that_fixes_an_invented_word_is_accepted_and_the_first_d
     )
     [scene] = await scenes_repo.list_by_segment_id(db_session, segments[0].id)
     assert scene.content == {"title": "Photosynthesis", "subtitle": "In the leaf"}
+
+
+async def test_scene_text_that_stays_fabricated_falls_back_to_the_narrations_own_words(
+    db_session, monkeypatch
+):
+    """With the fallback on, a segment whose scenes keep inventing a figure is not left without
+    scenes: it gets one bullet scene made only of its narration's own words (provenance-safe by
+    construction), and the job says it fell back."""
+    from edutoon.core.config import get_settings
+
+    monkeypatch.setenv("STORYBOARD_FALLBACK_TO_TEXT", "true")
+    get_settings.cache_clear()
+    try:
+        _owner, project, script, segments = await _project_with_ready_audio(
+            db_session,
+            narrations=["Now, let's talk about divergent boundaries."],
+            durations_ms=[9_000],
+        )
+        llm, _mock, _calls = _llm_with(
+            monkeypatch,
+            {
+                0: [
+                    ("title_card", {"title": "Takes 42 minutes"}),
+                    ("title_card", {"title": "Takes 42 minutes"}),
+                ]
+            },
+        )
+        enq = await service.enqueue_storyboard_generation(
+            db_session,
+            project_id=project.id,
+            owner_id=project.owner_id,
+            script_id=script.id,
+            idempotency_key="k",
+        )
+
+        job = await service.run_generate_storyboard_job(db_session, llm, job_id=enq.job.id)
+
+        assert job.result["failed_segment_ids"] == []
+        assert job.result["provenance_text_fallback_count"] == 1
+        [scene] = await scenes_repo.list_by_segment_id(db_session, segments[0].id)
+        assert scene.template == "bullet_points"
+        assert scene.content["bullets"] == ["Now", "let's talk about divergent boundaries"]
+        assert "42" not in str(scene.content)
+    finally:
+        get_settings.cache_clear()

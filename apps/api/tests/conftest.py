@@ -46,6 +46,7 @@ _TEST_ENV = {
     # Older script tests are about a section that cannot be made failing the generation; the
     # claims-as-section fallback has its own tests (test_script_support_check.py), which turn it on.
     "SCRIPT_FALLBACK_TO_CLAIMS": "false",
+    "STORYBOARD_FALLBACK_TO_TEXT": "false",
 }
 
 for key, value in _TEST_ENV.items():
