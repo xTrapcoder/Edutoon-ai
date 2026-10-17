@@ -46,6 +46,34 @@ _SIGNPOST = re.compile(
     re.IGNORECASE,
 )
 
+# A sentence about the lesson itself - closing it, recapping it, pointing back at an earlier part -
+# that says nothing about the subject. Only a short one counts, and never one with a cue for a
+# cause, a reason or an importance (``_RISK_CUES``): that is a statement about the subject in
+# recap's clothes and is judged like any other. Figures and names are still held to the
+# numbers-and-names check.
+_LESSON_REFERENCE = re.compile(
+    r"^(?:this (?:concludes|brings us|wraps up)|"
+    r"that (?:concludes|brings us|wraps up|'?s (?:all|it))|"
+    r"thanks? (?:you )?for|thank you|"
+    r"we(?:'ve| have) (?:learned|covered|seen|looked at|explored|talked about|discussed)|"
+    r"in (?:our|the) (?:last|previous|first|next|earlier) "
+    r"(?:segment|section|part|video|lesson)|"
+    r"in this (?:lesson|video)|"
+    r"(?:to|so,? to) (?:sum up|recap|summari[sz]e|conclude|wrap up)|"
+    r"in (?:summary|conclusion)|"
+    r"as we (?:saw|learned|discussed|covered))\b",
+    re.IGNORECASE,
+)
+
+# A clause that says something about the subject (a definition, a reason, a "that ..."): a recap
+# with one is a statement and is judged like any other.
+_SUBJECT_CLAUSE = re.compile(
+    r"\b(?:which|where|who|whose|that|when|how|what|because)\b", re.IGNORECASE
+)
+
+MAX_RECAP_WORDS: Final = 20
+"""The longest sentence that can count as a recap or closing rather than as a statement."""
+
 # An analogy that opens a sentence ("Just like a story has an end, photosynthesis has two parts").
 # The comparison is illustration, not a claim; the clause after its comma is the claim.
 _ANALOGY = re.compile(
@@ -112,6 +140,30 @@ def needs_judging(sentence: str) -> bool:
     if stripped.endswith("?") or len(stripped.split()) < MIN_WORDS_TO_JUDGE:
         return False
     return _SIGNPOST.match(stripped) is None
+
+
+def is_recap_or_signpost(sentence: str) -> bool:
+    """Whether ``sentence`` only moves the lesson along: a question, a signpost, or a short closing
+    or recap of the lesson itself that adds no clause about the subject and no cue for a cause,
+    reason or importance. A short *statement* ("Plants make food.") is not one: it is too short
+    for the judge, but it still says something and needs its citation."""
+    stripped = sentence.strip()
+    if stripped.endswith("?") or _SIGNPOST.match(stripped) is not None:
+        return True
+    return (
+        _LESSON_REFERENCE.match(stripped) is not None
+        and len(stripped.split()) <= MAX_RECAP_WORDS
+        and _RISK_CUES.search(stripped) is None
+        and _SUBJECT_CLAUSE.search(stripped) is None
+    )
+
+
+def is_signpost_only(text: str) -> bool:
+    """Whether every sentence of ``text`` only moves the lesson along
+    (:func:`is_recap_or_signpost`): a passage like that asserts nothing about the subject, so it
+    needs no citation. ``False`` for empty text."""
+    sentences = split_sentences(text)
+    return bool(sentences) and all(is_recap_or_signpost(sentence) for sentence in sentences)
 
 
 def factual_part(sentence: str) -> str | None:

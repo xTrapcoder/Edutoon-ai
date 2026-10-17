@@ -216,3 +216,41 @@ def test_any_other_capitalised_name_must_still_come_from_the_claims() -> None:
     named = {token for _, token in caught.value.tokens}
     assert {"Alfred", "Wegener", "Germany"} <= named
     assert "Earth" not in named
+
+
+# --- a closing is kept without a citation ------------------------------------------------------
+
+
+def test_a_closing_the_writer_did_not_flag_as_connective_is_kept():
+    """Regression: three of four real scripts ended abruptly because the writer's closing ("This
+    concludes our lesson ... we've learned about different types of boundaries") came back with no
+    claim ids and was not flagged connective, so it was dropped whole."""
+    cited = uuid4()
+    draft = ScriptDraft(
+        title="Plate tectonics",
+        segments=[
+            _segment("Plates slide past each other at transform boundaries.", [str(cited)]),
+            _segment(
+                "This concludes our lesson on plate tectonics. We've learned about different "
+                "types of boundaries and the effects they have on our planet.",
+                [],
+                connective=False,
+            ),
+        ],
+        estimated_duration_ms=0,
+    )
+
+    result = filter_and_validate(draft, {cited}, WPM)
+
+    assert [s.connective for s in result.segments] == [False, True]
+    assert result.segments[1].claim_verification_ids == ()
+
+
+def test_an_uncited_passage_that_states_a_fact_is_still_rejected():
+    draft = ScriptDraft(
+        title="Plate tectonics",
+        segments=[_segment("Magma rises to form new crust at ridges.", [], connective=False)],
+        estimated_duration_ms=0,
+    )
+    with pytest.raises(UnsourcedSegmentError):
+        filter_and_validate(draft, set(), WPM)

@@ -94,6 +94,7 @@ from edutoon.core.errors import (
 )
 from edutoon.core.pagination import DEFAULT_PAGE_SIZE, Page
 from edutoon.domain import general_knowledge as general_knowledge_domain
+from edutoon.domain.claim_dedupe import ClaimRef, TopicClaims, dedupe_claims_across_topics
 from edutoon.domain.evidence_sufficiency import (
     EvidenceAssessment,
     assess_evidence,
@@ -109,6 +110,7 @@ from edutoon.domain.narration_support import (
 from edutoon.domain.script import ScriptDraft, ScriptSegmentDraft
 from edutoon.domain.script_duration import (
     allocate_topic_budgets,
+    decide_length_correction,
     max_provider_calls,
     split_topic_budget,
 )
@@ -336,6 +338,11 @@ async def enqueue_script_generation(
         context={"job_id": str(job.id), "accepted_topic_count": len(eligible)},
     )
     return ScriptGenerationEnqueued(script=script, job=job, replayed=False)
+
+
+EVIDENCE_COVERAGE_FLOOR = 0.7
+"""The share of a script's claims its narration must already cite before a short script is put down
+to the evidence rather than to a writer that covered too little."""
 
 
 def _insufficient_evidence_message(assessment: EvidenceAssessment, settings: Settings) -> str:
@@ -598,10 +605,6 @@ def _next_topic_title(units: Sequence[_SectionUnit], index: int) -> str | None:
 def _tail(text: str, max_chars: int) -> str:
     stripped = " ".join(text.split())
     return stripped if len(stripped) <= max_chars else stripped[-max_chars:].lstrip()
-
-
-def _outside_tolerance(estimated_ms: int, target_ms: int, tolerance: float) -> bool:
-    return abs(estimated_ms - target_ms) > target_ms * tolerance
 
 
 class HollowSectionError(JobError):
@@ -1175,6 +1178,25 @@ async def _generate_and_attach(
             )
         claims_by_topic[topic.id] = supported
 
+    # Neighbouring topics often hold the same fact (their claims come from the same passages): say
+    # each once, under the topic it fits best, or the lesson repeats itself (domain.claim_dedupe).
+    deduped = dedupe_claims_across_topics(
+        [
+            TopicClaims(
+                topic.id,
+                topic.title,
+                [ClaimRef(claim.id, claim.claim_text) for claim in claims_by_topic[topic.id]],
+            )
+            for topic in topics
+        ]
+    )
+    claims_deduplicated = 0
+    for topic in topics:
+        keep = {claim.id for claim in deduped[topic.id]}
+        before = len(claims_by_topic[topic.id])
+        claims_by_topic[topic.id] = [c for c in claims_by_topic[topic.id] if c.id in keep]
+        claims_deduplicated += before - len(claims_by_topic[topic.id])
+
     budgets = allocate_topic_budgets(
         topic_ids=[topic.id for topic in topics],
         claim_counts={topic_id: len(claims) for topic_id, claims in claims_by_topic.items()},
@@ -1255,9 +1277,30 @@ async def _generate_and_attach(
     estimated_total = sum(segment.estimated_duration_ms for segment in segments)
     correction_applied = False
     correction_failed: str | None = None
-    if settings.MAX_SCRIPT_CORRECTION_ATTEMPTS >= 1 and _outside_tolerance(
-        estimated_total, project.target_duration_ms, settings.SCRIPT_DURATION_TOLERANCE
-    ):
+    # A script that is short because the checks took unsupported text out of it, and that already
+    # draws on most of the claims it was given, is short because those claims cannot carry more: a
+    # second pass would ask for more words from the same claims. While many claims are still unused
+    # the writer simply covered too few, and a second pass (asking it to cover more) is worth it.
+    claims_given = {claim.id for unit in units for claim in unit.claims}
+
+    def _evidence_limited(cited: set[str]) -> bool:
+        coverage = len(cited & claims_given) / len(claims_given) if claims_given else 1.0
+        return (
+            support.enabled
+            and bool(support.removed or support.rewrites_for_support or support.fallback_sections)
+            and coverage >= EVIDENCE_COVERAGE_FLOOR
+        )
+
+    evidence_limited = _evidence_limited(
+        {claim_id for segment in segments for claim_id in segment.claim_ids}
+    )
+    length = decide_length_correction(
+        estimated_total,
+        project.target_duration_ms,
+        settings.SCRIPT_DURATION_TOLERANCE,
+        evidence_limited=evidence_limited,
+    )
+    if settings.MAX_SCRIPT_CORRECTION_ATTEMPTS >= 1 and length == "rescale":
         await _report_progress(
             sessionmaker, job_id=job_id, base_payload=payload, stage="correcting_duration"
         )
@@ -1354,6 +1397,24 @@ async def _generate_and_attach(
         "duration_difference_ms": difference,
         "duration_difference_pct": round(difference / target * 100, 1) if target else 0.0,
         "correction_applied": correction_applied,
+        # Claims left out because another topic holds the same fact (said once, where it fits).
+        "claims_deduplicated": claims_deduplicated,
+        # Why the script is shorter than the target when it is: ``"evidence_limited"`` means the
+        # checks removed or rewrote unsupported text and the final script already draws on most of
+        # its claims, so the verified claims cannot honestly carry more; nothing was added to
+        # reach the target. ``None`` when the length is as asked, or short for another reason.
+        "shortfall_reason": (
+            "evidence_limited"
+            if validated.estimated_duration_ms < target * (1 - settings.SCRIPT_DURATION_TOLERANCE)
+            and _evidence_limited(
+                {
+                    str(claim_id)
+                    for segment in validated.segments
+                    for claim_id in segment.claim_verification_ids
+                }
+            )
+            else None
+        ),
         # Why the optional length-correction pass was dropped and the first draft kept, if it was.
         "correction_failed": correction_failed,
         # Sections whose first draft broke a script rule and were rewritten once, with what was

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from typing import Literal
 from uuid import UUID
 
 
@@ -130,3 +131,31 @@ def max_provider_calls(
     """
     max_sections = -(-max_target_duration_ms // max_section_duration_ms) + max_script_sections
     return 1 + 2 * max_sections
+
+
+LengthDecision = Literal["within_tolerance", "rescale", "skip_evidence_limited"]
+
+
+def decide_length_correction(
+    estimated_ms: int,
+    target_ms: int,
+    tolerance: float,
+    *,
+    evidence_limited: bool,
+) -> LengthDecision:
+    """Whether the assembled script's length should be corrected by a second writing pass.
+
+    ``within_tolerance``: the length is close enough to the target; nothing to do.
+    ``rescale``: it is outside the tolerance and a pass with a rescaled word budget may help.
+    ``skip_evidence_limited``: it is *short*, and the checks already took unsupported text out of
+    it (or rewrote it, or read a section's claims out instead). More words from the same verified
+    claims could only be repetition or invention - exactly what the checks removed - and the second
+    pass would also cost as long as the first. The script is kept as it is and is reported as
+    shorter than the target because the evidence cannot carry more; the target is a guide, not a
+    reason to pad. A script that is too *long* is always corrected: that never needs new facts.
+    """
+    if abs(estimated_ms - target_ms) <= target_ms * tolerance:
+        return "within_tolerance"
+    if estimated_ms < target_ms and evidence_limited:
+        return "skip_evidence_limited"
+    return "rescale"

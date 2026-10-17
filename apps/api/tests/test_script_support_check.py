@@ -19,7 +19,7 @@ from edutoon.domain import narration_support as ns
 from edutoon.providers.llm import LLM, LLMResponseError, TokenUsage
 from edutoon.repositories import scripts as scripts_repo
 from edutoon.services import scripts as scripts_service
-from tests.test_services_scripts import _enqueued, _mock_llm, _segment
+from tests.test_services_scripts import _enqueued, _mock_llm, _project_with_topics, _segment
 
 pytestmark = pytest.mark.provider_mocked
 
@@ -291,3 +291,83 @@ async def test_a_fallback_section_is_never_made_from_anything_but_the_topics_cla
     assert job.status == "succeeded"
     texts = await _texts(db_session, enq)
     assert texts == [CLAIM] and "Mumbai" not in " ".join(texts)
+
+
+# --- the length-correction pass and the evidence limit ------------------------------------------
+
+
+async def test_a_script_made_short_by_the_checks_is_not_stretched_by_a_second_writing_pass(
+    db_session, monkeypatch
+):
+    """Regression: the length-correction pass rescaled every section's budget upwards when a script
+    came out short, so a script the checks had just trimmed was asked again for more words from the
+    same claims - padding the judge removes again, and a second full generation's worth of time."""
+    monkeypatch.setenv("MAX_SCRIPT_CORRECTION_ATTEMPTS", "1")
+    get_settings.cache_clear()
+    _o, _p, topic, claim, enq = await _enqueued(db_session, claim_text=CLAIM)
+    always_bad = [_segment(f"{GOOD} {BAD} {GOOD_TWO}", [str(claim.id)])]
+    llm, _outline, section = _mock_llm(monkeypatch, sections_by_topic={topic.id: [always_bad]})
+    _judge_with(monkeypatch, llm, _flags_bad)
+
+    job = await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
+
+    assert job.status == "succeeded"
+    assert section.await_count == 3  # the first draft and the two bounded rewrites - no fourth call
+    assert job.result["correction_applied"] is False
+    assert job.result["shortfall_reason"] == "evidence_limited"
+    assert job.result["estimated_duration_ms"] < job.result["target_duration_ms"] * 0.85
+
+
+async def test_a_short_script_the_checks_left_alone_is_still_corrected(db_session, monkeypatch):
+    """The other side: nothing was removed or rewritten, so the writer was simply terse and the
+    claims may carry more - the correction pass still runs."""
+    monkeypatch.setenv("MAX_SCRIPT_CORRECTION_ATTEMPTS", "1")
+    get_settings.cache_clear()
+    _o, _p, topic, claim, enq = await _enqueued(db_session, claim_text=CLAIM)
+    clean = [_segment(f"{GOOD} {GOOD_TWO}", [str(claim.id)])]
+    llm, _outline, section = _mock_llm(monkeypatch, sections_by_topic={topic.id: [clean]})
+    _judge_with(monkeypatch, llm, _flags_bad)
+
+    job = await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
+
+    assert job.status == "succeeded"
+    assert section.await_count == 2
+    assert job.result["correction_applied"] is True
+    assert job.result["support_check"]["removed_sentences"] == []
+
+
+async def test_a_short_script_that_ignores_most_of_its_claims_is_still_corrected(
+    db_session, monkeypatch
+):
+    """The evidence limit is real only when the script already draws on most of its claims. Here
+    the writer cited one of four, so a second pass (asking it to cover more) is still worth it."""
+    monkeypatch.setenv("MAX_SCRIPT_CORRECTION_ATTEMPTS", "1")
+    get_settings.cache_clear()
+    owner, project, [topic], claims_by_topic = await _project_with_topics(
+        db_session,
+        [
+            (
+                "A topic",
+                [
+                    CLAIM,
+                    "Closed stomata let in less carbon dioxide.",
+                    "Light drives the first stage of photosynthesis.",
+                    "Sugars are made in the second stage of photosynthesis.",
+                ],
+            )
+        ],
+    )
+    claims = claims_by_topic[topic.id]
+    enq = await scripts_service.enqueue_script_generation(
+        db_session, project_id=project.id, owner_id=owner.id, idempotency_key="idem-coverage"
+    )
+    always_bad = [_segment(f"{GOOD} {BAD} {GOOD_TWO}", [str(claims[0].id)])]
+    llm, _outline, section = _mock_llm(monkeypatch, sections_by_topic={topic.id: [always_bad]})
+    _judge_with(monkeypatch, llm, _flags_bad)
+
+    job = await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
+
+    assert job.status == "succeeded"
+    assert section.await_count > 3  # a correction pass ran after the first pass's three calls
+    assert job.result["correction_applied"] is True
+    assert job.result["shortfall_reason"] is None

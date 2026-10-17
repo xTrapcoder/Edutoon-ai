@@ -219,3 +219,40 @@ def test_an_opening_analogy_is_not_judged_only_the_claim_after_its_comma_is() ->
     )
     assert ns.factual_part("It's like a factory with two assembly lines.") is None
     assert ns.factual_part("Just like a coat, it helps.") is None  # nothing left to judge
+
+
+# --- a closing or a recap is not a claim ------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "This concludes our lesson on plate tectonics.",
+        "This concludes our lesson on plate tectonics. We've learned about different types of "
+        "boundaries and the effects they have on our planet.",
+        "Thanks for watching.",
+        "Let's move on to transform boundaries.",
+        "In our last segment, we talked about the conditions in the towns.",
+        "Why does this matter? Let's find out.",
+    ],
+)
+def test_a_passage_that_only_closes_recaps_or_asks_needs_no_citation(text: str) -> None:
+    assert ns.is_signpost_only(text) is True
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "",
+        "Magma rises to form new crust.",
+        # a recap in the lesson's voice that is really a statement about the subject
+        "We've learned that magma is always hotter than lava.",
+        "In the last section, we learned about hotspots, which are places where volcanoes form.",
+        # one factual sentence spoils the passage, however friendly the rest
+        "This concludes our lesson. Magma rises to form new crust.",
+        # too long to be a recap
+        "We've learned about " + "very " * 25 + "many things.",
+    ],
+)
+def test_a_passage_that_states_something_still_needs_a_citation(text: str) -> None:
+    assert ns.is_signpost_only(text) is False

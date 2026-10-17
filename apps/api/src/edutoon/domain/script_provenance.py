@@ -39,6 +39,7 @@ from dataclasses import dataclass
 from typing import Final
 from uuid import UUID
 
+from edutoon.domain.narration_support import is_signpost_only
 from edutoon.domain.script import ScriptDraft
 from edutoon.domain.storyboard_provenance import content_words, unsupported_tokens
 
@@ -218,7 +219,11 @@ def filter_and_validate(
                 segment.narration_text, claim_verification_ids, claim_texts
             )
         word_count = len(segment.narration_text.split())
-        connective = segment.connective and word_count <= MAX_CONNECTIVE_WORDS
+        # A passage the writer did not flag connective still needs no citation when every sentence
+        # of it only moves the lesson along (a closing, a recap, a question): it asserts nothing.
+        connective = (
+            segment.connective or is_signpost_only(segment.narration_text)
+        ) and word_count <= MAX_CONNECTIVE_WORDS
         if not claim_verification_ids and not connective:
             raise UnsourcedSegmentError(index)
         if grounding is not None:

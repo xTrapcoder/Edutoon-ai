@@ -1432,3 +1432,55 @@ async def test_run_keeps_the_first_draft_when_the_correction_pass_cannot_pass_th
         assert "unsourced" not in " ".join(texts)
     finally:
         get_settings.cache_clear()
+
+
+async def test_a_fact_two_topics_hold_is_written_once_under_the_topic_it_fits(
+    db_session, monkeypatch
+):
+    """Regression: neighbouring topics' claims come from the same passages, so a lesson said the
+    same fact in several sections. Each fact now goes to one section - the one whose title fits."""
+    owner, project, [britain, steam], claims_by_topic = await _project_with_topics(
+        db_session,
+        [
+            (
+                "Conditions in Britain",
+                [
+                    "Britain had large coal and iron ore deposits close to its ports.",
+                    "Steam engines let factories be built anywhere, away from rivers.",
+                    "A stable government and a growing banking system helped industry.",
+                ],
+            ),
+            (
+                "Steam engines",
+                [
+                    "Steam engines allowed factories to be built anywhere, away from rivers.",
+                    "James Watt added a separate condenser, making the engine far more efficient.",
+                    "Coal became the fuel of the new age.",
+                ],
+            ),
+        ],
+    )
+    enq = await scripts_service.enqueue_script_generation(
+        db_session, project_id=project.id, owner_id=owner.id, idempotency_key="idem-dedupe"
+    )
+    first = {topic.id: claims_by_topic[topic.id][0] for topic in (britain, steam)}
+    llm, _outline, section = _mock_llm(
+        monkeypatch,
+        sections_by_topic={
+            topic_id: [[_segment(claim.claim_text, [str(claim.id)])]]
+            for topic_id, claim in first.items()
+        },
+    )
+
+    job = await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
+
+    assert job.status == "succeeded"
+    texts_by_topic = {
+        call.args[1].topic_id: [claim.text for claim in call.args[2]]
+        for call in section.await_args_list
+    }
+    assert not any("anywhere" in text for text in texts_by_topic[britain.id])
+    assert any("anywhere" in text for text in texts_by_topic[steam.id])
+    assert len(texts_by_topic[britain.id]) == 2
+    assert len(texts_by_topic[steam.id]) == 3
+    assert job.result["claims_deduplicated"] == 1
