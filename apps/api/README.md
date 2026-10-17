@@ -1717,6 +1717,53 @@ passage supports the claim, so a weak model can wrongly approve. Chunks already 
 embedding model are not comparable with new ones - use a new project after changing `EMBEDDING_MODEL`.
 `OLLAMA_DISABLE_THINKING=True` is only for a model that thinks by default (such as `qwen3`).
 
+## Input modes, OCR, instructions and the sentence-level check (2026-10-17, migration 0024)
+
+**Scanned PDFs (OCR).** `providers/ocr.py` (the only importer of `rapidocr`/`pypdfium2`) draws a page with
+pdfium and reads it with RapidOCR; the ONNX models ship inside the wheel, so nothing is downloaded and
+nothing leaves the machine. `services/uploaded_sources._read_scanned_pages` decides when: a PDF in which
+*every* page has next to no text needs OCR (it fails with `ocr_unavailable` / `ocr_too_many_pages`
+(`OCR_MAX_PAGES`, default 30) / `ocr_no_text` / `ocr_failed` if it cannot); a PDF with text but where a fifth
+or more of the pages are empty has those pages OCR'd best-effort. A page counts only if it has at least 20
+letters and a mean line confidence of 0.6. `uploaded_sources` records `extraction_method` (`text`/`ocr`),
+`ocr_page_count` and `failure_code`; the API response carries a plain-language `failure_reason`. OCR runs inline
+in the upload request, one document at a time, about 5 s a page on the reference laptop. Limits: no layout
+analysis, words can run together inside a line, handwriting and tiny print are unreliable.
+
+**Free-text instructions** (`projects.instructions`, at most 2,000 characters). `domain/instructions.py`
+understands audience, tone, definitions, simple examples, a page range, a chapter and focus terms by fixed
+patterns; `services/instructions.py` applies them: a page range or chapter narrows the pages the topic finder
+reads, focus terms put the pages that mention them first when the document is longer than the topic budget,
+audience and tone go to the script writer, and the rest is passed to the topic, claim, script and storyboard
+prompts as fenced guidance that can never add a fact. `ProjectResponse.instructions_notes` says back what was
+`applied`, what is `guidance` only and what is `unsupported` (images, outside facts, language, length, quizzes).
+A PowerPoint deck takes none (no model writes it).
+
+**Keyword coverage.** `GET /v1/projects/{id}/topics/coverage` says, for each keyword the owner typed, whether the
+document backs it: `covered`, `not_in_document` (statements were drafted, none supported), `not_checked`,
+`left_out`. A keyword the document does not back is never taught as if it did; the owner can leave it out.
+
+**Sentence-level support check.** Claim verification is retrieval plus a 7B judge, and a script's own checks are
+citations plus a figures-and-names rule - neither stops a sentence that reuses a claim's words to say something
+else (a photosynthesis script said "plants need water to open their stomata" while its claim said a plant short
+of water *closes* them). Every sentence is now judged against the claims of its section
+(`domain/narration_support.py`, `services/narration_support.py`, `LLM.judge_sentence_support`): one pass that
+reasons about what the sentence adds, and a stricter second pass for a sentence with a cause/requirement/
+importance cue. Measured on the local 7B model (`scripts/check_support_judge.py`): 21 of 23 hand-labelled
+sentences right, and it flags the stomata reversal. It is a model, not a proof. A flagged sentence is rewritten
+once with the reason; one still flagged is removed. A sentence that still breaks the figures-and-names rule, or
+an uncited passage, is likewise removed rather than failing the job. If nothing usable is left, the topic's
+verified claims are read out as they stand (`SCRIPT_FALLBACK_TO_CLAIMS`, on by default; off = the job fails).
+Everything is recorded on the job's `result["support_check"]` (judged, second opinions, unchecked, removed
+sentences with reasons, fallback sections) and shown on the script page. `SCRIPT_SUPPORT_CHECK_ENABLED=false`
+turns the judge off; it adds one to two local-model calls per sentence (minutes per script).
+
+**Topic-only lessons.** With `KEYWORD_ONLY_PROJECTS_ENABLED=true` a `topic` project may be built from keywords
+alone. Its claims are recorded `general_knowledge` (never `supported`, never cited), the writer is told so, the
+script opens with the fixed spoken notice `domain.general_knowledge.LESSON_NOTICE`, and the UI labels the lesson.
+`services/general_knowledge.applies_to` decides when this applies; a topic project that has source material
+verifies against it instead.
+
 ## Testing, and what is not yet verified against a real provider
 
 ```bash

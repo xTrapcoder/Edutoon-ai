@@ -13,14 +13,14 @@ export const SOURCE_LABEL: Record<Project['source_type'], string> = {
   pdf: 'PDF document',
   pptx: 'PowerPoint deck',
   text: 'Pasted text',
-  topic: 'Keywords',
+  topic: 'Topic only',
 };
 
 const SOURCE_SHORT: Record<Project['source_type'], string> = {
   pdf: 'PDF',
   pptx: 'PowerPoint',
   text: 'Pasted text',
-  topic: 'Keywords',
+  topic: 'Topic only',
 };
 
 const SOURCE_ICON = {

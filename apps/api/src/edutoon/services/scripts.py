@@ -729,6 +729,30 @@ def _general_knowledge_notice(topic_id: UUID, settings: Settings) -> ScriptSegme
     )
 
 
+def _claims_as_section(unit: _SectionUnit, settings: Settings) -> list[ScriptSegmentDraft]:
+    """A section made of the topic's verified claims read out as they stand: one passage per claim
+    (at most :data:`FALLBACK_CLAIMS_PER_SECTION`), each citing exactly its own claim. Plain, short
+    and fully grounded - the fallback when the writer's own wording cannot be supported."""
+    segments = []
+    for claim in unit.claims[:FALLBACK_CLAIMS_PER_SECTION]:
+        words = len(claim.text.split())
+        segments.append(
+            ScriptSegmentDraft(
+                segment_index=0,
+                narration_text=claim.text,
+                claim_ids=[claim.id],
+                estimated_duration_ms=round(words / settings.SCRIPT_WORDS_PER_MINUTE * 60_000),
+                connective=False,
+                topic_id=unit.topic.id,
+            )
+        )
+    return segments
+
+
+FALLBACK_CLAIMS_PER_SECTION = 6
+"""The most verified claims a fallback section reads out for one topic."""
+
+
 def _sentence_violates(
     sentence: str,
     segment: ScriptSegmentDraft,
@@ -1041,46 +1065,61 @@ async def _generate_units(
                 support.rewrites_for_support += 1
             stamped = await _write(corrections)
             problems, hollow, unsupported = await _assess(stamped)
-        if hollow:
-            raise HollowSectionError(
-                f"The section written for the topic '{unit.topic.title}' cites none of its "
-                "verified claims, so the topic is not explained from the source. Generate the "
-                "script again."
-            )
-        if problems:
-            # Still breaking a script rule after the bounded rewrites. Nothing that breaks a rule
-            # may reach the script - but a whole section is not thrown away for one sentence: the
-            # offending sentences (or an uncited passage) are taken out, what is left is judged,
-            # and only if nothing usable remains does the generation fail, with the rule it broke.
-            stamped = await _without_rule_violations(
-                llm,
-                report,
-                stamped,
-                problems,
-                unit=unit,
-                settings=settings,
-                grounding=grounding,
-                support=support,
-            )
-            unsupported = {}
-        if unsupported:
-            # Still not supported after the rewrites: what no claim backs is taken out, never
-            # kept. The rest of the section is untouched and has already passed every check.
-            stamped = _without_unsupported(
-                stamped,
-                unsupported,
-                words_per_minute=settings.SCRIPT_WORDS_PER_MINUTE,
-                topic=unit.topic.title,
-                support=support,
-            )
-            if not stamped or _is_hollow(stamped, unit.claims):
+        try:
+            if hollow:
                 raise HollowSectionError(
-                    f"Nothing the writer produced for the topic '{unit.topic.title}' was "
-                    "supported by its verified claims. Generate the script again."
+                    f"The section written for the topic '{unit.topic.title}' cites none of its "
+                    "verified claims, so the topic is not explained from the source. Generate the "
+                    "script again."
                 )
-            remaining = _invalid_segments(stamped, unit, settings=settings, grounding=grounding)
-            if remaining:
-                raise remaining[0][1]
+            if problems:
+                # Still breaking a script rule after the bounded rewrites. Nothing that breaks a
+                # rule may reach the script - but a section is not thrown away for one sentence:
+                # the offending sentences (or an uncited passage) are taken out, what is left is
+                # judged, and only if nothing usable remains is the section replaced by its claims
+                # (or, with the fallback off, the generation fails with the rule it broke).
+                stamped = await _without_rule_violations(
+                    llm,
+                    report,
+                    stamped,
+                    problems,
+                    unit=unit,
+                    settings=settings,
+                    grounding=grounding,
+                    support=support,
+                )
+                unsupported = {}
+            if unsupported:
+                # Still not supported after the rewrites: what no claim backs is taken out, never
+                # kept. The rest of the section is untouched and has already passed every check.
+                stamped = _without_unsupported(
+                    stamped,
+                    unsupported,
+                    words_per_minute=settings.SCRIPT_WORDS_PER_MINUTE,
+                    topic=unit.topic.title,
+                    support=support,
+                )
+                if not stamped or _is_hollow(stamped, unit.claims):
+                    raise HollowSectionError(
+                        f"Nothing the writer produced for the topic '{unit.topic.title}' was "
+                        "supported by its verified claims. Generate the script again."
+                    )
+                remaining = _invalid_segments(stamped, unit, settings=settings, grounding=grounding)
+                if remaining:
+                    raise remaining[0][1]
+        except (HollowSectionError, UngroundedSegmentError, UnsourcedSegmentError) as exc:
+            if not settings.SCRIPT_FALLBACK_TO_CLAIMS:
+                raise
+            # The writer could not produce wording these claims support, even after rewrites and
+            # removals. The topic is not dropped and nothing unsupported is kept: its verified
+            # claims are read out as they stand (each one is backed by a cited passage), and the
+            # job's result says so.
+            stamped = _claims_as_section(unit, settings)
+            if support is not None:
+                support.fallback_sections.append(
+                    {"topic": unit.topic.title, "claims": len(stamped), "reason": str(exc)}
+                )
+            log.warning("scripts.section_fell_back_to_claims", topic=unit.topic.title)
         all_segments.extend(stamped)
         if unit.unit_index == unit.unit_count - 1:
             previous_topic_title = unit.topic.title

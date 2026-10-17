@@ -18,6 +18,7 @@ import {
   latestJobOfKind,
   readClaimExtractionSummary,
 } from '@/lib/jobs';
+import { useWorkspaceContext } from '@/components/workspace/workspace-context';
 import { eligibleAcceptedTopics } from './topic-tree';
 
 function statusLabel(status: string): string {
@@ -97,6 +98,8 @@ export function ClaimExtractionPanel({
   refreshingJobs,
 }: ClaimExtractionPanelProps) {
   const start = useStartClaimExtraction(projectId);
+  const { project } = useWorkspaceContext();
+  const generalKnowledge = project.source_type === 'topic';
   const eligible = useMemo(() => eligibleAcceptedTopics(topics), [topics]);
   const extraction = latestJobOfKind(jobs, 'extract_claims');
   const active = extraction !== undefined && isActiveJob(extraction);
@@ -132,8 +135,16 @@ export function ClaimExtractionPanel({
   return (
     <Card>
       <CardHeader
-        title="Verify claims for your accepted topics"
-        description="Each accepted topic becomes a handful of candidate claims, checked against your source before a script can use them."
+        title={
+          generalKnowledge
+            ? 'Write the statements for your accepted topics'
+            : 'Verify claims for your accepted topics'
+        }
+        description={
+          generalKnowledge
+            ? 'Each accepted topic becomes a handful of statements from the AI model general knowledge. There is no document, so none of them is checked, and the video says so.'
+            : 'Each accepted topic becomes a handful of candidate claims, checked against your source before a script can use them.'
+        }
         icon={<ShieldCheck className="size-4" aria-hidden />}
       />
       <CardBody className="space-y-4">

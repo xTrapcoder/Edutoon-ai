@@ -5,6 +5,7 @@ import {
   jobFailureMessage,
   readClaimExtractionSummary,
   readExtractionSummary,
+  readScriptChecks,
 } from './jobs';
 
 const at = (iso: string) => Date.parse(iso);
@@ -125,5 +126,61 @@ describe('jobFailureMessage', () => {
         job({ status: 'failed', error: 'Traceback (most recent call last): boom' }),
       ),
     ).toBe("This step didn't finish. You can try again.");
+  });
+});
+
+describe('readScriptChecks', () => {
+  const scriptJob = (result: Record<string, unknown>) =>
+    job({ kind: 'generate_script', status: 'succeeded', result: { script_id: 's1', ...result } });
+
+  it('reads what the sentence check removed, how many it judged and which topics fell back', () => {
+    const checks = readScriptChecks(
+      [
+        scriptJob({
+          general_knowledge: false,
+          support_check: {
+            enabled: true,
+            judged_sentences: 45,
+            unchecked_sentences: 2,
+            removed_sentences: [
+              {
+                sentence: 'Plants need water to open their stomata.',
+                reason: 'reversed',
+                topic: 'Water',
+              },
+              { nonsense: true },
+            ],
+            fallback_sections: [{ topic: 'Hotspots' }, 7],
+          },
+        }),
+      ],
+      's1',
+    );
+    expect(checks).toEqual({
+      generalKnowledge: false,
+      support: {
+        enabled: true,
+        judgedSentences: 45,
+        uncheckedSentences: 2,
+        removed: [
+          {
+            sentence: 'Plants need water to open their stomata.',
+            reason: 'reversed',
+            topic: 'Water',
+            segmentDropped: false,
+          },
+        ],
+        fallbackTopics: ['Hotspots'],
+      },
+    });
+  });
+
+  it('knows a general-knowledge lesson, and never confuses "no check ran" with "nothing found"', () => {
+    expect(readScriptChecks([scriptJob({ general_knowledge: true })], 's1')).toEqual({
+      generalKnowledge: true,
+      support: null,
+    });
+    expect(readScriptChecks([scriptJob({})], 'other-script')).toBeNull();
+    expect(readScriptChecks(undefined, 's1')).toBeNull();
   });
 });

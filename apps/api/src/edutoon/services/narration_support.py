@@ -41,6 +41,7 @@ class SupportLog:
     cache_hits: int = 0
     removed: list[dict[str, object]] = field(default_factory=list)
     rewrites_for_support: int = 0
+    fallback_sections: list[dict[str, object]] = field(default_factory=list)
     _cache: dict[tuple[str, str], ns.SentenceJudgement | None] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, object]:
@@ -52,6 +53,7 @@ class SupportLog:
             "cache_hits": self.cache_hits,
             "rewrites_for_support": self.rewrites_for_support,
             "removed_sentences": self.removed,
+            "fallback_sections": self.fallback_sections,
         }
 
 

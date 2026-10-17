@@ -236,3 +236,58 @@ async def test_the_judge_calls_are_counted_under_their_own_usage_kind(db_session
 
     usage = job.result["usage"]["by_call"]["narration_support"]
     assert usage["calls"] >= 1 and usage["input_tokens"] >= 5
+
+
+# --- the fallback: a section the writer cannot support reads out its own claims ---------------
+
+
+async def test_a_section_with_nothing_supported_falls_back_to_reading_its_claims(
+    db_session, monkeypatch
+):
+    monkeypatch.setenv("SCRIPT_FALLBACK_TO_CLAIMS", "true")
+    get_settings.cache_clear()
+    _o, _p, topic, claim, enq = await _enqueued(db_session, claim_text=CLAIM)
+    llm, _outline, _section = _mock_llm(
+        monkeypatch,
+        sections_by_topic={
+            topic.id: [[_segment("Plants need water to open their stomata.", [str(claim.id)])]]
+        },
+    )
+    _judge_with(
+        monkeypatch,
+        llm,
+        lambda s, _second: ns.SentenceJudgement("unsupported", "not in the claims"),
+    )
+
+    job = await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
+
+    assert job.status == "succeeded"
+    assert await _texts(db_session, enq) == [CLAIM]  # the verified claim itself, as it stands
+    [fell_back] = job.result["support_check"]["fallback_sections"]
+    assert fell_back["topic"] == "A topic" and fell_back["claims"] == 1
+    cited = await scripts_repo.list_segment_claims_for_script(
+        db_session, project_id=enq.job.project_id, script_id=enq.script.id
+    )
+    assert [c.claim_verification_id for c in cited] == [claim.id]
+
+
+async def test_a_fallback_section_is_never_made_from_anything_but_the_topics_claims(
+    db_session, monkeypatch
+):
+    monkeypatch.setenv("SCRIPT_FALLBACK_TO_CLAIMS", "true")
+    get_settings.cache_clear()
+    _o, _p, topic, claim, enq = await _enqueued(db_session, claim_text=CLAIM)
+    llm, _outline, _section = _mock_llm(
+        monkeypatch,
+        sections_by_topic={
+            topic.id: [
+                [_segment("Picture a farm near Mumbai with thirsty plants.", [str(claim.id)])]
+            ]
+        },
+    )
+
+    job = await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
+
+    assert job.status == "succeeded"
+    texts = await _texts(db_session, enq)
+    assert texts == [CLAIM] and "Mumbai" not in " ".join(texts)

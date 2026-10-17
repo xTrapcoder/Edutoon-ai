@@ -343,6 +343,8 @@ export interface SupportCheck {
   judgedSentences: number;
   uncheckedSentences: number;
   removed: RemovedSentence[];
+  /** Topics whose writing could not be supported, so their verified claims are read out as they stand. */
+  fallbackTopics: string[];
 }
 
 export interface ScriptChecks {
@@ -391,6 +393,11 @@ export function readScriptChecks(
       judgedSentences: asCount(raw.judged_sentences) ?? 0,
       uncheckedSentences: asCount(raw.unchecked_sentences) ?? 0,
       removed,
+      fallbackTopics: Array.isArray(raw.fallback_sections)
+        ? raw.fallback_sections.flatMap((entry) =>
+            isRecord(entry) && typeof entry.topic === 'string' ? [entry.topic] : [],
+          )
+        : [],
     };
   }
   return { generalKnowledge, support };

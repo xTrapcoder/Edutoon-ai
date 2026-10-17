@@ -43,6 +43,9 @@ _TEST_ENV = {
     # The sentence-level support check makes a model call per sentence; the older script tests fake
     # only the writer, so they run without it. test_script_support_check.py turns it on.
     "SCRIPT_SUPPORT_CHECK_ENABLED": "false",
+    # Older script tests are about a section that cannot be made failing the generation; the
+    # claims-as-section fallback has its own tests (test_script_support_check.py), which turn it on.
+    "SCRIPT_FALLBACK_TO_CLAIMS": "false",
 }
 
 for key, value in _TEST_ENV.items():

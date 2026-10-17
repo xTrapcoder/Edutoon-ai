@@ -161,6 +161,10 @@ class Settings(BaseSettings):
     # long script spends minutes on it - the price of not reading unsupported sentences aloud. Off
     # only to measure, or for a model too weak to judge.
     SCRIPT_SUPPORT_CHECK_ENABLED: bool = True
+    # When the writer cannot produce wording a topic's claims support (even after rewrites and
+    # removals), read the topic's verified claims out as they stand instead of failing the whole
+    # script. Off to get the old behaviour: the generation fails.
+    SCRIPT_FALLBACK_TO_CLAIMS: bool = True
     MAX_CLAIMS_PER_GENERATION: int = 40
     SCRIPT_WORDS_PER_MINUTE: int = 150
     # How many words a minute a *PowerPoint deck* lesson is planned at (``domain.deck_plan``). A

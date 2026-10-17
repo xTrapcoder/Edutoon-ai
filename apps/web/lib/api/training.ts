@@ -246,7 +246,7 @@ export function publishAssessment(moduleId: string, key: string): Promise<AdminA
 export async function listUsers(): Promise<UserSummary[]> {
   const data = await unwrap(
     getApiClient().GET('/v1/admin/users', {
-      params: { query: { limit: 200 } },
+      params: { query: { limit: 100 } },
       signal: timeoutSignal(),
     }),
   );
@@ -256,7 +256,7 @@ export async function listUsers(): Promise<UserSummary[]> {
 export async function listEnrolments(courseId: string): Promise<Enrolment[]> {
   const data = await unwrap(
     getApiClient().GET('/v1/admin/training/courses/{course_id}/enrolments', {
-      params: { path: { course_id: courseId }, query: { limit: 200 } },
+      params: { path: { course_id: courseId }, query: { limit: 100 } },
       signal: timeoutSignal(),
     }),
   );

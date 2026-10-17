@@ -29,6 +29,15 @@ export function SupportCheckNotice({ checks }: { checks: ScriptChecks }) {
         </Alert>
       ) : null}
 
+      {support && support.fallbackTopics.length > 0 ? (
+        <Alert tone="warning" title="Some topics are read out from their claims as they stand">
+          The writer could not produce wording your claims support for{' '}
+          {support.fallbackTopics.map((topic) => `"${topic}"`).join(', ')}, so those sections state
+          the verified claims themselves, plainly. They are short and fully sourced; add source
+          material or edit the section if you want more.
+        </Alert>
+      ) : null}
+
       {!generalKnowledge && support && (support.enabled || support.removed.length > 0) ? (
         <Alert
           tone={removed.length > 0 || unchecked > 0 ? 'info' : 'success'}
