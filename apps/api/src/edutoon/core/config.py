@@ -169,6 +169,11 @@ class Settings(BaseSettings):
     # rewrites), give the segment one bullet scene made only of the narration's own words
     # instead of leaving it without scenes. Off to get the old behaviour: the segment fails.
     STORYBOARD_FALLBACK_TO_TEXT: bool = True
+    # A script that does not already end in a closing is given a fixed one that names the
+    # topics it covered (domain.script_closing). The writer's own summary is often removed by
+    # the support check, which left lessons ending abruptly. Off to leave the script as the
+    # writer and the checks produced it.
+    SCRIPT_FIXED_CLOSING: bool = True
     MAX_CLAIMS_PER_GENERATION: int = 40
     SCRIPT_WORDS_PER_MINUTE: int = 150
     # How many words a minute a *PowerPoint deck* lesson is planned at (``domain.deck_plan``). A

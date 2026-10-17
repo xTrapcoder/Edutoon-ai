@@ -1484,3 +1484,71 @@ async def test_a_fact_two_topics_hold_is_written_once_under_the_topic_it_fits(
     assert len(texts_by_topic[britain.id]) == 2
     assert len(texts_by_topic[steam.id]) == 3
     assert job.result["claims_deduplicated"] == 1
+
+
+async def test_a_script_that_just_stops_is_given_a_fixed_closing_naming_its_topics(
+    db_session, monkeypatch
+):
+    """Regression: the writer's own closing is a synthesis no single claim states, which the support
+    check removes, so scripts ended abruptly. The fixed closing names only the accepted topics."""
+    monkeypatch.setenv("SCRIPT_FIXED_CLOSING", "true")
+    get_settings.cache_clear()
+    _o, _p, topic, claim, enq = await _enqueued(db_session, claim_text="A fact.")
+    llm, _outline, _section = _mock_llm(
+        monkeypatch,
+        sections_by_topic={topic.id: [[_segment("A fact.", [str(claim.id)])]]},
+    )
+
+    job = await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
+
+    assert job.status == "succeeded"
+    assert job.result["closing_added"] is True
+    segments = await scripts_repo.list_segments(
+        db_session, project_id=enq.job.project_id, script_id=enq.script.id
+    )
+    assert segments[-1].narration_text == (
+        "That brings us to the end of this lesson. We covered A topic."
+    )
+    claim_links = await scripts_repo.list_segment_claims(
+        db_session, project_id=enq.job.project_id, script_segment_id=segments[-1].id
+    )
+    assert claim_links == []
+
+
+async def test_a_script_that_already_ends_in_a_closing_gets_no_second_one(db_session, monkeypatch):
+    monkeypatch.setenv("SCRIPT_FIXED_CLOSING", "true")
+    get_settings.cache_clear()
+    _o, _p, topic, claim, enq = await _enqueued(db_session, claim_text="A fact.")
+    llm, _outline, _section = _mock_llm(
+        monkeypatch,
+        sections_by_topic={
+            topic.id: [
+                [
+                    _segment("A fact.", [str(claim.id)]),
+                    _segment("In conclusion, that is the lesson.", connective=True),
+                ]
+            ]
+        },
+    )
+
+    job = await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
+
+    assert job.status == "succeeded"
+    assert job.result["closing_added"] is False
+    segments = await scripts_repo.list_segments(
+        db_session, project_id=enq.job.project_id, script_id=enq.script.id
+    )
+    assert [s.narration_text for s in segments][-1] == "In conclusion, that is the lesson."
+    assert sum("end of this lesson" in s.narration_text for s in segments) == 0
+
+
+async def test_the_closing_can_be_switched_off(db_session, monkeypatch):
+    assert get_settings().SCRIPT_FIXED_CLOSING is False  # the test fixture's pin
+    _o, _p, topic, claim, enq = await _enqueued(db_session, claim_text="A fact.")
+    llm, _outline, _section = _mock_llm(
+        monkeypatch, sections_by_topic={topic.id: [[_segment("A fact.", [str(claim.id)])]]}
+    )
+
+    job = await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
+
+    assert job.result["closing_added"] is False

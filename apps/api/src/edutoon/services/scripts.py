@@ -108,6 +108,7 @@ from edutoon.domain.narration_support import (
     without_sentences,
 )
 from edutoon.domain.script import ScriptDraft, ScriptSegmentDraft
+from edutoon.domain.script_closing import closing_text, has_closing
 from edutoon.domain.script_duration import (
     allocate_topic_budgets,
     decide_length_correction,
@@ -745,6 +746,22 @@ def _general_knowledge_notice(topic_id: UUID, settings: Settings) -> ScriptSegme
     )
 
 
+def _closing_segment(
+    topics: Sequence[ProjectTopicRecord], settings: Settings
+) -> ScriptSegmentDraft:
+    """The fixed closing of a lesson that does not end in one (``domain.script_closing``)."""
+    narration = closing_text([topic.title for topic in topics])
+    words = len(narration.split())
+    return ScriptSegmentDraft(
+        segment_index=0,
+        narration_text=narration,
+        claim_ids=[],
+        estimated_duration_ms=round(words / settings.SCRIPT_WORDS_PER_MINUTE * 60_000),
+        connective=True,
+        topic_id=topics[-1].id,
+    )
+
+
 def _claims_as_section(unit: _SectionUnit, settings: Settings) -> list[ScriptSegmentDraft]:
     """A section made of the topic's verified claims read out as they stand: one passage per claim
     (at most :data:`FALLBACK_CLAIMS_PER_SECTION`), each citing exactly its own claim. Plain, short
@@ -1363,6 +1380,14 @@ async def _generate_and_attach(
         # A lesson that rests on general knowledge says so aloud before anything else. The
         # sentence is fixed text (``domain.general_knowledge``), never written by the model.
         segments = [_general_knowledge_notice(topics[0].id, settings), *segments]
+    # A lesson ends. The writer's own closing is often a synthesis no single claim states, which the
+    # support check rightly removes, so a script that does not end in one gets a fixed closing that
+    # names the topics it covered and asserts nothing else (domain.script_closing).
+    closing_added = settings.SCRIPT_FIXED_CLOSING and not (
+        segments and has_closing(segments[-1].narration_text)
+    )
+    if closing_added:
+        segments = [*segments, _closing_segment(topics, settings)]
     reindexed = [replace(segment, segment_index=index) for index, segment in enumerate(segments)]
     supported_claim_ids = {UUID(claim.id) for unit in units for claim in unit.claims}
     draft = ScriptDraft(
@@ -1411,6 +1436,8 @@ async def _generate_and_attach(
         "correction_applied": correction_applied,
         # Claims left out because another topic holds the same fact (said once, where it fits).
         "claims_deduplicated": claims_deduplicated,
+        # Whether the script was given its fixed closing because it did not end in one.
+        "closing_added": closing_added,
         # Why the script is shorter than the target when it is: ``"evidence_limited"`` means the
         # checks removed or rewrote unsupported text and the final script already draws on most of
         # its claims, so the verified claims cannot honestly carry more; nothing was added to
