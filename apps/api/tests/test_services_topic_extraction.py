@@ -313,6 +313,7 @@ async def test_pdf_only_persists_source_topics_with_their_citations(db_session, 
         "Respiration": {c[2].id},
     }
     assert job.result == {
+        "instructions": [],
         "mode": "pdf",
         "topic_count": 4,
         "chunks_total": 3,

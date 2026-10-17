@@ -57,6 +57,8 @@ set to *something* but a local backend never uses them. Useful switches:
 | `OCR_ENABLED` | `true` | Read scanned PDF pages with local OCR. |
 | `OCR_MAX_PAGES` | `30` | Most scanned pages read in one document (about 5 s a page). Longer scans are refused with a message, never half-read. |
 | `SCRIPT_SUPPORT_CHECK_ENABLED` | `true` | Judge every script sentence against the verified claims (see below). Costs minutes per script. |
+| `SCRIPT_FALLBACK_TO_CLAIMS` | `true` | A topic whose wording cannot be supported is read out as its verified claims instead of failing the script. |
+| `STORYBOARD_FALLBACK_TO_TEXT` | `true` | A segment whose scene text cannot be grounded gets one bullet scene made of its own narration instead of failing. |
 | `KEYWORD_ONLY_PROJECTS_ENABLED` | `true` | Topic-only lessons. |
 
 Sign-in uses Clerk (`apps/web/.env.local`). To try the product without Clerk, development only:
@@ -113,10 +115,21 @@ dark text on a light page for best results.
 
 ## Hardware and timing (this laptop)
 
-Local generation is slow; do not promise instant video. Measured on the reference machine:
-topic extraction about 2 minutes, claim verification about 10 minutes for 9 topics, script about 8 to 20
-minutes (more with the support check), narration about 20 seconds, storyboard 10 to 20 minutes, render under
-2 minutes for a 5-minute video. Run one job at a time. See `apps/api/README.md` for the measurements.
+Local generation is slow; do not promise instant video. Run one job at a time. Measured on the
+reference machine (CPU inference, `qwen2.5:7b-instruct`) through the real UI, 2026-10-17, finished videos
+all 1280x720, 30 fps, H.264 High + AAC mono 22.05 kHz:
+
+| Mode | Topics | Claims | Script | Narration | Storyboard | Render | Video |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| A. PDF (4 pages) | 134 s | 610 s | about 27 min | 11 s | about 12 min (one resume) | 15 s | 143.8 s, 4.6 MB |
+| B. Pasted text | 112 s (+6 s indexing) | 600 s | 31.9 min | 14 s | 741 s | 19 s | 213.9 s, 6.2 MB |
+| C. PDF + keywords | 191 s | 834 s | 24.5 min | 15 s | 857 s | 23 s | 240.4 s, 7.6 MB |
+| E. Scanned PDF (3 pages, OCR in the upload) | not timed | 329 s | not timed | not timed | 11 min | 10 s | 105.2 s, 3.1 MB |
+| F. Topic only | 62 s (suggest) | not timed | 22.5 min | 11 s | 11 min | 15 s | 143.2 s, 4.5 MB |
+
+A video comes out shorter than its target whenever the sentence check removes unsupported sentences
+(A: 144 s of 300 s; F: 143 s of 240 s; B: 214 s of 240 s; C: 240 s of 300 s). That is the check working, not a
+fault. Roughly 1 to 1.5 hours end to end for a 4-5 minute video.
 
 ## Tests and checks
 
@@ -126,6 +139,12 @@ make lint               # eslint + ruff + mypy
 make contracts-check    # the committed API contract is current
 ```
 
+Last full run (2026-10-17, worker stopped): backend 5509 passed, 25 skipped, and the two tests that failed
+(a result key I had added) fixed and re-run on their own; web 285 passed; ruff, mypy, eslint, tsc and prettier
+clean; the API contract is current; migration head 0024. The sentence judge scores 21 of 23 on a small
+hand-labelled set (`scripts/check_support_judge.py --eval`; one false negative, one over-flag). No test calls a model:
+real-model behaviour is only what the end-to-end runs above show.
+
 ## Troubleshooting
 
 - **A scanned PDF fails "text recognition is not available"**: run `uv sync` in `apps/api` and restart the API.
@@ -134,7 +153,10 @@ make contracts-check    # the committed API contract is current
 - **"9 accepted topics cannot each receive a section"**: shorten the list or raise the target duration.
 - **The UI looks frozen in a background tab**: polling pauses when a tab is hidden; reload it.
 - **Ollama is slow or out of memory**: close other GPU programs; `OLLAMA_NUM_CTX` can be lowered.
-- **A worker started before a code change keeps the old code**: restart `make dev` / `make worker`.
+- **A worker or API started before a code change keeps the old code** (an old error wording, an old rule):
+  restart `make dev` / `make worker`.
+- **A few backend tests fail while a worker is running**: they claim jobs from the same development queue.
+  Stop the worker before `make test`.
 
 ## Known limitations
 

@@ -801,6 +801,7 @@ async def test_process_one_job_runs_the_extract_topics_handler(
     assert finished is not None
     assert finished.status == "succeeded"
     assert finished.result == {
+        "instructions": [],
         "mode": "keywords",
         "topic_count": 2,
         "chunks_total": 0,

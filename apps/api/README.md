@@ -1596,14 +1596,15 @@ chunks, and is not queued for indexing; a source's `failure_reason` (derived, no
 could not be read, was too long, or had no text. The whole file is still held in memory while it is
 stored and parsed (up to 100 MB): streaming it is future work.
 
-### Keyword-only projects are switched off
+### Keyword-only (topic-only) projects - superseded, now on by default
 
-**Implemented** (`KEYWORD_ONLY_PROJECTS_ENABLED`, default `false`). With keywords and no material there is
-nothing to verify against, so a keyword-only project cannot produce a verified script. Creating one is a 400,
-a topic extraction from keywords alone is refused at enqueue and again when the job runs, and the wizard's
-Keywords card is disabled with an explanation; an existing keyword-only project shows a clear "not supported
-yet" stage. PDF projects, with or without keywords, are unaffected; no data model was removed. If the mode
-returns it should be a separate mode that says its output is unverified.
+**Superseded 2026-10-17.** This section described the mode as switched off (a keyword-only project cannot
+produce a verified script). It has since been reinstated as a separate, labelled mode - see "Topic-only
+lessons" below: the claims are `general_knowledge`, the script opens with a spoken notice, the UI labels it, and
+the mode was run end to end on the local model before the default was flipped.
+`KEYWORD_ONLY_PROJECTS_ENABLED=false` still refuses it exactly as described here (creating one is a 400, a
+keyword-only topic extraction is refused at enqueue and again when the job runs). PDF projects, with or
+without keywords, are unaffected either way.
 
 ### Duration: any length, up to what can actually be made
 
@@ -1758,7 +1759,7 @@ Everything is recorded on the job's `result["support_check"]` (judged, second op
 sentences with reasons, fallback sections) and shown on the script page. `SCRIPT_SUPPORT_CHECK_ENABLED=false`
 turns the judge off; it adds one to two local-model calls per sentence (minutes per script).
 
-**Topic-only lessons.** With `KEYWORD_ONLY_PROJECTS_ENABLED=true` a `topic` project may be built from keywords
+**Topic-only lessons.** With `KEYWORD_ONLY_PROJECTS_ENABLED=true` (the default) a `topic` project may be built from keywords
 alone. Its claims are recorded `general_knowledge` (never `supported`, never cited), the writer is told so, the
 script opens with the fixed spoken notice `domain.general_knowledge.LESSON_NOTICE`, and the UI labels the lesson.
 `services/general_knowledge.applies_to` decides when this applies; a topic project that has source material
@@ -1791,7 +1792,8 @@ the genuine local MinIO. `pytest.mark.provider_mocked` does not apply to it.
 1. **Keys and models.** That the keys authenticate and that `LLM_MODEL` and
    `EMBEDDING_MODEL` (and the `claude-sonnet-5` default) are available to the
    accounts.
-2. ~~Keywords-only extraction~~ - switched off (`KEYWORD_ONLY_PROJECTS_ENABLED=false`); see "Reliability and safety".
+2. **Keywords-only extraction** - runs on the local model (verified 2026-10-17); against a real provider it is
+   untested. See "Topic-only lessons".
 3. **Long-PDF extraction:** how much of a real document the
    `TOPIC_INPUT_BUDGET_CHARS` sample covers, and the quality of the citations.
 4. **`scripts/smoke_test_phase4.py`**, run unmodified, against the real providers.

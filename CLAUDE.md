@@ -281,8 +281,8 @@ guard spend (the provider consoles' spend limits must still be set); a target th
 cannot honestly fill is refused before any paid call (`domain/evidence_sufficiency.py`), a script's
 figures and names must come from its claims, and a storyboard illustration that fails provenance falls
 back instead of failing the segment; oversized uploads are refused before parsing, pages are counted
-before extraction and a PDF with no text is a clear failure; **keyword-only projects are switched off**
-(`KEYWORD_ONLY_PROJECTS_ENABLED`); the UI offers any length to the second from 1:00 to **30:00** (`MAX_RENDER_DURATION_MS`; it was 10:00
+before extraction and a PDF with no text is a clear failure; **keyword-only projects were switched off**
+(`KEYWORD_ONLY_PROJECTS_ENABLED`; reinstated 2026-10-17 as the labelled "topic only" mode, on by default); the UI offers any length to the second from 1:00 to **30:00** (`MAX_RENDER_DURATION_MS`; it was 10:00
 until 2026-10-07) while the model keeps 1-60 minutes; a live
 job is never reclaimed as stale and a reclaimed worker stops. Not settled: H.264/AAC/x264/Piper licensing,
 long-video (over thirty minutes) work, cleanup of superseded scripts' audio and videos.

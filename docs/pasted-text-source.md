@@ -10,8 +10,9 @@ MP4 (it decodes cleanly; nobody has listened to the narration).
 A project of `source_type: text` is built from text the owner pastes in, instead of an uploaded file.
 It exists so a person with no PDF can still get a *verified* video: the text is the source, and every
 claim is checked against it exactly as it is against a PDF's pages. It is **not** a way to get a
-video from a bare topic name - with nothing to check against, there is nothing to verify, and
-keyword-only projects stay switched off (`KEYWORD_ONLY_PROJECTS_ENABLED=false`).
+video from a bare topic name - with nothing to check against, nothing is verified. A bare topic is a
+separate, labelled "topic only" mode (`KEYWORD_ONLY_PROJECTS_ENABLED`, on by default; see the API README,
+"Topic-only lessons"), whose claims are never marked `supported`.
 
 ## How it works
 
