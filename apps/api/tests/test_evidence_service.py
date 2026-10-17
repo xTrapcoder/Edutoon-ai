@@ -318,6 +318,41 @@ async def test_verify_claim_persists_supported_verdict_with_its_citation(db_sess
     assert [c.source_chunk_id for c in citations] == [chunk.id]
 
 
+async def test_verify_claim_downgrades_a_supported_claim_that_names_a_place_the_source_lacks(
+    db_session, monkeypatch
+):
+    """Regression: the judge approved "Factory towns in India ..." on the strength of the three
+    English cities, and the claim was stored as supported. A name no passage contains keeps it
+    from being treated as established; its citation and the judge's words are kept."""
+    project, chunk = await _make_indexed_chunk(
+        db_session,
+        content=(
+            "Factory towns grew very fast. Manchester, Birmingham and Leeds filled with workers."
+        ),
+    )
+    claim_text = "Factory towns in India grew rapidly, with workers filling Manchester and Leeds."
+    embeddings = _fake_embeddings(monkeypatch, {claim_text: QUERY_VECTOR})
+    llm = _fake_llm(
+        monkeypatch,
+        {
+            "status": "supported",
+            "rationale": "Passage [p1] says the towns grew very fast.",
+            "cited_passage_ids": [str(chunk.id)],
+        },
+    )
+
+    verification = await evidence_service.verify_claim(
+        db_session, embeddings, llm, project_id=project.id, claim_text=claim_text
+    )
+
+    assert verification.status == "partially_supported"
+    assert verification.rationale is not None
+    assert "Passage [p1] says the towns grew very fast." in verification.rationale
+    assert "'India'" in verification.rationale
+    citations = await claim_verifications_repo.list_citations(db_session, verification.id)
+    assert [c.source_chunk_id for c in citations] == [chunk.id]
+
+
 async def test_verify_claim_downgrades_supported_with_no_citations_to_unsupported(
     db_session, monkeypatch
 ):

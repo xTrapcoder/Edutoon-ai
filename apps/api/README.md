@@ -1695,8 +1695,15 @@ EMBEDDING_MODEL=bge-m3
 # Smaller jobs for a small machine (a 4 GB GPU runs a 7B model partly on the CPU):
 TOPIC_INPUT_BUDGET_CHARS=32000
 MAX_TOPICS_PER_EXTRACTION=12
-MAX_CLAIMS_PER_TOPIC=4
+MAX_CLAIMS_PER_TOPIC=8
 ```
+
+`MAX_CLAIMS_PER_TOPIC` is **how much a lesson can say**: a script may state only what its verified claims
+state, so a topic that has four claims can carry about four facts of narration. It used to be recommended
+as `4` here to keep claim extraction fast; that capped every lesson at roughly 25 to 40 seconds of
+supported narration per topic however long the source was, and was the main reason videos came out much
+shorter than their target (see "Why a video can be shorter than its target"). Each extra claim costs one
+more local-model call to verify. The default is 10; 8 is a reasonable compromise on a small machine.
 
 Then restart the API **and the worker** (a worker started earlier keeps the old settings), and prove it
 works with your models before trusting a project to it:

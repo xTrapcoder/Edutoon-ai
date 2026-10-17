@@ -32,6 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from edutoon.core.config import get_settings
 from edutoon.core.errors import ConflictError, JobAbandonedError, NotFoundError
 from edutoon.core.pagination import DEFAULT_PAGE_SIZE, Page
+from edutoon.domain.claim_grounding import downgrade_rationale, ungrounded_entities
 from edutoon.domain.embedding_batches import EMBEDDING_DIMENSIONS, estimate_tokens, plan_batches
 from edutoon.domain.llm_usage import UsageReport
 from edutoon.providers.embeddings import Embeddings
@@ -381,8 +382,16 @@ async def verify_claim(
     cited = [candidates_by_id[pid] for pid in verdict.cited_passage_ids if pid in candidates_by_id]
 
     status = verdict.status
+    rationale = verdict.rationale
     if status == "supported" and not cited:
         status = "unsupported"
+    if status == "supported":
+        # The judge is a model and can approve a claim on its familiar part: a name, date or figure
+        # that no retrieved passage contains keeps the claim from being treated as established.
+        invented = ungrounded_entities(claim_text, [chunk.content for chunk, _ in candidates])
+        if invented:
+            status = "partially_supported"
+            rationale = downgrade_rationale(rationale, invented)
 
     citations = [
         NewClaimCitation(source_chunk_id=chunk.id, similarity=similarity)
@@ -396,7 +405,7 @@ async def verify_claim(
         status=status,
         embedding_model=embeddings.model,
         llm_model=llm.model,
-        rationale=verdict.rationale,
+        rationale=rationale,
         topic_id=topic_id,
         citations=citations,
     )

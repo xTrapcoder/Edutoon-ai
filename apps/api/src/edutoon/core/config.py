@@ -215,7 +215,7 @@ class Settings(BaseSettings):
     # since it is per topic, not per document. They are the single home of the
     # numbers ``domain.claim_extraction.ClaimCandidateLimits`` is built from.
     CLAIM_INPUT_BUDGET_CHARS: int = Field(default=12_000, ge=1)
-    MAX_CLAIMS_PER_TOPIC: int = Field(default=6, ge=1)
+    MAX_CLAIMS_PER_TOPIC: int = Field(default=10, ge=1)
     MAX_CLAIM_TEXT_CHARS: int = Field(default=300, ge=1)
 
     # Mirrors ``TOPIC_EXTRACTION_STALE_AFTER_SECONDS``: how long an

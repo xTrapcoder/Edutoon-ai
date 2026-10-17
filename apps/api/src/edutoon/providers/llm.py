@@ -1749,8 +1749,8 @@ The user message gives the topic, the limit and - when there is source material 
 
 Rules
 - Answer only by calling submit_claims.
-- Propose at most the given limit of candidates. Prefer fewer, well-chosen claims to many thin or overlapping ones.
-- When passages are supplied, propose only claims the passages plausibly support - do not invent a specific number, date, name or figure a passage does not contain. Do not cite passages here: a later, separate step verifies each claim against the material and records its own citations independently.
+- Propose at most the given limit of candidates, never two that say the same thing.
+- When passages are supplied, cover every distinct fact they state about this topic - each name, date, cause, effect, reason and example is its own claim, up to the limit - rather than only the two or three most prominent facts. Propose only claims the passages plausibly support: do not invent a specific number, date, name, place or figure a passage does not contain, and do not move a fact to a different place or person. Do not cite passages here: a later, separate step verifies each claim against the material and records its own citations independently.
 - When no passages are supplied, propose only widely established, textbook-level statements about the topic that you are confident are correct; leave out anything you are unsure of, anything contested, anything recent, and any specific figure, date or attribution. Fewer, safer statements are better than more.
 - Never propose the topic's own summary or keywords restated as a claim.
 - Write every claim in the language and style given by the request's Language and Writing style lines.
