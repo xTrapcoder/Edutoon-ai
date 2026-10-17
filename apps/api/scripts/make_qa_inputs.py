@@ -9,6 +9,12 @@ pre-made result: they are ordinary files you upload or paste in the browser, lik
   OCR can read them (scanned-PDF run).
 - ``industrial_revolution.txt`` - about 560 words of history notes (paste-text run).
 
+Three more subjects, so a run is never only the ones a fix was developed against:
+
+- ``human_heart.pdf`` - a three-page, text-based biology chapter (PDF, PDF + keywords).
+- ``solar_system_scanned.pdf`` - three pictures-of-text pages (scanned-PDF run).
+- ``python_basics.txt`` - about 400 words of programming notes (paste-text run).
+
     uv run python scripts/make_qa_inputs.py
 """
 
@@ -181,10 +187,129 @@ started the rise in carbon dioxide in the atmosphere that continues today.
 """
 
 
-def _plate_tectonics_pdf() -> bytes:
+HUMAN_HEART = [
+    (
+        "The Human Heart",
+        [
+            "The human heart is a muscular organ about the size of a fist. It sits in the chest "
+            "between the lungs, slightly to the left. The heart pumps blood around the body. The "
+            "blood delivers oxygen and nutrients to the cells and carries away carbon dioxide and "
+            "other waste. An adult heart beats about 60 to 100 times a minute at rest.",
+            "The heart has four chambers. The two upper chambers are called atria and the two "
+            "lower chambers are called ventricles. The right side of the heart receives blood that "
+            "is low in oxygen and pumps it to the lungs. The left side receives blood rich in "
+            "oxygen from the lungs and pumps it to the rest of the body. The wall of the left "
+            "ventricle is thicker than the wall of the right ventricle because it must push blood "
+            "around the whole body.",
+        ],
+    ),
+    (
+        "Valves and the Heartbeat",
+        [
+            "Four valves keep blood flowing in one direction. The tricuspid valve and the mitral "
+            "valve lie between the atria and the ventricles. The pulmonary valve and the aortic "
+            "valve lie where blood leaves the ventricles. The familiar lub-dub sound of a "
+            "heartbeat is made by the valves closing.",
+            "Each heartbeat is started by a small group of cells in the right atrium called the "
+            "sinoatrial node, which acts as the natural pacemaker. It sends out an electrical "
+            "signal that makes the atria contract. The signal then reaches the atrioventricular "
+            "node, which passes it on to the ventricles so that they contract a moment later. "
+            "This delay lets the ventricles fill with blood before they pump.",
+        ],
+    ),
+    (
+        "Blood Vessels and Circulation",
+        [
+            "Arteries carry blood away from the heart and veins carry blood back to it. "
+            "Capillaries are the tiny vessels where oxygen and nutrients pass into the tissues. "
+            "The aorta is the largest artery in the body. Blood makes two circuits. In pulmonary "
+            "circulation it travels from the heart to the lungs and back. In systemic circulation "
+            "it travels from the heart to the rest of the body and back.",
+            "Blood pressure is written as two numbers, such as 120 over 80. The first is the "
+            "systolic pressure, measured when the heart beats. The second is the diastolic "
+            "pressure, measured between beats. The coronary arteries supply the heart muscle "
+            "itself, and a blocked coronary artery can cause a heart attack. Regular exercise "
+            "strengthens the heart so that it pumps more blood with each beat.",
+        ],
+    ),
+]
+
+SOLAR_SYSTEM = [
+    (
+        "The Solar System",
+        "The solar system is made up of the Sun and everything that orbits it. The Sun is a star "
+        "that holds about 99 percent of the mass of the solar system. Eight planets orbit the Sun. "
+        "The four inner planets, Mercury, Venus, Earth and Mars, are small and rocky. The four "
+        "outer planets, Jupiter, Saturn, Uranus and Neptune, are much larger. Jupiter and Saturn "
+        "are gas giants, while Uranus and Neptune are ice giants.",
+    ),
+    (
+        "Moons and Small Bodies",
+        "Most planets have moons. Earth has one moon, which takes about 27 days to orbit our "
+        "planet. Mars has two small moons, Phobos and Deimos. Between Mars and Jupiter lies the "
+        "asteroid belt, a ring of rocky objects. Beyond Neptune is the Kuiper Belt, which holds "
+        "icy bodies such as Pluto, now classed as a dwarf planet. Comets are balls of ice and dust "
+        "that grow glowing tails when they come near the Sun.",
+    ),
+    (
+        "Distances and Time",
+        "Earth is about 150 million kilometres from the Sun, a distance called one astronomical "
+        "unit. Light from the Sun takes about eight minutes to reach Earth. A year on a planet is "
+        "the time it takes to orbit the Sun. Earth takes 365 days, Mercury takes only 88 days and "
+        "Neptune takes about 165 Earth years. Venus spins so slowly that one day there lasts "
+        "longer than a Venusian year.",
+    ),
+]
+
+PYTHON_BASICS = """\
+Python Basics: Study Notes
+
+Python is a programming language that is popular with beginners because its code is easy to
+read. It was created by Guido van Rossum and first released in 1991. A Python program is a text
+file that an interpreter runs one line at a time.
+
+Variables and types
+
+A variable is a name that refers to a value. You create one by assigning to it, for example
+age = 15. Python works out the type of the value for itself. The basic types are integers such as
+42, floating point numbers such as 3.14, strings such as "hello" and booleans, which are either
+True or False. The type() function tells you which type a value has.
+
+Lists and dictionaries
+
+A list holds an ordered collection of items inside square brackets, for example [3, 1, 2]. Items
+are counted from zero, so the first item is at index 0. Lists can grow with the append() method.
+A dictionary stores pairs of keys and values inside curly brackets. You look up a value by its
+key, so a dictionary of ages could be asked for the age of one person by name.
+
+Decisions and loops
+
+An if statement runs a block of code only when a condition is true, and else covers the other
+case. A for loop repeats a block once for each item in a collection. A while loop repeats for as
+long as a condition stays true. Python uses indentation, not braces, to show which lines belong
+to a block, so a missing indent is an error.
+
+Functions
+
+A function is a named block of code that you can run again whenever you need it. You define one
+with the def keyword, list its parameters in brackets and use return to give a value back.
+Writing functions stops you repeating code and makes a program easier to test. Python also comes
+with built-in functions such as len(), which counts the items in a collection, and print(), which
+shows a value on the screen.
+
+Errors
+
+When Python cannot run a line it raises an error and prints a traceback that shows where the
+problem happened. A syntax error means the code was written wrongly. An exception such as
+ZeroDivisionError happens while the program is running. A try and except block lets a program
+catch an exception and carry on instead of stopping.
+"""
+
+
+def _text_pdf(chapters: list[tuple[str, list[str]]]) -> bytes:
     document = FPDF()
     document.set_auto_page_break(auto=True, margin=15)
-    for heading, paragraphs in PLATE_TECTONICS:
+    for heading, paragraphs in chapters:
         document.add_page()
         document.set_font("Helvetica", style="B", size=18)
         document.multi_cell(0, 10, heading)
@@ -216,9 +341,12 @@ def _scanned_pdf(pages: list[tuple[str, str]]) -> bytes:
 
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
-    (OUT / "plate_tectonics.pdf").write_bytes(_plate_tectonics_pdf())
+    (OUT / "plate_tectonics.pdf").write_bytes(_text_pdf(PLATE_TECTONICS))
     (OUT / "water_cycle_scanned.pdf").write_bytes(_scanned_pdf(WATER_CYCLE))
     (OUT / "industrial_revolution.txt").write_text(INDUSTRIAL_REVOLUTION, encoding="utf-8")
+    (OUT / "human_heart.pdf").write_bytes(_text_pdf(HUMAN_HEART))
+    (OUT / "solar_system_scanned.pdf").write_bytes(_scanned_pdf(SOLAR_SYSTEM))
+    (OUT / "python_basics.txt").write_text(PYTHON_BASICS, encoding="utf-8")
     for path in sorted(OUT.iterdir()):
         print(f"{path}  ({path.stat().st_size:,} bytes)")
 
