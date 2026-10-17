@@ -532,7 +532,12 @@ async def test_compose_script_section_drops_a_claim_id_that_was_not_supplied(mon
     assert segments[0].claim_ids == ["cl1"]  # the invented one is gone, never kept or guessed
 
 
-async def test_compose_script_section_rejects_a_section_with_too_many_segments(monkeypatch):
+async def test_compose_script_section_joins_a_reply_with_too_many_segments_down_to_the_limit(
+    monkeypatch,
+):
+    """Regression: told to cover every claim, the writer replied with 26 one-sentence passages for a
+    section whose limit is 12, and the whole six-minute generation failed. The passages are joined
+    down to the limit, keeping every citation."""
     llm, _ = _llm_for_section(
         monkeypatch,
         {
@@ -543,7 +548,20 @@ async def test_compose_script_section_rejects_a_section_with_too_many_segments(m
         },
     )
 
-    with pytest.raises(LLMResponseError):
+    segments, _ = await _section(llm, max_segments=1)
+
+    assert [s.narration_text for s in segments] == ["One. Two."]
+    assert segments[0].claim_ids == ["cl1", "cl2"]
+    assert segments[0].segment_index == 0
+
+
+async def test_compose_script_section_still_rejects_a_reply_far_over_the_limit(monkeypatch):
+    llm, _ = _llm_for_section(
+        monkeypatch,
+        {"segments": [{"narration_text": f"Passage {n}.", "claim_ids": ["cl1"]} for n in range(5)]},
+    )
+
+    with pytest.raises(LLMResponseError, match="limit is 1"):
         await _section(llm, max_segments=1)
 
 

@@ -88,7 +88,13 @@ from edutoon.domain.claim_extraction import (
 )
 from edutoon.domain.generation_settings import Language, Orientation
 from edutoon.domain.narration_support import SentenceJudgement, SentenceVerdict
-from edutoon.domain.script import ScriptOutlineDraft, ScriptSegmentDraft, TopicOutlineDraft
+from edutoon.domain.script import (
+    MAX_MERGE_FACTOR,
+    ScriptOutlineDraft,
+    ScriptSegmentDraft,
+    TopicOutlineDraft,
+    merge_to_limit,
+)
 from edutoon.domain.storyboard_template import (
     BULLET_MAX_CHARS,
     CAPTION_MAX_CHARS,
@@ -421,7 +427,8 @@ _SECTION_SYSTEM_PROMPT = (
     "claim is covered and the budget is still not used, stop: a short, "
     "accurate section is better than a padded one. Break the "
     "narration into ordered "
-    "segments, each a single spoken passage. For every segment, list the ids "
+    "segments, each a single spoken passage of two to four sentences (never one "
+    "segment per sentence). For every segment, list the ids "
     "of the claims that segment's narration draws on. A purely connective "
     "segment - introducing this topic, transitioning from the previous one, "
     "or a short recap - that asserts no fact of its own may list no claim "
@@ -838,7 +845,7 @@ def _parse_section_draft(
     raw_segments = raw.get("segments")
     if not isinstance(raw_segments, list) or not raw_segments:
         raise LLMResponseError("A section must contain at least one segment.")
-    if len(raw_segments) > max_segments:
+    if len(raw_segments) > max_segments * MAX_MERGE_FACTOR:
         raise LLMResponseError(
             f"Section has {len(raw_segments)} segments; the limit is {max_segments}."
         )
@@ -884,7 +891,8 @@ def _parse_section_draft(
             )
         )
 
-    return segments
+    # A reply with more (shorter) passages than the limit is joined down to it, not refused.
+    return merge_to_limit(segments, max_segments, words_per_minute)
 
 
 # --- Topic extraction (Phase 5) -------------------------------------------------

@@ -254,3 +254,54 @@ def test_an_uncited_passage_that_states_a_fact_is_still_rejected():
     )
     with pytest.raises(UnsourcedSegmentError):
         filter_and_validate(draft, set(), WPM)
+
+
+# --- merge_to_limit ----------------------------------------------------------------------------
+
+
+def test_segments_over_the_limit_are_joined_shortest_neighbours_first():
+    from edutoon.domain.script import merge_to_limit
+
+    a, b = uuid4(), uuid4()
+    segments = [
+        _segment("A long first passage with many words in it to keep it apart.", [str(a)], index=0),
+        _segment("Short.", [], index=1, connective=True),
+        _segment("Tiny.", [str(b)], index=2),
+        _segment("Another long passage with just as many words as the first.", [str(a)], index=3),
+    ]
+
+    merged = merge_to_limit(segments, 3, WPM)
+
+    assert [s.narration_text for s in merged] == [
+        "A long first passage with many words in it to keep it apart.",
+        "Short. Tiny.",
+        "Another long passage with just as many words as the first.",
+    ]
+    assert merged[1].claim_ids == [str(b)]
+    assert merged[1].connective is False  # one of the two cited a claim
+    assert [s.segment_index for s in merged] == [0, 1, 2]
+    assert merged[1].estimated_duration_ms == round(2 / WPM * 60_000)
+
+
+def test_two_connective_passages_stay_connective_when_joined():
+    from edutoon.domain.script import merge_to_limit
+
+    merged = merge_to_limit(
+        [_segment("Welcome.", [], connective=True), _segment("Let us begin.", [], connective=True)],
+        1,
+        WPM,
+    )
+
+    assert merged[0].connective is True
+    assert merged[0].claim_ids == []
+
+
+def test_segments_within_the_limit_are_left_alone_and_reindexed():
+    from edutoon.domain.script import merge_to_limit
+
+    segments = [_segment("One.", [], index=5), _segment("Two.", [], index=9)]
+
+    merged = merge_to_limit(segments, 5, WPM)
+
+    assert [s.narration_text for s in merged] == ["One.", "Two."]
+    assert [s.segment_index for s in merged] == [0, 1]
