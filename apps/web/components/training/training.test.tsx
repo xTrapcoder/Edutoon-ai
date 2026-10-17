@@ -2,9 +2,11 @@ import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { project, script } from '@/test/fixtures';
 import { renderWithClient } from '@/test/render';
 import { API, server } from '@/test/server';
 import { AssessmentEditor, draftProblem } from './assessment-editor';
+import { AddModuleCard } from './course-detail';
 import { ModuleView } from './module-view';
 import { MyCoursesView } from './my-courses';
 
@@ -248,6 +250,72 @@ describe('A module', () => {
     serveLearner({ hasAssessment: false });
     renderWithClient(<ModuleView moduleId={id(101)} />);
     expect(await screen.findByText(/This module has no assessment/)).toBeInTheDocument();
+  });
+});
+
+describe('Naming a module when publishing a video', () => {
+  const readyProject = project({ id: id(700), title: 'Industrial Revolution', status: 'ready' });
+
+  const setUp = () => {
+    let published: unknown = null;
+    server.use(
+      http.get(`${API}/v1/projects`, () =>
+        HttpResponse.json({ items: [readyProject], next_cursor: null }),
+      ),
+      http.get(`${API}/v1/projects/:projectId/scripts`, () =>
+        HttpResponse.json({
+          items: [script({ id: id(701), project_id: readyProject.id, status: 'approved' })],
+          next_cursor: null,
+        }),
+      ),
+      http.post(`${API}/v1/admin/training/courses/:courseId/modules`, async ({ request }) => {
+        published = await request.json();
+        return HttpResponse.json({ id: id(702) }, { status: 201 });
+      }),
+    );
+    renderWithClient(<AddModuleCard courseId={id(1)} />);
+    return () => published;
+  };
+
+  // The options arrive after the project list has loaded.
+  const choose = async () => {
+    await screen.findByRole('option', { name: 'Industrial Revolution' });
+    await userEvent.selectOptions(screen.getByLabelText('Project'), 'Industrial Revolution');
+  };
+
+  it('starts from the project name, and a person who edits it sends exactly what is in the field', async () => {
+    // Regression: a QA module was saved as "Industrial ReThe Industrial Revolutionvolution" - the
+    // person clicked into the prefilled field and typed mid-text. The field must behave like any
+    // text field (the prefill is ordinary text, nothing is appended), and what is sent is what shows.
+    const sent = setUp();
+    await choose();
+    const field = screen.getByLabelText('Module title');
+    expect(field).toHaveValue('Industrial Revolution');
+
+    await userEvent.clear(field);
+    await userEvent.type(field, 'The Industrial Revolution');
+    expect(field).toHaveValue('The Industrial Revolution');
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Publish as a module' }));
+    await waitFor(() => expect(sent()).not.toBeNull());
+    expect(sent()).toMatchObject({ title: 'The Industrial Revolution' });
+  });
+
+  it('sends the prefilled name unchanged when nobody edits it', async () => {
+    const sent = setUp();
+    await choose();
+    await userEvent.click(await screen.findByRole('button', { name: 'Publish as a module' }));
+    await waitFor(() => expect(sent()).not.toBeNull());
+    expect(sent()).toMatchObject({ title: 'Industrial Revolution' });
+  });
+
+  it('leaves the title out when it is cleared, so the server names the module', async () => {
+    const sent = setUp();
+    await choose();
+    await userEvent.clear(screen.getByLabelText('Module title'));
+    await userEvent.click(await screen.findByRole('button', { name: 'Publish as a module' }));
+    await waitFor(() => expect(sent()).not.toBeNull());
+    expect((sent() as Record<string, unknown>).title).toBeUndefined();
   });
 });
 

@@ -267,7 +267,7 @@ function useReadyProjects() {
   });
 }
 
-function AddModuleCard({ courseId }: { courseId: string }) {
+export function AddModuleCard({ courseId }: { courseId: string }) {
   const projects = useReadyProjects();
   const publish = usePublishModule(courseId);
   const [projectId, setProjectId] = useState('');
