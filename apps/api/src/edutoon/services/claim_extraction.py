@@ -80,6 +80,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from edutoon.core.config import Settings, get_settings
 from edutoon.core.errors import ConflictError, JobError, NotFoundError, ValidationError
+from edutoon.domain import general_knowledge as general_knowledge_domain
 from edutoon.domain.claim_extraction import ClaimCandidateLimits, validate_candidates
 from edutoon.domain.llm_usage import UsageReport
 from edutoon.domain.topic import SourcePassage
@@ -96,6 +97,8 @@ from edutoon.repositories.jobs import JobRecord
 from edutoon.repositories.project_topics import ProjectTopicRecord
 from edutoon.services import audit_logs as audit_logs_service
 from edutoon.services import evidence as evidence_service
+from edutoon.services import general_knowledge as general_knowledge_service
+from edutoon.services import instructions as instructions_service
 from edutoon.services import projects as projects_service
 from edutoon.services import spend_guard
 from edutoon.services.job_errors import describe_job_failure
@@ -355,6 +358,10 @@ async def _run(
     skipped: list[UUID] = []
     failures: list[_TopicFailure] = []
 
+    # Inert unless keyword-only projects are switched on (KEYWORD_ONLY_PROJECTS_ENABLED): a
+    # project with source material, or any project while the mode is off, verifies every claim.
+    general_knowledge = await general_knowledge_service.applies_to(session, project)
+
     for topic in eligible:
         existing_texts = await claim_verifications_repo.list_claim_texts_by_topic(session, topic.id)
         if existing_texts and not replace:
@@ -373,6 +380,7 @@ async def _run(
                 language=project.language,
                 summary=topic.summary,
                 keywords=tuple(topic.keywords),
+                instructions=instructions_service.prompt_block(project),
             )
             draft = await record_call(
                 report, "claim_extraction", llm.extract_claims(brief, passages, limits=limits)
@@ -385,15 +393,29 @@ async def _run(
             statuses: list[str] = []
             async with session.begin_nested():
                 for text in candidate_texts:
-                    verification = await evidence_service.verify_claim(
-                        session,
-                        embeddings,
-                        llm,
-                        project_id=project_id,
-                        claim_text=text,
-                        topic_id=topic.id,
-                        usage=report,
-                    )
+                    if general_knowledge:
+                        # A keyword-only project has nothing to verify against: the claim is
+                        # recorded as what it is, never as ``supported`` and never cited.
+                        verification = await claim_verifications_repo.create(
+                            session,
+                            project_id=project_id,
+                            claim_text=text,
+                            status=general_knowledge_domain.STATUS,
+                            embedding_model=general_knowledge_domain.EMBEDDING_MODEL_NONE,
+                            llm_model=llm.model,
+                            rationale=general_knowledge_domain.RATIONALE,
+                            topic_id=topic.id,
+                        )
+                    else:
+                        verification = await evidence_service.verify_claim(
+                            session,
+                            embeddings,
+                            llm,
+                            project_id=project_id,
+                            claim_text=text,
+                            topic_id=topic.id,
+                            usage=report,
+                        )
                     statuses.append(verification.status)
         except Exception as exc:  # noqa: BLE001 - one topic's failure must not sink the job
             failures.append(

@@ -107,6 +107,7 @@ def test_every_kind_the_application_makes_is_named() -> None:
         "topic_extraction",
         "claim_extraction",
         "claim_judge",
+        "narration_support",
         "script_outline",
         "script_section",
         "script_correction",

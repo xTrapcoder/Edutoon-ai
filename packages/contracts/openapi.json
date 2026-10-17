@@ -3546,6 +3546,66 @@
         }
       }
     },
+    "/v1/projects/{project_id}/topics/coverage": {
+      "get": {
+        "tags": [
+          "topics"
+        ],
+        "summary": "Get Keyword Coverage",
+        "description": "Whether the document backs each keyword the owner typed: ``covered``, ``not_in_document``\n(statements were drafted and none was supported), ``not_checked`` or ``left_out``. A keyword\nthe document does not back is never presented as covered.",
+        "operationId": "get_keyword_coverage_v1_projects__project_id__topics_coverage_get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KeywordCoverageResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/projects/{project_id}/topics/{topic_id}": {
       "patch": {
         "tags": [
@@ -6292,6 +6352,30 @@
         "type": "object",
         "title": "HTTPValidationError"
       },
+      "InstructionNoteResponse": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "applied",
+              "guidance",
+              "unsupported"
+            ],
+            "title": "Kind"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text"
+          }
+        },
+        "type": "object",
+        "required": [
+          "kind",
+          "text"
+        ],
+        "title": "InstructionNoteResponse",
+        "description": "One thing said back about the owner's instructions: ``applied`` (done in code),\n``guidance`` (passed to the writers, not guaranteed) or ``unsupported`` (cannot be done)."
+      },
       "InvitationCreateRequest": {
         "properties": {
           "email": {
@@ -6681,6 +6765,98 @@
           "updated_at"
         ],
         "title": "JobResponse"
+      },
+      "KeywordCoverageItemResponse": {
+        "properties": {
+          "topic_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Topic Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "covered",
+              "not_in_document",
+              "not_checked",
+              "left_out"
+            ],
+            "title": "State"
+          },
+          "supported_claims": {
+            "type": "integer",
+            "title": "Supported Claims"
+          },
+          "total_claims": {
+            "type": "integer",
+            "title": "Total Claims"
+          },
+          "in_script": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "In Script"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          }
+        },
+        "type": "object",
+        "required": [
+          "topic_id",
+          "title",
+          "state",
+          "supported_claims",
+          "total_claims",
+          "in_script",
+          "message"
+        ],
+        "title": "KeywordCoverageItemResponse",
+        "description": "Whether the document backs one keyword the owner typed (``domain.keyword_coverage``)."
+      },
+      "KeywordCoverageResponse": {
+        "properties": {
+          "keywords": {
+            "items": {
+              "$ref": "#/components/schemas/KeywordCoverageItemResponse"
+            },
+            "type": "array",
+            "title": "Keywords"
+          },
+          "complete": {
+            "type": "boolean",
+            "title": "Complete"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary"
+          }
+        },
+        "type": "object",
+        "required": [
+          "keywords",
+          "complete",
+          "summary"
+        ],
+        "title": "KeywordCoverageResponse",
+        "description": "Every keyword's verdict, and whether all the keywords the owner kept are covered."
       },
       "MeResponse": {
         "properties": {
@@ -7227,6 +7403,17 @@
             "minimum": 60000.0,
             "title": "Target Duration Ms",
             "default": 300000
+          },
+          "instructions": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Instructions"
           }
         },
         "additionalProperties": false,
@@ -7342,6 +7529,25 @@
             "type": "string",
             "format": "date-time",
             "title": "Updated At"
+          },
+          "instructions": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Instructions"
+          },
+          "instructions_notes": {
+            "items": {
+              "$ref": "#/components/schemas/InstructionNoteResponse"
+            },
+            "type": "array",
+            "title": "Instructions Notes",
+            "default": []
           }
         },
         "type": "object",
@@ -7426,6 +7632,17 @@
               }
             ],
             "title": "Target Duration Ms"
+          },
+          "instructions": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Instructions"
           }
         },
         "additionalProperties": false,
@@ -9097,6 +9314,26 @@
               "failed"
             ],
             "title": "Status"
+          },
+          "extraction_method": {
+            "type": "string",
+            "enum": [
+              "text",
+              "ocr"
+            ],
+            "title": "Extraction Method",
+            "default": "text"
+          },
+          "ocr_page_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ocr Page Count"
           },
           "failure_reason": {
             "anyOf": [

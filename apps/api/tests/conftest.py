@@ -40,6 +40,9 @@ _TEST_ENV = {
     # older tests build a project the quickest way - source_type "topic" - to test something else,
     # so they run with the mode on; the tests about the mode being off turn it off again.
     "KEYWORD_ONLY_PROJECTS_ENABLED": "true",
+    # The sentence-level support check makes a model call per sentence; the older script tests fake
+    # only the writer, so they run without it. test_script_support_check.py turns it on.
+    "SCRIPT_SUPPORT_CHECK_ENABLED": "false",
 }
 
 for key, value in _TEST_ENV.items():

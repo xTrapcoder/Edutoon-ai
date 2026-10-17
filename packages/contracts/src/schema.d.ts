@@ -656,6 +656,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/topics/coverage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Keyword Coverage
+         * @description Whether the document backs each keyword the owner typed: ``covered``, ``not_in_document``
+         *     (statements were drafted and none was supported), ``not_checked`` or ``left_out``. A keyword
+         *     the document does not back is never presented as covered.
+         */
+        get: operations["get_keyword_coverage_v1_projects__project_id__topics_coverage_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/topics/{topic_id}": {
         parameters: {
             query?: never;
@@ -1413,6 +1435,20 @@ export interface components {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
         };
+        /**
+         * InstructionNoteResponse
+         * @description One thing said back about the owner's instructions: ``applied`` (done in code),
+         *     ``guidance`` (passed to the writers, not guaranteed) or ``unsupported`` (cannot be done).
+         */
+        InstructionNoteResponse: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "applied" | "guidance" | "unsupported";
+            /** Text */
+            text: string;
+        };
         /** InvitationCreateRequest */
         InvitationCreateRequest: {
             /** Email */
@@ -1575,6 +1611,44 @@ export interface components {
              * Format: date-time
              */
             updated_at: string;
+        };
+        /**
+         * KeywordCoverageItemResponse
+         * @description Whether the document backs one keyword the owner typed (``domain.keyword_coverage``).
+         */
+        KeywordCoverageItemResponse: {
+            /**
+             * Topic Id
+             * Format: uuid
+             */
+            topic_id: string;
+            /** Title */
+            title: string;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "covered" | "not_in_document" | "not_checked" | "left_out";
+            /** Supported Claims */
+            supported_claims: number;
+            /** Total Claims */
+            total_claims: number;
+            /** In Script */
+            in_script: boolean | null;
+            /** Message */
+            message: string;
+        };
+        /**
+         * KeywordCoverageResponse
+         * @description Every keyword's verdict, and whether all the keywords the owner kept are covered.
+         */
+        KeywordCoverageResponse: {
+            /** Keywords */
+            keywords: components["schemas"]["KeywordCoverageItemResponse"][];
+            /** Complete */
+            complete: boolean;
+            /** Summary */
+            summary: string | null;
         };
         /** MeResponse */
         MeResponse: {
@@ -1823,6 +1897,8 @@ export interface components {
              * @default 300000
              */
             target_duration_ms: number;
+            /** Instructions */
+            instructions?: string | null;
         };
         /** ProjectListResponse */
         ProjectListResponse: {
@@ -1879,6 +1955,13 @@ export interface components {
              * Format: date-time
              */
             updated_at: string;
+            /** Instructions */
+            instructions?: string | null;
+            /**
+             * Instructions Notes
+             * @default []
+             */
+            instructions_notes: components["schemas"]["InstructionNoteResponse"][];
         };
         /**
          * ProjectUpdateRequest
@@ -1901,6 +1984,8 @@ export interface components {
             orientation?: ("horizontal" | "vertical") | null;
             /** Target Duration Ms */
             target_duration_ms?: number | null;
+            /** Instructions */
+            instructions?: string | null;
         };
         /**
          * ProjectUsageResponse
@@ -2555,6 +2640,14 @@ export interface components {
              * @enum {string}
              */
             status: "pending" | "processing" | "parsed" | "failed";
+            /**
+             * Extraction Method
+             * @default text
+             * @enum {string}
+             */
+            extraction_method: "text" | "ocr";
+            /** Ocr Page Count */
+            ocr_page_count?: number | null;
             /** Failure Reason */
             failure_reason?: string | null;
             /**
@@ -4402,6 +4495,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["JobResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_keyword_coverage_v1_projects__project_id__topics_coverage_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KeywordCoverageResponse"];
                 };
             };
             /** @description Validation Error */

@@ -190,12 +190,25 @@ class ProvenanceViolation:
     token: str
 
 
+EVERYDAY_PROPER_NOUNS: Final[frozenset[str]] = frozenset({"earth", "sun", "moon"})
+"""Capitalised only by convention, and so never a name that could be invented: the planet we live
+on and the two bodies every science lesson mentions. A lesson on plate tectonics says "Earth"
+whether or not the claim it is drawing on does, and rejecting it - as a first live run did, failing
+a whole script after two rewrites - protected nobody. Anything else capitalised mid-sentence is
+still a name that must come from the claims."""
+
+
 def _capitalised_candidates(text: str) -> set[str]:
     candidates: set[str] = set()
     for sentence in _SENTENCE_SPLIT_RE.split(text.strip()):
         words = _WORD_RE.findall(sentence)
         for word in words[1:]:  # skip the sentence's own first word
-            if len(word) >= 2 and word[0].isupper() and word[1:].islower():
+            if (
+                len(word) >= 2
+                and word[0].isupper()
+                and word[1:].islower()
+                and _strip_possessive(word) not in EVERYDAY_PROPER_NOUNS
+            ):
                 candidates.add(word)
     return candidates
 

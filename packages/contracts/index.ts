@@ -50,6 +50,27 @@ export type RenderProgressStatus = Schemas['RenderProgressStatusResponse'];
 
 export type ClaimVerification = Schemas['ClaimVerificationResponse'];
 
+export type Me = Schemas['MeResponse'];
+export type UserSummary = Schemas['UserResponse'];
+export type Role = Me['role'];
+
+export type Course = Schemas['CourseResponse'];
+export type Module = Schemas['ModuleResponse'];
+export type ModulePublishRequest = Schemas['ModulePublishRequest'];
+export type Enrolment = Schemas['EnrolmentResponse'];
+export type MyCourse = Schemas['MyCourseResponse'];
+export type MyModule = Schemas['MyModuleResponse'];
+export type EmployeeAssessment = Schemas['EmployeeAssessmentResponse'];
+export type EmployeeQuestion = Schemas['EmployeeQuestionResponse'];
+export type AdminAssessment = Schemas['AdminAssessmentResponse'];
+export type AssessmentPutRequest = Schemas['AssessmentPutRequest'];
+export type Attempt = Schemas['AttemptResponse'];
+export type AttemptSubmitRequest = Schemas['AttemptSubmitRequest'];
+
+export type InstructionNote = Schemas['InstructionNoteResponse'];
+export type KeywordCoverage = Schemas['KeywordCoverageResponse'];
+export type KeywordCoverageItem = Schemas['KeywordCoverageItemResponse'];
+
 /** The vocabularies below are the API's own `Literal` types, read back out of the schema. */
 export type Orientation = Project['orientation'];
 export type Language = Project['language'];

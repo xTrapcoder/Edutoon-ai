@@ -40,6 +40,7 @@ from edutoon.api.dependencies import IdempotencyKey, RedisDep, get_current_user
 from edutoon.api.policies import require_admin_for_project
 from edutoon.api.schemas.jobs import JobResponse
 from edutoon.api.schemas.topics import (
+    KeywordCoverageResponse,
     TopicExtractionRequest,
     TopicKeywordsRequest,
     TopicListResponse,
@@ -48,6 +49,7 @@ from edutoon.api.schemas.topics import (
 )
 from edutoon.db.session import get_session
 from edutoon.services import idempotency as idempotency_service
+from edutoon.services import keyword_coverage as keyword_coverage_service
 from edutoon.services import project_topics as project_topics_service
 from edutoon.services import topic_extraction as topic_extraction_service
 from edutoon.services.users import UserRecord
@@ -131,6 +133,21 @@ async def enqueue_extraction(
         commit=session.commit,
     )
     return JobResponse.model_validate(response_body)
+
+
+@router.get("/coverage")
+async def get_keyword_coverage(
+    project_id: UUID,
+    current_user: CurrentUser,
+    session: Session,
+) -> KeywordCoverageResponse:
+    """Whether the document backs each keyword the owner typed: ``covered``, ``not_in_document``
+    (statements were drafted and none was supported), ``not_checked`` or ``left_out``. A keyword
+    the document does not back is never presented as covered."""
+    report = await keyword_coverage_service.get_keyword_coverage(
+        session, project_id=project_id, owner_id=current_user.id
+    )
+    return KeywordCoverageResponse.from_report(report)
 
 
 @router.get("")

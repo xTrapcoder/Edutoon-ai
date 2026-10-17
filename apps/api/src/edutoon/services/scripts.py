@@ -93,6 +93,7 @@ from edutoon.core.errors import (
     ValidationError,
 )
 from edutoon.core.pagination import DEFAULT_PAGE_SIZE, Page
+from edutoon.domain import general_knowledge as general_knowledge_domain
 from edutoon.domain.evidence_sufficiency import (
     EvidenceAssessment,
     assess_evidence,
@@ -100,6 +101,11 @@ from edutoon.domain.evidence_sufficiency import (
 )
 from edutoon.domain.generation_settings import MAX_TARGET_DURATION_MS
 from edutoon.domain.llm_usage import UsageReport
+from edutoon.domain.narration_support import (
+    UnsupportedSentence,
+    split_sentences,
+    without_sentences,
+)
 from edutoon.domain.script import ScriptDraft, ScriptSegmentDraft
 from edutoon.domain.script_duration import (
     allocate_topic_budgets,
@@ -135,11 +141,13 @@ from edutoon.repositories.jobs import JobRecord
 from edutoon.repositories.project_topics import ProjectTopicRecord
 from edutoon.repositories.scripts import ScriptRecord, ScriptSegmentRecord
 from edutoon.services import audit_logs as audit_logs_service
+from edutoon.services import general_knowledge as general_knowledge_service
 from edutoon.services import instructions as instructions_service
 from edutoon.services import projects as projects_service
 from edutoon.services import spend_guard
 from edutoon.services.job_errors import describe_job_failure
 from edutoon.services.llm_usage import new_usage_report, record_call
+from edutoon.services.narration_support import SupportLog, unsupported_in
 
 log = structlog.get_logger()
 
@@ -261,11 +269,13 @@ async def enqueue_script_generation(
 
     missing_evidence: list[str] = []
     supported_counts: list[int] = []
+    general_knowledge = await general_knowledge_service.applies_to(session, project)
     for topic in eligible:
         supported = await claim_verifications_repo.list_supported_by_topic(
             session,
             project_id=project_id,
             topic_id=topic.id,
+            include_general_knowledge=general_knowledge,
         )
         supported_counts.append(len(supported))
         if not supported:
@@ -274,7 +284,9 @@ async def enqueue_script_generation(
         names = ", ".join(f"'{title}'" for title in missing_evidence)
         raise ValidationError(
             f"These accepted topics have no verified evidence yet: {names}. Extract "
-            "and verify claims for them, or reject them, before generating a script."
+            "and verify claims for them, or reject them, before generating a script. A keyword "
+            "you typed that your document does not cover shows as 'not in your document' under "
+            "the keyword coverage: reject it to leave it out of the lesson."
         )
 
     # Enough evidence for the length asked for? Refused here, from counts alone, before a job or
@@ -704,6 +716,192 @@ def _corrections_for(
     return lines
 
 
+def _general_knowledge_notice(topic_id: UUID, settings: Settings) -> ScriptSegmentDraft:
+    """The fixed opening segment of a lesson based on general knowledge."""
+    words = len(general_knowledge_domain.LESSON_NOTICE.split())
+    return ScriptSegmentDraft(
+        segment_index=0,
+        narration_text=general_knowledge_domain.LESSON_NOTICE,
+        claim_ids=[],
+        estimated_duration_ms=round(words / settings.SCRIPT_WORDS_PER_MINUTE * 60_000),
+        connective=True,
+        topic_id=topic_id,
+    )
+
+
+def _sentence_violates(
+    sentence: str,
+    segment: ScriptSegmentDraft,
+    unit: _SectionUnit,
+    *,
+    settings: Settings,
+    grounding: GroundingReference | None,
+) -> str | None:
+    """Why ``sentence`` alone breaks the figures-and-names rule (the names it brings in), or
+    ``None``. It is checked as a passage of its own, exempt from the citation rule, with the same
+    reference every passage is held to."""
+    try:
+        filter_and_validate(
+            ScriptDraft(
+                title="", segments=[replace(segment, narration_text=sentence, connective=True)]
+            ),
+            {UUID(claim.id) for claim in unit.claims},
+            settings.SCRIPT_WORDS_PER_MINUTE,
+            grounding=grounding,
+            claim_texts=_claim_texts(unit.claims),
+        )
+    except UngroundedSegmentError as exc:
+        named = ", ".join(f"'{token}'" for _, token in exc.tokens[:3])
+        return f"mentions {named}, which none of the verified claims contain"
+    return None
+
+
+async def _without_rule_violations(
+    llm: LLM,
+    report: UsageReport,
+    segments: list[ScriptSegmentDraft],
+    problems: list[tuple[int, Exception]],
+    *,
+    unit: _SectionUnit,
+    settings: Settings,
+    grounding: GroundingReference | None,
+    support: SupportLog | None,
+) -> list[ScriptSegmentDraft]:
+    """``segments`` with every sentence that still breaks a script rule taken out, then the rest
+    judged against the claims like any other text. A passage with no citation goes whole; a passage
+    that adds a figure or a name loses only the sentences that add it. Raises the first problem's
+    own error if nothing usable is left, so a section with nothing valid in it still fails, saying
+    which rule it broke."""
+    removals: dict[int, list[UnsupportedSentence]] = {}
+    for position, exc in problems:
+        segment = segments[position]
+        sentences = split_sentences(segment.narration_text)
+        found: list[UnsupportedSentence] = []
+        if isinstance(exc, UngroundedSegmentError):
+            for index, sentence in enumerate(sentences):
+                why = _sentence_violates(
+                    sentence, segment, unit, settings=settings, grounding=grounding
+                )
+                if why is not None:
+                    found.append(UnsupportedSentence(position=index, text=sentence, reason=why))
+        if not found:
+            # An uncited passage, or a violation not traceable to one sentence: the passage goes.
+            found = [
+                UnsupportedSentence(
+                    position=index,
+                    text=sentence,
+                    reason=(
+                        "the passage cites no verified claim"
+                        if isinstance(exc, UnsourcedSegmentError)
+                        else "the passage adds something its claims do not contain"
+                    ),
+                )
+                for index, sentence in enumerate(sentences)
+            ]
+        removals[position] = found
+
+    cleaned = _without_unsupported(
+        segments,
+        removals,
+        words_per_minute=settings.SCRIPT_WORDS_PER_MINUTE,
+        topic=unit.topic.title,
+        support=support,
+    )
+    if not cleaned or _is_hollow(cleaned, unit.claims):
+        raise problems[0][1]
+    remaining = _invalid_segments(cleaned, unit, settings=settings, grounding=grounding)
+    if remaining:
+        raise remaining[0][1]
+    if support is not None and support.enabled:
+        judged = await _unsupported_by_segment(llm, report, cleaned, unit.claims, support)
+        if judged:
+            cleaned = _without_unsupported(
+                cleaned,
+                judged,
+                words_per_minute=settings.SCRIPT_WORDS_PER_MINUTE,
+                topic=unit.topic.title,
+                support=support,
+            )
+            if not cleaned or _is_hollow(cleaned, unit.claims):
+                raise problems[0][1]
+    return cleaned
+
+
+def _support_corrections(
+    segments: list[ScriptSegmentDraft], unsupported: dict[int, list[UnsupportedSentence]]
+) -> list[str]:
+    """What to tell the writer about sentences no claim supports, one line per sentence: which
+    passage, the sentence, and why the checker found no claim for it. The fix is never to cite a
+    claim the sentence does not state - only to say what a claim says, or to leave it out."""
+    lines: list[str] = []
+    for position in sorted(unsupported):
+        opening = " ".join(segments[position].narration_text.split()[:8])
+        for found in unsupported[position]:
+            lines.append(
+                f'Passage {position + 1} ("{opening} ...") says "{found.text}" - no verified claim '
+                f"supports it ({found.reason.strip().rstrip('.')}). Say only what a claim says, "
+                "in the direction it says it, or leave the sentence out."
+            )
+    return lines
+
+
+async def _unsupported_by_segment(
+    llm: LLM,
+    report: UsageReport,
+    segments: list[ScriptSegmentDraft],
+    claims: Sequence[Claim],
+    support: SupportLog,
+) -> dict[int, list[UnsupportedSentence]]:
+    """For each segment (by position), the sentences no claim of its section supports."""
+    found: dict[int, list[UnsupportedSentence]] = {}
+    for position, segment in enumerate(segments):
+        flagged = await unsupported_in(llm, report, segment.narration_text, claims, support)
+        if flagged:
+            found[position] = flagged
+    return found
+
+
+def _without_unsupported(
+    segments: list[ScriptSegmentDraft],
+    unsupported: dict[int, list[UnsupportedSentence]],
+    *,
+    words_per_minute: int,
+    topic: str,
+    support: SupportLog | None,
+) -> list[ScriptSegmentDraft]:
+    """``segments`` with the unsupported sentences taken out. A segment left too short to read out
+    is dropped. Each removal is recorded on the job's result with the judge's reason."""
+    kept: list[ScriptSegmentDraft] = []
+    for position, segment in enumerate(segments):
+        flagged = unsupported.get(position)
+        if not flagged:
+            kept.append(segment)
+            continue
+        sentences = split_sentences(segment.narration_text)
+        remaining = without_sentences(sentences, [found.position for found in flagged])
+        if support is not None:
+            for found in flagged:
+                support.removed.append(
+                    {
+                        "topic": topic,
+                        "sentence": found.text,
+                        "reason": found.reason,
+                        "segment_dropped": remaining is None,
+                    }
+                )
+        if remaining is None:
+            continue
+        words = len(remaining.split())
+        kept.append(
+            replace(
+                segment,
+                narration_text=remaining,
+                estimated_duration_ms=round(words / words_per_minute * 60_000),
+            )
+        )
+    return kept
+
+
 async def _generate_units(
     llm: LLM,
     brief: ScriptBrief,
@@ -719,6 +917,7 @@ async def _generate_units(
     kind: str,
     grounding: GroundingReference | None = None,
     retries: list[dict[str, object]] | None = None,
+    support: SupportLog | None = None,
 ) -> list[ScriptSegmentDraft]:
     """Generate every unit's section in order, stamping each returned segment
     with its unit's ``topic_id`` (never taken from the model) and carrying
@@ -790,11 +989,27 @@ async def _generate_units(
             )
             return [replace(segment, topic_id=unit.topic.id) for segment in drafted]
 
+        async def _assess(
+            drafted: list[ScriptSegmentDraft],
+            *,
+            unit: _SectionUnit = unit,
+        ) -> tuple[list[tuple[int, Exception]], bool, dict[int, list[UnsupportedSentence]]]:
+            """What is wrong with ``drafted``: the script's own rule violations, a hollow section,
+            and - only once those are clean, so no model call is spent on text that will be
+            rewritten anyway - the sentences no verified claim of this topic supports."""
+            found = _invalid_segments(drafted, unit, settings=settings, grounding=grounding)
+            empty = _is_hollow(drafted, unit.claims)
+            unsupported: dict[int, list[UnsupportedSentence]] = {}
+            if support is not None and support.enabled and not found and not empty:
+                unsupported = await _unsupported_by_segment(
+                    llm, report, drafted, unit.claims, support
+                )
+            return found, empty, unsupported
+
         stamped = await _write()
-        problems = _invalid_segments(stamped, unit, settings=settings, grounding=grounding)
-        hollow = _is_hollow(stamped, unit.claims)
+        problems, hollow, unsupported = await _assess(stamped)
         rewrites = 0
-        while (problems or hollow) and rewrites < MAX_SECTION_REWRITES:
+        while (problems or hollow or unsupported) and rewrites < MAX_SECTION_REWRITES:
             # A bounded rewrite, told exactly what was wrong. Nothing is left out and nothing is
             # accepted on the strength of a rewrite: it must pass the very same checks, and if it
             # still does not after the last one the generation fails exactly as it always did.
@@ -802,11 +1017,13 @@ async def _generate_units(
             corrections = _corrections_for(stamped, problems, unit.claims)
             if hollow:
                 corrections.append(HOLLOW_SECTION_CORRECTION)
+            corrections.extend(_support_corrections(stamped, unsupported))
             log.warning(
                 "scripts.section_rewritten",
                 topic=unit.topic.title,
                 rejected=len(problems),
                 hollow=hollow,
+                unsupported=sum(len(found) for found in unsupported.values()),
                 rewrite=rewrites,
             )
             if retries is not None:
@@ -816,20 +1033,54 @@ async def _generate_units(
                         "rewrite": rewrites,
                         "rejected_passages": len(problems),
                         "hollow": hollow,
+                        "unsupported_sentences": sum(len(found) for found in unsupported.values()),
                         "problems": corrections,
                     }
                 )
+            if unsupported and support is not None:
+                support.rewrites_for_support += 1
             stamped = await _write(corrections)
-            problems = _invalid_segments(stamped, unit, settings=settings, grounding=grounding)
-            hollow = _is_hollow(stamped, unit.claims)
-        if problems:
-            raise problems[0][1]
+            problems, hollow, unsupported = await _assess(stamped)
         if hollow:
             raise HollowSectionError(
                 f"The section written for the topic '{unit.topic.title}' cites none of its "
                 "verified claims, so the topic is not explained from the source. Generate the "
                 "script again."
             )
+        if problems:
+            # Still breaking a script rule after the bounded rewrites. Nothing that breaks a rule
+            # may reach the script - but a whole section is not thrown away for one sentence: the
+            # offending sentences (or an uncited passage) are taken out, what is left is judged,
+            # and only if nothing usable remains does the generation fail, with the rule it broke.
+            stamped = await _without_rule_violations(
+                llm,
+                report,
+                stamped,
+                problems,
+                unit=unit,
+                settings=settings,
+                grounding=grounding,
+                support=support,
+            )
+            unsupported = {}
+        if unsupported:
+            # Still not supported after the rewrites: what no claim backs is taken out, never
+            # kept. The rest of the section is untouched and has already passed every check.
+            stamped = _without_unsupported(
+                stamped,
+                unsupported,
+                words_per_minute=settings.SCRIPT_WORDS_PER_MINUTE,
+                topic=unit.topic.title,
+                support=support,
+            )
+            if not stamped or _is_hollow(stamped, unit.claims):
+                raise HollowSectionError(
+                    f"Nothing the writer produced for the topic '{unit.topic.title}' was "
+                    "supported by its verified claims. Generate the script again."
+                )
+            remaining = _invalid_segments(stamped, unit, settings=settings, grounding=grounding)
+            if remaining:
+                raise remaining[0][1]
         all_segments.extend(stamped)
         if unit.unit_index == unit.unit_count - 1:
             previous_topic_title = unit.topic.title
@@ -867,11 +1118,13 @@ async def _generate_and_attach(
     )
 
     claims_by_topic: dict[UUID, list[ClaimVerificationRecord]] = {}
+    general_knowledge = await general_knowledge_service.applies_to(session, project)
     for topic in topics:
         supported = await claim_verifications_repo.list_supported_by_topic(
             session,
             project_id=project_id,
             topic_id=topic.id,
+            include_general_knowledge=general_knowledge,
         )
         # Defence in depth: enqueue-time already required every one of these
         # topics to have supported evidence; claims are append-only, so this
@@ -913,6 +1166,7 @@ async def _generate_and_attach(
         audience=audience,
         tone=tone,
         instructions=instructions_service.prompt_block(project),
+        general_knowledge=general_knowledge,
     )
     outline_topics = [
         OutlineTopicBrief(
@@ -939,6 +1193,7 @@ async def _generate_and_attach(
         frame_text=" ".join([project.title, *(topic.title for topic in topics)]),
     )
     retried: list[dict[str, object]] = []
+    support = SupportLog(enabled=settings.SCRIPT_SUPPORT_CHECK_ENABLED)
 
     segments = await _generate_units(
         llm,
@@ -954,6 +1209,7 @@ async def _generate_and_attach(
         kind="script_section",
         grounding=grounding,
         retries=retried,
+        support=support,
     )
 
     estimated_total = sum(segment.estimated_duration_ms for segment in segments)
@@ -985,6 +1241,7 @@ async def _generate_and_attach(
                 kind="script_correction",
                 grounding=grounding,
                 retries=corrected_retries,
+                support=support,
             )
         except (UnsourcedSegmentError, UngroundedSegmentError, HollowSectionError) as exc:
             # The correction pass only tunes the length; the first draft already passed every
@@ -1007,6 +1264,10 @@ async def _generate_and_attach(
         sessionmaker, job_id=job_id, base_payload=payload, stage="validating_provenance"
     )
 
+    if general_knowledge:
+        # A lesson that rests on general knowledge says so aloud before anything else. The
+        # sentence is fixed text (``domain.general_knowledge``), never written by the model.
+        segments = [_general_knowledge_notice(topics[0].id, settings), *segments]
     reindexed = [replace(segment, segment_index=index) for index, segment in enumerate(segments)]
     supported_claim_ids = {UUID(claim.id) for unit in units for claim in unit.claims}
     draft = ScriptDraft(
@@ -1061,6 +1322,13 @@ async def _generate_and_attach(
         # Cited segments whose cited claims cover little of their wording: for the reviewer's
         # second look, never a rejection (an analogy legitimately adds words).
         "weak_citation_segments": weak_citations,
+        # True when the lesson rests on the model's general knowledge (a keyword-only project): its
+        # claims were never checked against a document, and the script opens by saying so.
+        "general_knowledge": general_knowledge,
+        # The sentence-level support check (``domain.narration_support``): how many sentences were
+        # judged against the verified claims, which were taken out and why, and how many could not
+        # be judged. ``None`` when the check is switched off.
+        "support_check": support.as_dict(),
         "input_tokens": report.total.input_tokens or 0,
         "output_tokens": report.total.output_tokens or 0,
         "usage": report.as_dict(),

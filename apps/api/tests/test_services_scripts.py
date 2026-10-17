@@ -610,9 +610,12 @@ async def test_run_never_raises_on_a_value_error_from_the_provider(db_session, m
     assert job.status == "failed"
 
 
-async def test_run_marks_failed_when_a_segment_is_unsourced(db_session, monkeypatch):
-    """Strict as ever: a passage no verified claim backs fails the generation - the writer is asked
-    once to fix it, and if the rewrite still has it, nothing is attached."""
+async def test_run_takes_out_a_passage_that_stays_unsourced_after_the_rewrites(
+    db_session, monkeypatch
+):
+    """Nothing unsourced reaches the script: the writer is asked to fix it, and a passage that is
+    still uncited after the bounded rewrites is taken out, with the cited one kept (a whole section
+    is not thrown away for one passage). It is recorded on the job's result."""
     _owner, project, topic, claim, enq = await _enqueued(db_session)
     llm, _outline_mock, _section_mock = _mock_llm(
         monkeypatch,
@@ -628,18 +631,18 @@ async def test_run_marks_failed_when_a_segment_is_unsourced(db_session, monkeypa
 
     job = await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
 
-    assert job.status == "failed"
-    assert "no supported citation" in (job.error or "")
-    assert llm.received_corrections  # it was told what was wrong, once
-    script = await scripts_repo.get_by_id(db_session, enq.script.id)
-    assert script.status == "failed"
-    # nothing partial persisted
-    assert (
-        await scripts_repo.list_segments(
+    assert job.status == "succeeded"
+    assert llm.received_corrections  # it was told what was wrong
+    texts = [
+        segment.narration_text
+        for segment in await scripts_repo.list_segments(
             db_session, project_id=enq.job.project_id, script_id=enq.script.id
         )
-        == []
-    )
+    ]
+    assert texts == ["A properly cited fact."]
+    [removed] = job.result["support_check"]["removed_sentences"]
+    assert removed["sentence"] == "An unsourced assertion with no citation."
+    assert "cites no verified claim" in removed["reason"]
 
 
 async def test_run_accepts_a_section_that_the_writer_fixes_when_told_what_was_wrong(
@@ -1417,7 +1420,7 @@ async def test_run_keeps_the_first_draft_when_the_correction_pass_cannot_pass_th
 
         assert job.status == "succeeded"
         assert job.result["correction_applied"] is False
-        assert "no supported citation" in job.result["correction_failed"]
+        assert "cites none of its verified claims" in job.result["correction_failed"]
         script = await scripts_repo.get_by_id(db_session, enq.script.id)
         assert script.estimated_duration_ms == 10_000  # the first draft, as written
         texts = [

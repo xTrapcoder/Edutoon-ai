@@ -1540,3 +1540,108 @@ async def test_an_idempotency_key_of_the_maximum_length_is_accepted(client_facto
         )
 
     assert response.status_code == 201, response.text
+
+
+# --- keyword coverage: is each keyword backed by the document? --------------------------------
+
+
+async def _add_claims(db_session, project_id: str, topic_id: str, statuses: list[str]) -> None:
+    from edutoon.repositories import claim_verifications as claim_verifications_repo
+    from edutoon.repositories.claim_verifications import NewClaimCitation
+
+    pid = UUID(project_id)
+    _source, [chunk] = await _add_chunks(db_session, project_id, ["Some evidence text."])
+    for number, status in enumerate(statuses):
+        await claim_verifications_repo.create(
+            db_session,
+            project_id=pid,
+            claim_text=f"Statement {number} about {topic_id}",
+            status=status,
+            embedding_model="m",
+            llm_model="m",
+            topic_id=UUID(topic_id),
+            citations=(
+                [NewClaimCitation(source_chunk_id=chunk.id, similarity=0.9)]
+                if status == "supported"
+                else []
+            ),
+        )
+
+
+async def test_coverage_says_which_keywords_the_document_backs_and_which_it_does_not(
+    client_factory, auth_headers, db_session
+) -> None:
+    headers = auth_headers()
+    async with client_factory() as client:
+        project_id = await _create_project(client, headers)
+        calvin, light, quantum, pending = await _add_keywords(
+            client,
+            headers,
+            project_id,
+            ["Calvin cycle", "Light-dependent reactions", "Quantum computing", "Glycolysis"],
+        )
+        await _add_claims(db_session, project_id, calvin["id"], ["supported", "supported"])
+        await _add_claims(db_session, project_id, light["id"], ["supported", "unsupported"])
+        await _add_claims(db_session, project_id, quantum["id"], ["unsupported"] * 4)
+        response = await client.get(f"/v1/projects/{project_id}/topics/coverage", headers=headers)
+
+    assert response.status_code == 200
+    body = response.json()
+    by_title = {item["title"]: item for item in body["keywords"]}
+    assert by_title["Calvin cycle"]["state"] == "covered"
+    assert by_title["Calvin cycle"]["supported_claims"] == 2
+    assert by_title["Light-dependent reactions"]["state"] == "covered"
+    assert by_title["Light-dependent reactions"]["total_claims"] == 2
+    assert by_title["Quantum computing"]["state"] == "not_in_document"
+    assert "does not support this keyword" in by_title["Quantum computing"]["message"]
+    assert by_title["Glycolysis"]["state"] == "not_checked"
+    assert body["complete"] is False
+    assert "not in your document: 'Quantum computing'" in body["summary"]
+    assert all(item["in_script"] is None for item in body["keywords"])  # no script yet
+
+
+async def test_a_keyword_the_owner_left_out_does_not_count_against_completeness(
+    client_factory, auth_headers, db_session
+) -> None:
+    headers = auth_headers()
+    async with client_factory() as client:
+        project_id = await _create_project(client, headers)
+        calvin, quantum = await _add_keywords(
+            client, headers, project_id, ["Calvin cycle", "Quantum computing"]
+        )
+        await _add_claims(db_session, project_id, calvin["id"], ["supported"])
+        await _add_claims(db_session, project_id, quantum["id"], ["unsupported"] * 3)
+        rejected = await client.patch(
+            f"/v1/projects/{project_id}/topics/{quantum['id']}",
+            json={"status": "rejected"},
+            headers=_headers(headers),
+        )
+        response = await client.get(f"/v1/projects/{project_id}/topics/coverage", headers=headers)
+
+    assert rejected.status_code == 200
+    body = response.json()
+    assert {item["title"]: item["state"] for item in body["keywords"]} == {
+        "Calvin cycle": "covered",
+        "Quantum computing": "left_out",
+    }
+    assert body["complete"] is True
+
+
+async def test_a_project_with_no_typed_keywords_has_an_empty_complete_report(
+    client_factory, auth_headers
+) -> None:
+    headers = auth_headers()
+    async with client_factory() as client:
+        project_id = await _create_project(client, headers)
+        response = await client.get(f"/v1/projects/{project_id}/topics/coverage", headers=headers)
+
+    assert response.json() == {"keywords": [], "complete": True, "summary": None}
+
+
+async def test_coverage_of_another_users_project_is_a_404(client_factory, auth_headers) -> None:
+    owner, other = auth_headers(), auth_headers()
+    async with client_factory() as client:
+        project_id = await _create_project(client, owner)
+        response = await client.get(f"/v1/projects/{project_id}/topics/coverage", headers=other)
+
+    assert response.status_code == 404

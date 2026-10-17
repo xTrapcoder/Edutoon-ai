@@ -137,7 +137,7 @@ class Settings(BaseSettings):
     # project may start in an hour, and MAX_MANUAL_CLAIM_VERIFICATIONS_PER_PROJECT_PER_HOUR how
     # many claims typed in by hand (each one an embedding and a model call) - both refuse with a
     # 429 before anything is started.
-    MAX_PROVIDER_CALLS_PER_JOB: int = Field(default=500, ge=1)
+    MAX_PROVIDER_CALLS_PER_JOB: int = Field(default=2000, ge=1)
     MAX_PROVIDER_JOBS_PER_PROJECT_PER_HOUR: int = Field(default=30, ge=1)
     MAX_MANUAL_CLAIM_VERIFICATIONS_PER_PROJECT_PER_HOUR: int = Field(default=120, ge=1)
     PROVIDER_RETRY_ATTEMPTS: int = Field(default=3, ge=1, le=8)
@@ -155,6 +155,12 @@ class Settings(BaseSettings):
     # into an estimated spoken duration.
     SCRIPT_LLM_MODEL: str = "claude-sonnet-5"
     MAX_SCRIPT_SEGMENTS: int = 12
+    # Sentence-level support check of every script segment against the verified claims it may rest
+    # on (``domain.narration_support``): a sentence no claim supports is rewritten once, then taken
+    # out. One small model call per sentence (two when it carries a cause or requirement cue), so a
+    # long script spends minutes on it - the price of not reading unsupported sentences aloud. Off
+    # only to measure, or for a model too weak to judge.
+    SCRIPT_SUPPORT_CHECK_ENABLED: bool = True
     MAX_CLAIMS_PER_GENERATION: int = 40
     SCRIPT_WORDS_PER_MINUTE: int = 150
     # How many words a minute a *PowerPoint deck* lesson is planned at (``domain.deck_plan``). A

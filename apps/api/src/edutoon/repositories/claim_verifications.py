@@ -198,6 +198,23 @@ async def list_by_project(
     return Page(items=[_verification_from_row(row) for row in rows], next_cursor=next_cursor)
 
 
+async def count_by_topic(session: AsyncSession, *, project_id: UUID) -> dict[UUID, tuple[int, int]]:
+    """For every topic of ``project_id`` that has extracted claims, ``(supported, total)``: how many
+    of its claims a cited passage backs, and how many were drafted. A topic with no claims is
+    absent. Hand-typed claims (no topic) are not counted."""
+    supported = func.count().filter(claim_verifications.c.status == "supported")
+    stmt = (
+        select(claim_verifications.c.topic_id, supported, func.count())
+        .where(
+            claim_verifications.c.project_id == project_id,
+            claim_verifications.c.topic_id.is_not(None),
+        )
+        .group_by(claim_verifications.c.topic_id)
+    )
+    rows = (await session.execute(stmt)).all()
+    return {topic_id: (int(ok), int(total)) for topic_id, ok, total in rows}
+
+
 async def list_claim_texts_by_topic(session: AsyncSession, topic_id: UUID) -> list[str]:
     """Every ``claim_text`` already extracted for ``topic_id``, in no
     particular order - exactly what
@@ -254,7 +271,11 @@ async def list_supported_by_project(
 
 
 async def list_supported_by_topic(
-    session: AsyncSession, *, project_id: UUID, topic_id: UUID
+    session: AsyncSession,
+    *,
+    project_id: UUID,
+    topic_id: UUID,
+    include_general_knowledge: bool = False,
 ) -> list[ClaimVerificationRecord]:
     """Every ``status='supported'`` verification extracted for ``topic_id``,
     oldest first - the pool one Phase 7 section is allowed to cite. Project-
@@ -264,14 +285,19 @@ async def list_supported_by_topic(
     Deliberately strict, like :func:`list_supported_by_project`:
     ``partially_supported`` is not included, and a hand-typed claim (whose
     ``topic_id`` is always ``NULL``) never appears here - it belongs to no
-    topic's section.
+    topic's section. ``include_general_knowledge`` is set only for a keyword-only project
+    (``domain.general_knowledge``), whose claims have no source and so can never be ``supported``;
+    a project with source material never sets it.
     """
+    statuses = ["supported"]
+    if include_general_knowledge:
+        statuses.append("general_knowledge")
     stmt = (
         select(claim_verifications)
         .where(
             claim_verifications.c.project_id == project_id,
             claim_verifications.c.topic_id == topic_id,
-            claim_verifications.c.status == "supported",
+            claim_verifications.c.status.in_(statuses),
         )
         .order_by(claim_verifications.c.created_at.asc(), claim_verifications.c.id.asc())
     )

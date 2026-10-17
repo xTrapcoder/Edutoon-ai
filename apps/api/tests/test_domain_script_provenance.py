@@ -180,3 +180,39 @@ def test_empty_draft_validates_to_an_empty_result() -> None:
 
     assert result.segments == ()
     assert result.estimated_duration_ms == 0
+
+
+# --- names that cannot be invented ------------------------------------------------------------
+
+
+def _grounded(narration: str, claim_text: str) -> ValidatedScriptDraft:
+    from edutoon.domain.script_provenance import GroundingReference
+
+    claim = uuid4()
+    return filter_and_validate(
+        _draft(_segment(narration, [str(claim)])),
+        {claim},
+        WPM,
+        grounding=GroundingReference(topic_texts={None: claim_text}, frame_text="A lesson"),
+        claim_texts={claim: claim_text},
+    )
+
+
+def test_earth_sun_and_moon_are_not_names_a_claim_must_contain() -> None:
+    """Regression: a plate-tectonics script failed after two rewrites over the word "Earth" in a
+    section whose claims talk about plates. The planet is not a name that could be invented."""
+    claim = "Plates are pieces of the lithosphere that move slowly over the mantle."
+    result = _grounded("Over millions of years, the plates move across the Earth's surface.", claim)
+    assert len(result.segments) == 1
+    _grounded("Heat from the Sun and the Moon's pull both move the plates.", claim)
+
+
+def test_any_other_capitalised_name_must_still_come_from_the_claims() -> None:
+    from edutoon.domain.script_provenance import UngroundedSegmentError
+
+    claim = "Plates are pieces of the lithosphere that move slowly over the mantle."
+    with pytest.raises(UngroundedSegmentError) as caught:
+        _grounded("The plates move, as Alfred Wegener first argued in Germany.", claim)
+    named = {token for _, token in caught.value.tokens}
+    assert {"Alfred", "Wegener", "Germany"} <= named
+    assert "Earth" not in named

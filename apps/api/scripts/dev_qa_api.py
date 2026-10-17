@@ -23,6 +23,7 @@ import uvicorn
 
 import edutoon.api.dependencies as dependencies
 from edutoon.core.config import get_settings
+from edutoon.db.database import get_engine
 from edutoon.db.session import get_sessionmaker
 from edutoon.providers.clerk import ClerkClaims, ClerkTokenError
 from edutoon.repositories import users as users_repo
@@ -65,6 +66,9 @@ async def _ensure_qa_users() -> None:
                     session, email=claims.email, role=role, clerk_user_id=claims.clerk_user_id
                 )
         await session.commit()
+    # This runs in its own event loop, which asyncio.run() closes. Dispose the pool so uvicorn's
+    # loop opens its own connections; a pooled one from this loop made the first request return 500.
+    await get_engine().dispose()
 
 
 def main() -> None:

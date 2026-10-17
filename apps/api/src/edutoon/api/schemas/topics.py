@@ -16,12 +16,13 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 from edutoon.domain.topic import TopicOrigin, TopicStatus
+from edutoon.services.keyword_coverage import KeywordCoverageReport
 from edutoon.services.project_topics import TopicWithEvidence
 
 # Request-size guards, not product limits (those are settings).
@@ -69,6 +70,36 @@ class TopicUpdateRequest(BaseModel):
             if name in self.model_fields_set and getattr(self, name) is None:
                 raise ValueError(f"{name} cannot be null - omit it to leave it unchanged.")
         return self
+
+
+class KeywordCoverageItemResponse(BaseModel):
+    """Whether the document backs one keyword the owner typed (``domain.keyword_coverage``)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    topic_id: UUID
+    title: str
+    state: Literal["covered", "not_in_document", "not_checked", "left_out"]
+    supported_claims: int
+    total_claims: int
+    in_script: bool | None
+    message: str
+
+
+class KeywordCoverageResponse(BaseModel):
+    """Every keyword's verdict, and whether all the keywords the owner kept are covered."""
+
+    keywords: list[KeywordCoverageItemResponse]
+    complete: bool
+    summary: str | None
+
+    @classmethod
+    def from_report(cls, report: KeywordCoverageReport) -> KeywordCoverageResponse:
+        return cls(
+            keywords=[KeywordCoverageItemResponse.model_validate(k) for k in report.keywords],
+            complete=report.complete,
+            summary=report.summary,
+        )
 
 
 class TopicEvidenceResponse(BaseModel):
