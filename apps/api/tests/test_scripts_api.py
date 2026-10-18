@@ -184,6 +184,7 @@ async def _add_supported_claims(db_session, project_id: str | UUID, texts: list[
         project_id=project_id,
         title="A topic",
         status="accepted",
+        origin="source",
         position=position,
     )
     source = await uploaded_sources_repo.create(

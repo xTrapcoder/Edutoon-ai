@@ -133,7 +133,12 @@ async def _project_with_topics(
     claims_by_topic: dict[UUID, list[ClaimVerificationRecord]] = {}
     for position, (title, claim_texts) in enumerate(topic_specs):
         topic = await project_topics_repo.create(
-            db_session, project_id=project.id, title=title, status="accepted", position=position
+            db_session,
+            project_id=project.id,
+            title=title,
+            status="accepted",
+            origin="source",
+            position=position,
         )
         topics.append(topic)
         claims_by_topic[topic.id] = [
@@ -343,7 +348,11 @@ async def test_enqueue_requires_at_least_one_accepted_topic(db_session):
 async def test_enqueue_requires_every_accepted_topic_to_have_supported_evidence(db_session):
     owner, project = await _make_project(db_session)
     await project_topics_repo.create(
-        db_session, project_id=project.id, title="Photosynthesis", status="accepted"
+        db_session,
+        project_id=project.id,
+        title="Photosynthesis",
+        status="accepted",
+        origin="source",
     )
 
     with pytest.raises(ValidationError, match="Photosynthesis"):
@@ -352,10 +361,62 @@ async def test_enqueue_requires_every_accepted_topic_to_have_supported_evidence(
         )
 
 
+async def _keyword_topic_with_a_supported_claim(db_session, *, title: str, document_text: str):
+    """A keyword the owner typed (origin ``user``) whose one supported statement is cited from a
+    document that says ``document_text``."""
+    owner, project = await _make_project(db_session, title="Ecosystems")
+    topic = await project_topics_repo.create(
+        db_session,
+        project_id=project.id,
+        title=title,
+        status="accepted",
+        origin="user",
+    )
+    await _add_supported_claim(db_session, project, topic, document_text)
+    return owner, project
+
+
+async def test_enqueue_refuses_a_keyword_the_document_never_mentions_despite_supported_claims(
+    db_session,
+):
+    """Regression (a real run): "coral bleaching" over a chapter on ecosystems. Statements about
+    the nearest passages were judged supported, so the keyword looked covered and a section titled
+    "coral bleaching" would have taught invasive species and keystone species under it."""
+    owner, project = await _keyword_topic_with_a_supported_claim(
+        db_session,
+        title="Coral bleaching",
+        document_text="Invasive species can harm native ecosystems by spreading quickly.",
+    )
+
+    with pytest.raises(ValidationError, match="Coral bleaching") as refused:
+        await scripts_service.enqueue_script_generation(
+            db_session, project_id=project.id, owner_id=owner.id, idempotency_key="k"
+        )
+    assert refused.value.details["topics"] == ["Coral bleaching"]
+
+
+async def test_enqueue_accepts_a_keyword_the_document_does_mention(db_session):
+    owner, project = await _keyword_topic_with_a_supported_claim(
+        db_session,
+        title="Invasive species",
+        document_text="Invasive species can harm native ecosystems by spreading quickly.",
+    )
+
+    result = await scripts_service.enqueue_script_generation(
+        db_session, project_id=project.id, owner_id=owner.id, idempotency_key="k"
+    )
+
+    assert result.replayed is False
+
+
 async def test_enqueue_ignores_a_partially_supported_claim_as_evidence(db_session):
     owner, project = await _make_project(db_session)
     topic = await project_topics_repo.create(
-        db_session, project_id=project.id, title="Photosynthesis", status="accepted"
+        db_session,
+        project_id=project.id,
+        title="Photosynthesis",
+        status="accepted",
+        origin="source",
     )
     await claim_verifications_repo.create(
         db_session,
@@ -380,7 +441,11 @@ async def test_enqueue_ignores_a_hand_typed_claim_with_no_topic(db_session):
     """
     owner, project = await _make_project(db_session)
     await project_topics_repo.create(
-        db_session, project_id=project.id, title="Photosynthesis", status="accepted"
+        db_session,
+        project_id=project.id,
+        title="Photosynthesis",
+        status="accepted",
+        origin="source",
     )
     await claim_verifications_repo.create(
         db_session,
@@ -1108,7 +1173,11 @@ async def test_progress_is_visible_mid_run_without_blocking_or_partial_script_da
             setup_session, owner_id=owner.id, title="P", source_type="pdf"
         )
         topic = await project_topics_repo.create(
-            setup_session, project_id=project.id, title="A topic", status="accepted"
+            setup_session,
+            project_id=project.id,
+            title="A topic",
+            status="accepted",
+            origin="source",
         )
         claim = await _add_supported_claim(setup_session, project, topic, "A fact.")
         await setup_session.commit()

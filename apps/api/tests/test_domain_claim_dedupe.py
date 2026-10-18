@@ -147,3 +147,141 @@ def test_the_answer_does_not_depend_on_anything_but_the_input():
         _topic("two", "Transport", ("d", RAILWAY_REWORDED), ("e", HEAT), ("f", "Plants.")),
     ]
     assert dedupe_claims_across_topics(topics) == dedupe_claims_across_topics(topics)
+
+
+# --- placement: a fact is written under the topic it is about -------------------------------------
+#
+# Regression, from the real claims of a six-topic pasted-notes run ("Python basics"): the source was
+# two passages, so every topic had been extracted from both and each held facts about the whole
+# document. The lesson's "Functions" section said what a variable and a dictionary are, "Lists and
+# Dictionaries" was left with only "Python is popular with beginners", and "Errors" opened with the
+# year Python was released. The old rule scored a topic by how many of its *title* words a claim
+# contained, so the subject word "Python" (in every claim, and in the title of the first topic) gave
+# the first topic every tie, and "dictionaries" never matched "dictionary".
+
+PYTHON_TOPICS = [
+    ("intro", "Introduction to Python", ("Python", "programming", "Guido van Rossum", "1991")),
+    ("vars", "Variables and Types", ("variables", "types", "integers", "floats", "strings")),
+    ("lists", "Lists and Dictionaries", ("lists", "dictionaries", "items", "keys", "values")),
+    ("loops", "Decisions and Loops", ("if", "else", "for", "while", "indentation")),
+    ("funcs", "Functions", ("functions", "def", "parameters", "return", "built-in functions")),
+    ("errors", "Errors and Exception Handling", ("errors", "exceptions", "traceback", "try")),
+]
+
+PYTHON_CLAIMS = {
+    "intro": [
+        ("i1", "Python is a beginner-friendly programming language."),
+        ("i2", "Guido van Rossum created Python in 1991."),
+        ("i3", "A Python program is a text file that an interpreter runs line by line."),
+        ("i4", "Variables in Python store values, like age = 15."),
+        ("i5", "Lists in Python are ordered collections, e.g., [3, 1, 2]."),
+        ("i6", "If statements in Python run code only if a condition is true."),
+        ("i7", "For loops in Python repeat a block of code for each item in a collection."),
+        ("i8", "Functions in Python are defined with the def keyword."),
+        ("i9", "Python's print() function displays values on the screen."),
+    ],
+    "vars": [
+        ("v1", "A variable in Python stores a value, like age = 15."),
+        ("v2", "Python automatically determines the type of a variable."),
+        ("v3", "Integers, floats, strings, and booleans are basic Python types."),
+        ("v4", "The type() function reveals the type of a value."),
+        ("v5", "A list in Python is an ordered collection of items, e.g., [3, 1, 2]."),
+        ("v6", "Items in a list are indexed starting from 0."),
+    ],
+    "lists": [
+        ("l1", "A list in Python holds an ordered collection of items inside square brackets."),
+        ("l2", "Items in a list are counted from zero, so the first item is at index 0."),
+    ],
+    "loops": [
+        ("o1", "A variable in Python stores a value which can be of different types."),
+        ("o2", "Dictionaries in Python store key-value pairs enclosed in curly brackets."),
+        ("o3", "An if statement in Python runs a block of code only when a condition is true."),
+        ("o4", "A for loop in Python repeats a block of code for each item in a collection."),
+        ("o5", "A while loop in Python repeats a block of code as long as a condition is true."),
+        ("o6", "Python uses indentation to define blocks of code, not braces."),
+    ],
+    "funcs": [
+        ("f1", "A variable is a name that refers to a value, for example, age = 15."),
+        ("f2", "A dictionary in Python stores pairs of keys and values inside curly brackets."),
+        ("f3", "A function in Python is a named block of code that you can run again."),
+        ("f4", "Python comes with built-in functions such as len() and print()."),
+    ],
+    "errors": [
+        ("e1", "A variable in Python is a name that refers to a value."),
+        ("e2", "A dictionary in Python stores pairs of keys and values inside curly brackets."),
+        ("e3", "A try and except block in Python allows a program to catch an exception."),
+        ("e4", "Items in a Python list are counted from zero, with the first item at index 0."),
+    ],
+}
+
+
+def _python_lesson() -> list[TopicClaims]:
+    return [
+        TopicClaims(
+            topic_id,
+            title,
+            [ClaimRef(cid, text) for cid, text in PYTHON_CLAIMS[topic_id]],
+            keywords=keywords,
+        )
+        for topic_id, title, keywords in PYTHON_TOPICS
+    ]
+
+
+def test_dictionary_facts_are_written_under_lists_and_dictionaries_not_under_functions():
+    result = dedupe_claims_across_topics(_python_lesson())
+
+    assert {"o2", "f2"} & set(_ids(result, "lists"))  # a dictionary fact is where dictionaries are
+    assert not {"o2", "f2", "e2"} & set(_ids(result, "funcs"))
+    assert not {"o2", "f2", "e2"} & set(_ids(result, "loops"))
+    assert not {"o2", "f2", "e2"} & set(_ids(result, "errors"))
+
+
+def test_the_variable_facts_stay_with_variables_and_the_loop_facts_with_loops():
+    result = dedupe_claims_across_topics(_python_lesson())
+
+    assert {"v1", "o1", "f1", "e1"} & set(_ids(result, "vars"))
+    assert not {"o1", "f1", "e1"} & set(_ids(result, "loops"))
+    assert {"o4", "o5"} <= set(_ids(result, "loops"))
+    assert not {"o4", "o5", "i7"} & set(_ids(result, "intro"))
+
+
+def test_the_subject_word_does_not_hand_every_tie_to_the_topic_named_after_the_subject():
+    result = dedupe_claims_across_topics(_python_lesson())
+
+    # "Introduction to Python" used to keep the lists, variables, loops and functions facts because
+    # every claim contains "Python"; now it keeps only what is about Python itself.
+    assert not {"i4", "i5", "i7", "i8"} & set(_ids(result, "intro"))
+    assert {"i1", "i2", "i3"} <= set(_ids(result, "intro"))
+
+
+def test_a_topic_whose_own_list_lacked_its_subject_receives_it_from_another_topics_list():
+    # "Lists and Dictionaries" listed only list facts (its own dictionary claim was not
+    # supported), but the dictionary facts verified under other topics belong in its section.
+    result = dedupe_claims_across_topics(_python_lesson())
+
+    assert {"o2", "f2"} <= set(_ids(result, "lists"))
+    assert {"l1", "l2"} <= set(_ids(result, "lists"))
+
+
+def test_title_matching_folds_plural_forms():
+    result = dedupe_claims_across_topics(
+        [
+            _topic("a", "Overview", ("x1", "Alpha beta gamma delta."), ("x2", "Epsilon zeta eta.")),
+            _topic(
+                "b",
+                "Dictionaries",
+                ("y1", "A dictionary pairs each key with a value."),
+                ("y2", "Theta iota kappa."),
+            ),
+            _topic(
+                "c",
+                "Other",
+                ("z1", "A dictionary pairs each key with a value."),
+                ("z2", "Mu."),
+                ("z3", "Nu xi omicron."),
+            ),
+        ]
+    )
+
+    assert "y1" in _ids(result, "b")
+    assert "z1" not in _ids(result, "c")

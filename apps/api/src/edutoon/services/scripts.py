@@ -75,7 +75,7 @@ owner scoped, and a resource the caller doesn't own is a 404, never a 403.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Hashable, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -147,6 +147,7 @@ from edutoon.repositories.scripts import ScriptRecord, ScriptSegmentRecord
 from edutoon.services import audit_logs as audit_logs_service
 from edutoon.services import general_knowledge as general_knowledge_service
 from edutoon.services import instructions as instructions_service
+from edutoon.services import keyword_coverage as keyword_coverage_service
 from edutoon.services import projects as projects_service
 from edutoon.services import spend_guard
 from edutoon.services.job_errors import describe_job_failure
@@ -275,6 +276,16 @@ async def enqueue_script_generation(
     missing_evidence: list[str] = []
     supported_counts: list[int] = []
     general_knowledge = await general_knowledge_service.applies_to(session, project)
+    # A keyword the document never mentions can still have "supported" statements: they are judged
+    # against the nearest passages, so they describe neighbouring topics. That is not evidence for
+    # the keyword (see domain.keyword_coverage), so such a topic counts as having none.
+    uncovered_keywords = (
+        {}
+        if general_knowledge
+        else await keyword_coverage_service.uncovered_keyword_terms(
+            session, project_id=project_id, topics=eligible
+        )
+    )
     for topic in eligible:
         supported = await claim_verifications_repo.list_supported_by_topic(
             session,
@@ -282,6 +293,8 @@ async def enqueue_script_generation(
             topic_id=topic.id,
             include_general_knowledge=general_knowledge,
         )
+        if topic.id in uncovered_keywords:
+            supported = []
         supported_counts.append(len(supported))
         if not supported:
             missing_evidence.append(topic.title)
@@ -1229,16 +1242,20 @@ async def _generate_and_attach(
                 topic.id,
                 topic.title,
                 [ClaimRef(claim.id, claim.claim_text) for claim in claims_by_topic[topic.id]],
+                keywords=tuple(topic.keywords),
             )
             for topic in topics
         ]
     )
-    claims_deduplicated = 0
+    # A fact is written under the topic it fits best, which may not be the topic it was extracted
+    # for (in a short source every topic is extracted from the same passages).
+    record_by_id: dict[Hashable, ClaimVerificationRecord] = {
+        claim.id: claim for claims in claims_by_topic.values() for claim in claims
+    }
+    claims_before = sum(len(claims) for claims in claims_by_topic.values())
     for topic in topics:
-        keep = {claim.id for claim in deduped[topic.id]}
-        before = len(claims_by_topic[topic.id])
-        claims_by_topic[topic.id] = [c for c in claims_by_topic[topic.id] if c.id in keep]
-        claims_deduplicated += before - len(claims_by_topic[topic.id])
+        claims_by_topic[topic.id] = [record_by_id[claim.id] for claim in deduped[topic.id]]
+    claims_deduplicated = claims_before - sum(len(claims) for claims in claims_by_topic.values())
 
     budgets = allocate_topic_budgets(
         topic_ids=[topic.id for topic in topics],
