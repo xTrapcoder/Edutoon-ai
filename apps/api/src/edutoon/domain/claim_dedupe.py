@@ -27,6 +27,7 @@ rather than a model's judgement.
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Hashable, Sequence
 from dataclasses import dataclass
@@ -47,6 +48,14 @@ lesson has :data:`MIN_FACTS_FOR_SUBJECT_WORDS` distinct facts, so a tiny lesson 
 every word."""
 
 MIN_FACTS_FOR_SUBJECT_WORDS: Final = 4
+
+TITLE_WEIGHT: Final = 2.0
+"""A word of a topic's title or keywords counts this many times a word of its summary when a fact is
+matched to a topic."""
+
+MIN_PLACEMENT_SCORE: Final = 2.0
+"""A fact moves to a topic that does not hold it, or leaves the topic that does, only when the best
+topic's match is at least this strong: one reasonably rare title word, or two summary words."""
 
 _FILLER_TITLE_WORDS: Final = frozenset(
     [
@@ -156,6 +165,7 @@ class TopicClaims:
     title: str
     claims: Sequence[ClaimRef]
     keywords: Sequence[str] = ()
+    summary: str = ""
 
 
 def content_words(text: str) -> frozenset[str]:
@@ -192,9 +202,8 @@ def _fit_stem(word: str) -> str:
 def dedupe_claims_across_topics(topics: Sequence[TopicClaims]) -> dict[Hashable, list[ClaimRef]]:
     """Each topic's claims with repeated facts removed and each fact placed under the topic it fits
     best, as ``{topic_id: claims}`` (every topic is present). A claim may be placed under a topic
-    that did not list it when that topic's title fits it strictly better than any topic that did.
-    Claims come out in the order they went in. Deterministic: the same input gives the same
-    answer."""
+    that did not list it when that topic fits it strictly better than any topic that did. Claims
+    come out in the order they went in. Deterministic: the same input gives the same answer."""
     claim_order: dict[Hashable, int] = {}
     words_of: dict[Hashable, frozenset[str]] = {}
     for topic in topics:
@@ -214,46 +223,70 @@ def dedupe_claims_across_topics(topics: Sequence[TopicClaims]) -> dict[Hashable,
             else:
                 facts.append([(topic.topic_id, claim)])
 
-    fact_words = [frozenset().union(*(words_of[claim.id] for _, claim in fact)) for fact in facts]
+    fact_stems = [
+        frozenset(
+            _fit_stem(word)
+            for claim_words in (words_of[c.id] for _, c in fact)
+            for word in claim_words
+        )
+        for fact in facts
+    ]
 
-    # The lesson's own subject appears in almost every fact; it says nothing about which topic a
-    # fact belongs to.
+    # How common a word is among the lesson's facts: a word in nearly every fact is the lesson's own
+    # subject ("Python") and says nothing about which topic a fact belongs to, and a word in few
+    # facts is strong evidence.
+    document_frequency: dict[str, int] = {}
+    for stems in fact_stems:
+        for stem in stems:
+            document_frequency[stem] = document_frequency.get(stem, 0) + 1
     subject_words: set[str] = set()
     if len(facts) >= MIN_FACTS_FOR_SUBJECT_WORDS:
-        counts: dict[str, int] = {}
-        for words in fact_words:
-            for word in {_fit_stem(w) for w in words}:
-                counts[word] = counts.get(word, 0) + 1
-        subject_words = {w for w, n in counts.items() if n / len(facts) >= SUBJECT_WORD_SHARE}
+        subject_words = {
+            word
+            for word, count in document_frequency.items()
+            if count / len(facts) >= SUBJECT_WORD_SHARE
+        }
 
-    def fit_terms(topic: TopicClaims) -> frozenset[str]:
-        text = " ".join([topic.title, *topic.keywords])
-        stems = {_fit_stem(word) for word in content_words(text)} - _FILLER_TITLE_WORDS
-        specific = frozenset(stems - subject_words)
-        # A topic named by a frequent word alone ("Resistance", in a lesson about circuits) is
-        # about exactly that word: leaving it no terms would leave it nothing to be given.
-        return specific or frozenset(stems)
+    def stems_of(text: str) -> set[str]:
+        return {_fit_stem(word) for word in content_words(text)} - _FILLER_TITLE_WORDS
 
-    terms_of = {topic.topic_id: fit_terms(topic) for topic in topics}
+    def term_weights(topic: TopicClaims) -> dict[str, float]:
+        """The words that say what a topic is about, each with how much it counts: the title's and
+        keywords' twice the summary's. A topic named only by a frequent word ("Resistance", in a
+        lesson about circuits) keeps it: it is about exactly that word."""
+        named = stems_of(" ".join([topic.title, *topic.keywords]))
+        named_specific = named - subject_words or named
+        weights = {stem: TITLE_WEIGHT for stem in named_specific}
+        for stem in stems_of(topic.summary) - subject_words:
+            weights.setdefault(stem, 1.0)
+        return weights
 
-    def fit(topic_id: Hashable, words: frozenset[str]) -> int:
-        return len(terms_of[topic_id] & {_fit_stem(word) for word in words})
+    weights_of = {topic.topic_id: term_weights(topic) for topic in topics}
 
-    # Each fact goes to the topic - any topic - whose title and keywords share the most words with
-    # it; a topic that already holds it wins a tie, then the earliest. A fact that fits nowhere
-    # stays with the earliest topic that holds it.
+    def score(topic_id: Hashable, stems: frozenset[str]) -> float:
+        """How well a fact fits a topic: the words they share, each worth its weight times how rare
+        it is among the lesson's facts."""
+        return sum(
+            weight * math.log(1 + len(facts) / document_frequency[stem])
+            for stem, weight in weights_of[topic_id].items()
+            if stem in stems
+        )
+
+    # Each fact goes to the topic - any topic - it fits best; a topic that already holds it wins a
+    # tie, then the earliest. A fact that fits nowhere (:data:`MIN_PLACEMENT_SCORE`) stays with the
+    # earliest topic that holds it.
     placed: dict[Hashable, list[ClaimRef]] = {topic.topic_id: [] for topic in topics}
-    for fact, words in zip(facts, fact_words, strict=True):
+    for fact, stems in zip(facts, fact_stems, strict=True):
         holders = {topic_id for topic_id, _ in fact}
         best = max(
             topics,
             key=lambda topic: (
-                fit(topic.topic_id, words),
+                round(score(topic.topic_id, stems), 6),
                 topic.topic_id in holders,
                 -topic_order[topic.topic_id],
             ),
         )
-        if fit(best.topic_id, words) == 0:
+        if score(best.topic_id, stems) < MIN_PLACEMENT_SCORE:
             owner_id, owner = min(fact, key=lambda member: topic_order[member[0]])
         else:
             owner_id = best.topic_id
@@ -269,7 +302,10 @@ def dedupe_claims_across_topics(topics: Sequence[TopicClaims]) -> dict[Hashable,
             # best first.
             own = sorted(
                 topic.claims,
-                key=lambda claim: (-fit(topic.topic_id, words_of[claim.id]), claim_order[claim.id]),
+                key=lambda claim: (
+                    -score(topic.topic_id, frozenset(_fit_stem(w) for w in words_of[claim.id])),
+                    claim_order[claim.id],
+                ),
             )
             for claim in own:
                 if len(chosen) >= MIN_CLAIMS_PER_TOPIC:

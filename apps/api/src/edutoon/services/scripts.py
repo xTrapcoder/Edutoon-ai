@@ -1293,6 +1293,7 @@ async def _generate_and_attach(
                 topic.title,
                 [ClaimRef(claim.id, claim.claim_text) for claim in claims_by_topic[topic.id]],
                 keywords=tuple(topic.keywords),
+                summary=topic.summary or "",
             )
             for topic in topics
         ]

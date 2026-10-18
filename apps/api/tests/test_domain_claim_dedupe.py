@@ -285,3 +285,91 @@ def test_title_matching_folds_plural_forms():
 
     assert "y1" in _ids(result, "b")
     assert "z1" not in _ids(result, "c")
+
+
+# --- paraphrased facts are placed by what they are about, not dumped on the first topic -----------
+#
+# Regression, from a "beginner" run on an ecosystems chapter: the writer used everyday words, so
+# "These tiny living things work hard to break down dead things" shared no title word with any topic
+# and stayed with the first topic that held it ("What is an ecosystem?"), which ended up teaching
+# decomposers, pyramids of biomass and where animals get food. The topic's summary says what it is
+# about ("Decomposers like fungi and bacteria break down dead plants and animals ...").
+
+ECOSYSTEM_TOPICS = [
+    (
+        "eco",
+        "What is an ecosystem?",
+        ("ecosystem", "environment"),
+        "An ecosystem is a group of living things and their non-living environment, like water.",
+    ),
+    (
+        "energy",
+        "Energy in Ecosystems",
+        ("energy", "sun", "plants", "producers"),
+        "Energy in ecosystems comes from the sun and is used by plants, called producers.",
+    ),
+    (
+        "decomp",
+        "Decomposers and Nutrient Cycling",
+        ("decomposers", "fungi", "bacteria", "nutrients", "soil"),
+        "Decomposers like fungi and bacteria break down dead plants and animals, returning "
+        "nutrients to the soil.",
+    ),
+    (
+        "keystone",
+        "Keystone Species",
+        ("keystone species", "trophic cascade", "Yellowstone National Park"),
+        "Keystone species have a big effect on their ecosystem, even though they are not many.",
+    ),
+]
+
+ECOSYSTEM_CLAIMS = {
+    "eco": [
+        (
+            "e1",
+            "An ecosystem is a group of living things and the non-living parts of its environment.",
+        ),
+        (
+            "e2",
+            "These tiny living things work hard to break down dead things, like leaves and bones.",
+        ),
+        ("e3", "Examples of ecosystems are a pond, a forest, and a coral reef."),
+    ],
+    "energy": [
+        ("n1", "Every ecosystem needs energy, which mostly comes from the sun."),
+        ("n2", "Plants, algae and some bacteria use sunlight to make food."),
+        ("n3", "Plants are living things that make their own food from sunlight."),
+    ],
+    "decomp": [
+        ("d1", "Decomposers like fungi and bacteria help break down dead plants and animals."),
+        (
+            "d2",
+            "When dead things are broken down, the nutrients inside them go back into the soil.",
+        ),
+    ],
+    "keystone": [
+        ("k1", "In Yellowstone National Park, wolves were removed in 1926."),
+        (
+            "k2",
+            "Without wolves, the elk population grew and ate many young willow and aspen trees.",
+        ),
+    ],
+}
+
+
+def test_a_paraphrased_fact_is_placed_by_the_topic_summary_not_left_on_the_first_topic() -> None:
+    lesson = [
+        TopicClaims(
+            topic_id,
+            title,
+            [ClaimRef(cid, text) for cid, text in ECOSYSTEM_CLAIMS[topic_id]],
+            keywords=keywords,
+            summary=summary,
+        )
+        for topic_id, title, keywords, summary in ECOSYSTEM_TOPICS
+    ]
+
+    result = dedupe_claims_across_topics(lesson)
+
+    assert "e2" in _ids(result, "decomp")
+    assert "e2" not in _ids(result, "eco")
