@@ -273,7 +273,7 @@ async def _project_with_supported_claim(db_session: AsyncSession):
     """
     project = await _make_project(db_session)
     topic = await project_topics_repo.create(
-        db_session, project_id=project.id, title="A topic", status="accepted"
+        db_session, project_id=project.id, title="A topic", status="accepted", origin="source"
     )
     source = await uploaded_sources_repo.create(
         db_session,

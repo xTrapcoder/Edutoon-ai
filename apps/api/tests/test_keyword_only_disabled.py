@@ -62,13 +62,13 @@ def test_the_message_says_what_is_unsupported_why_and_what_to_do_instead() -> No
     assert "Upload a PDF" in text and "add keywords to guide it" in text
 
 
-def test_the_default_is_on_since_a_topic_only_lesson_is_labelled_and_was_checked(
+def test_the_default_is_off_since_the_scope_change_to_three_modes(
     monkeypatch,
 ) -> None:
     monkeypatch.delenv("KEYWORD_ONLY_PROJECTS_ENABLED", raising=False)
     get_settings.cache_clear()
     try:
-        assert get_settings().KEYWORD_ONLY_PROJECTS_ENABLED is True
+        assert get_settings().KEYWORD_ONLY_PROJECTS_ENABLED is False
     finally:
         get_settings.cache_clear()
 

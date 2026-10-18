@@ -40,6 +40,11 @@ _TEST_ENV = {
     # older tests build a project the quickest way - source_type "topic" - to test something else,
     # so they run with the mode on; the tests about the mode being off turn it off again.
     "KEYWORD_ONLY_PROJECTS_ENABLED": "true",
+    # Likewise the two other modes taken out of the offered scope on 2026-10-18 (PowerPoint decks
+    # and instructions): their code stays and stays tested, so the suite runs with them on;
+    # test_offered_scope.py holds the defaults (off) and the refusals.
+    "PPTX_PROJECTS_ENABLED": "true",
+    "INSTRUCTIONS_ENABLED": "true",
     # The sentence-level support check makes a model call per sentence; the older script tests fake
     # only the writer, so they run without it. test_script_support_check.py turns it on.
     "SCRIPT_SUPPORT_CHECK_ENABLED": "false",

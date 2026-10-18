@@ -66,6 +66,18 @@ KEYWORD_ONLY_UNSUPPORTED = (
 keywords and no parsed material). Temporary: an unverified, AI-knowledge mode may come later as a
 separate, clearly labelled mode, but it must never be presented as a verified one."""
 
+PPTX_UNSUPPORTED = (
+    "PowerPoint decks are not offered. Upload a PDF, paste your text, or upload a PDF and add "
+    "keywords to focus the lesson."
+)
+INSTRUCTIONS_UNSUPPORTED = (
+    "Instructions are not offered. To focus a lesson, add keywords to a PDF; the lesson is then "
+    "built from those topics."
+)
+"""What the owner is told when they ask for a mode that is outside the offered scope (a PowerPoint
+deck project, or free-text instructions). The code stays; the switches are
+``PPTX_PROJECTS_ENABLED`` and ``INSTRUCTIONS_ENABLED``."""
+
 MODE_PDF: InputMode = "pdf"
 MODE_KEYWORDS: InputMode = "keywords"
 MODE_PDF_KEYWORDS: InputMode = "pdf_keywords"
