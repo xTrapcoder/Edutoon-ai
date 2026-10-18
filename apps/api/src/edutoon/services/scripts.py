@@ -147,6 +147,7 @@ from edutoon.repositories.jobs import JobRecord
 from edutoon.repositories.project_topics import ProjectTopicRecord
 from edutoon.repositories.scripts import ScriptRecord, ScriptSegmentRecord
 from edutoon.services import audit_logs as audit_logs_service
+from edutoon.services import claim_backing as claim_backing_service
 from edutoon.services import general_knowledge as general_knowledge_service
 from edutoon.services import instructions as instructions_service
 from edutoon.services import keyword_coverage as keyword_coverage_service
@@ -297,6 +298,14 @@ async def enqueue_script_generation(
         )
         if topic.id in uncovered_keywords:
             supported = []
+        else:
+            # A claim whose cited passages do not hold its wording is not something the lesson may
+            # say (services.claim_backing).
+            supported = (
+                await claim_backing_service.keep_backed_claims(
+                    session, project_id=project_id, claims=supported
+                )
+            ).claims
         supported_counts.append(len(supported))
         if not supported:
             missing_evidence.append(topic.title)
@@ -1267,6 +1276,7 @@ async def _generate_and_attach(
     )
 
     claims_by_topic: dict[UUID, list[ClaimVerificationRecord]] = {}
+    claims_left_out_unbacked = 0
     general_knowledge = await general_knowledge_service.applies_to(session, project)
     for topic in topics:
         supported = await claim_verifications_repo.list_supported_by_topic(
@@ -1275,6 +1285,11 @@ async def _generate_and_attach(
             topic_id=topic.id,
             include_general_knowledge=general_knowledge,
         )
+        backed = await claim_backing_service.keep_backed_claims(
+            session, project_id=project_id, claims=supported
+        )
+        supported = backed.claims
+        claims_left_out_unbacked += len(backed.left_out)
         # Defence in depth: enqueue-time already required every one of these
         # topics to have supported evidence; claims are append-only, so this
         # should never actually be empty by the time the job runs.
@@ -1518,6 +1533,9 @@ async def _generate_and_attach(
         "correction_applied": correction_applied,
         # Claims left out because another topic holds the same fact (said once, where it fits).
         "claims_deduplicated": claims_deduplicated,
+        # Supported claims not used because the passages they cite do not hold their wording and no
+        # other passage of the source states them (services.claim_backing).
+        "claims_left_out_unbacked": claims_left_out_unbacked,
         # Whether the script was given its fixed closing because it did not end in one.
         "closing_added": closing_added,
         # Why the script is shorter than the target, when it is: ``"evidence_limited"`` means the

@@ -353,6 +353,83 @@ async def test_verify_claim_downgrades_a_supported_claim_that_names_a_place_the_
     assert [c.source_chunk_id for c in citations] == [chunk.id]
 
 
+async def test_verify_claim_downgrades_a_supported_claim_whose_citation_does_not_hold_its_wording(
+    db_session, monkeypatch
+):
+    """Regression (a real run): the judge approved "Humans alter ecosystems through land clearing,
+    which involves removing vegetation to make way for agriculture or development" citing a page
+    about energy flow. A supported claim's wording has to be in what it cites."""
+    project, energy = await _make_indexed_chunk(
+        db_session,
+        content=(
+            "Energy does not recycle through an ecosystem. It flows from the sun to producers "
+            "and is finally lost as heat."
+        ),
+    )
+    claim_text = (
+        "Humans alter ecosystems through land clearing, which involves removing vegetation to "
+        "make way for agriculture or development."
+    )
+    embeddings = _fake_embeddings(monkeypatch, {claim_text: QUERY_VECTOR})
+    llm = _fake_llm(
+        monkeypatch,
+        {
+            "status": "supported",
+            "rationale": "Passage [p1] discusses ecosystems.",
+            "cited_passage_ids": [str(energy.id)],
+        },
+    )
+
+    verification = await evidence_service.verify_claim(
+        db_session, embeddings, llm, project_id=project.id, claim_text=claim_text
+    )
+
+    assert verification.status == "partially_supported"
+    assert "Passage [p1] discusses ecosystems." in verification.rationale
+    assert "of the claim's wording is in the passages it cites" in verification.rationale
+
+
+async def test_verify_claim_points_a_true_claim_at_the_passage_that_states_it(
+    db_session, monkeypatch
+):
+    """Regression (a real run): "Animals that eat plants are called herbivores" was true, and the
+    source says so, but the judge cited a page about energy flow."""
+    project, energy = await _make_indexed_chunk(
+        db_session,
+        content=(
+            "Energy does not recycle through an ecosystem. It flows from the sun to producers "
+            "and is finally lost as heat."
+        ),
+    )
+    _project, consumers = await _make_indexed_chunk(
+        db_session,
+        project=project,
+        content=(
+            "Animals cannot make their own food. Herbivores are animals that eat plants and "
+            "carnivores are animals that eat other animals."
+        ),
+    )
+    claim_text = "Animals that eat plants are called herbivores."
+    embeddings = _fake_embeddings(monkeypatch, {claim_text: QUERY_VECTOR})
+    llm = _fake_llm(
+        monkeypatch,
+        {
+            "status": "supported",
+            "rationale": "Directly stated.",
+            "cited_passage_ids": [str(energy.id)],
+        },
+    )
+
+    verification = await evidence_service.verify_claim(
+        db_session, embeddings, llm, project_id=project.id, claim_text=claim_text
+    )
+
+    assert verification.status == "supported"
+    citations = await claim_verifications_repo.list_citations(db_session, verification.id)
+    assert [c.source_chunk_id for c in citations] == [consumers.id]
+    assert "citation was corrected" in verification.rationale
+
+
 async def test_verify_claim_downgrades_supported_with_no_citations_to_unsupported(
     db_session, monkeypatch
 ):

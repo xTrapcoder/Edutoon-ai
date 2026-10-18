@@ -94,3 +94,77 @@ def test_the_rationale_keeps_the_judges_words_and_says_what_was_found():
 
 def test_the_rationale_stands_alone_without_a_judge_rationale():
     assert downgrade_rationale(None, ("India",)).startswith("The claim mentions 'India'")
+
+
+# --- is the claim's wording in the passages it cites? --------------------------------------------
+#
+# Regression, from fresh ecosystems runs: the judge approved "Humans alter ecosystems through land
+# clearing, which involves removing vegetation to make way for agriculture or development" citing a
+# page about energy flow, and "Animals that eat plants are called herbivores" citing the same page
+# although another passage states it.
+
+from edutoon.domain.claim_grounding import (  # noqa: E402
+    CITATION_COVERAGE_FLOOR,
+    best_covering_passage,
+    claim_coverage,
+    thin_citation_rationale,
+)
+
+ENERGY_PAGE = (
+    "Energy does not recycle through an ecosystem. It flows in one direction, from the sun to "
+    "producers, then to consumers, and is finally lost as heat. At each trophic level only about "
+    "10 percent of the energy is stored in the bodies of the organisms at the next level."
+)
+CONSUMERS_PAGE = (
+    "Animals cannot make their own food, so they are called consumers. Herbivores eat plants and "
+    "are primary consumers. Carnivores that eat herbivores are secondary consumers."
+)
+HUMANS_PAGE = (
+    "Humans change ecosystems by clearing land, polluting water and introducing species from "
+    "other places. An introduced species that spreads quickly and harms native species is called "
+    "an invasive species."
+)
+
+
+def test_a_claim_is_covered_by_the_passage_that_states_it():
+    claim = "Herbivores eat plants and are primary consumers."
+
+    assert claim_coverage(claim, [CONSUMERS_PAGE]) == 1.0
+    assert claim_coverage(claim, [ENERGY_PAGE]) < CITATION_COVERAGE_FLOOR
+
+
+def test_a_claim_dressed_in_words_the_source_never_uses_is_thinly_covered():
+    claim = (
+        "Humans alter ecosystems through land clearing, which involves removing vegetation to "
+        "make way for agriculture or development."
+    )
+
+    assert claim_coverage(claim, [HUMANS_PAGE]) < 0.6
+    assert claim_coverage(claim, [ENERGY_PAGE]) < CITATION_COVERAGE_FLOOR
+
+
+def test_a_plural_or_other_form_of_a_word_counts_as_covered():
+    assert claim_coverage("Invasive species spread quickly.", [HUMANS_PAGE]) >= 0.75
+
+
+def test_the_passage_that_states_a_claim_is_found_among_the_retrieved_ones():
+    claim = "Animals that eat plants are called herbivores."
+
+    assert best_covering_passage(claim, [ENERGY_PAGE, CONSUMERS_PAGE, HUMANS_PAGE]) == 1
+
+
+def test_no_passage_is_named_when_none_states_the_claim_well_enough():
+    claim = "Fungi and bacteria are tiny living things that we cannot see with our eyes."
+
+    assert best_covering_passage(claim, [ENERGY_PAGE, CONSUMERS_PAGE, HUMANS_PAGE]) is None
+
+
+def test_a_claim_with_no_content_words_is_not_judged_by_coverage():
+    assert claim_coverage("It is.", [ENERGY_PAGE]) == 1.0
+
+
+def test_the_thin_citation_rationale_keeps_the_judges_words_and_says_how_much_was_found():
+    text = thin_citation_rationale("Passage [p1] supports it.", 0.31)
+
+    assert text.startswith("Passage [p1] supports it.")
+    assert "31%" in text and "partly supported" in text

@@ -22,6 +22,7 @@ import re
 from collections.abc import Sequence
 from typing import Final
 
+from edutoon.domain.claim_dedupe import content_words
 from edutoon.domain.storyboard_provenance import unsupported_tokens
 
 GROUNDED_KINDS: Final[frozenset[str]] = frozenset(
@@ -82,5 +83,62 @@ def downgrade_rationale(original: str | None, entities: Sequence[str]) -> str:
     found = (
         f"The claim mentions {names}, which none of the retrieved source passages contain, so it "
         "is only partly supported."
+    )
+    return f"{original.strip()} {found}" if original and original.strip() else found
+
+
+# --- is the claim's wording in the passages it cites? -------------------------------------------
+
+CITATION_COVERAGE_FLOOR: Final = 0.5
+"""A claim marked supported must have at least this share of its content words in the passages it
+cites. Measured on 276 supported claims from fresh runs: citations covering under half of a
+claim's words were either true claims pointed at the wrong passage ("Animals that eat plants are
+called herbivores" cited a page about energy flow) or claims dressed in words the source never
+uses ("tiny living things that we can't see with our eyes", "to make way for agriculture or
+development"), which the judge had approved all the same."""
+
+CITATION_REPAIR_MINIMUM: Final = 0.6
+"""A claim whose citation falls under the floor is kept, pointed at the retrieved passage that does
+contain its wording, when that one passage covers at least this share of it."""
+
+_PREFIX: Final = 5
+
+
+def _stems_of(texts: Sequence[str]) -> set[str]:
+    words = content_words(" ".join(texts))
+    return set(words) | {word[:_PREFIX] for word in words}
+
+
+def claim_coverage(claim_text: str, passage_texts: Sequence[str]) -> float:
+    """The share of ``claim_text``'s content words that appear in ``passage_texts`` (a word matches
+    its plural or other form sharing its first five letters). ``1.0`` for a claim with no content
+    words. Not a measure of truth: it says only whether the cited material uses the claim's
+    words."""
+    claim_words = content_words(claim_text)
+    if not claim_words:
+        return 1.0
+    reference = _stems_of(passage_texts)
+    found = sum(1 for word in claim_words if word in reference or word[:_PREFIX] in reference)
+    return found / len(claim_words)
+
+
+def best_covering_passage(claim_text: str, passage_texts: Sequence[str]) -> int | None:
+    """The index of the single passage that covers the most of ``claim_text`` when that is at least
+    :data:`CITATION_REPAIR_MINIMUM`, else ``None``."""
+    best: int | None = None
+    best_coverage = 0.0
+    for index, text in enumerate(passage_texts):
+        coverage = claim_coverage(claim_text, [text])
+        if coverage > best_coverage:
+            best, best_coverage = index, coverage
+    return best if best is not None and best_coverage >= CITATION_REPAIR_MINIMUM else None
+
+
+def thin_citation_rationale(original: str | None, coverage: float) -> str:
+    """The stored rationale for a verdict lowered because the cited passages do not hold the claim's
+    wording."""
+    found = (
+        f"Only {coverage:.0%} of the claim's wording is in the passages it cites, and no other "
+        "retrieved passage states it, so it is only partly supported."
     )
     return f"{original.strip()} {found}" if original and original.strip() else found
