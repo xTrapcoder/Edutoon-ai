@@ -77,6 +77,7 @@ from edutoon.domain.storyboard_provenance import (
     has_lexical_overlap,
     resolve_provenance,
     safe_text_only_content,
+    without_unnamed_scene_text,
 )
 from edutoon.domain.storyboard_template import StoryboardContentError, validate_scene_content
 from edutoon.domain.storyboard_timing import (
@@ -381,6 +382,7 @@ def _prepare_scenes(
     *,
     job_id: UUID,
     script_segment_id: UUID,
+    trim_unnamed_text: bool = True,
 ) -> tuple[list[tuple[str, dict[str, object]]], int, dict[str, int]]:
     """Check one drafted scene set the way a segment's scenes always are - provenance on what the
     model actually wrote (including the text of a visual about to be dropped), an invalid visual
@@ -390,7 +392,7 @@ def _prepare_scenes(
     rejected."""
     prepared: list[tuple[str, dict[str, object]]] = []
     dropped_here = 0
-    fallbacks = {"visual_dropped": 0, "text_only": 0}
+    fallbacks = {"visual_dropped": 0, "text_only": 0, "text_trimmed": 0}
     for scene in draft.scenes:
         resolution = resolve_provenance(scene.template, scene.content, narration_text)
         if resolution.fallback is not None:
@@ -417,10 +419,31 @@ def _prepare_scenes(
         else:
             # Already rebuilt without the unsupported part, with our own mark on it.
             content = resolution.content
+        template = resolution.template
+        if trim_unnamed_text and resolution.fallback is None:
+            # A slide must not say what the narration does not (domain.storyboard_provenance).
+            trimmed, removed = without_unnamed_scene_text(template, content, narration_text)
+            if removed:
+                fallbacks["text_trimmed"] += len(removed)
+                log.warning(
+                    "storyboard.scene_text_trimmed",
+                    job_id=str(job_id),
+                    script_segment_id=str(script_segment_id),
+                    template=template,
+                    removed=removed,
+                )
+            if trimmed is None:
+                replacement = safe_text_only_content(narration_text)
+                if replacement is None or check_provenance(replacement, narration_text):
+                    raise FabricatedContentError(check_provenance(content, narration_text))
+                template, content = "bullet_points", replacement
+                fallbacks["text_only"] += 1
+            else:
+                content = trimmed
         if _content_visual_was_dropped(content):
             dropped_here += 1
-        validate_scene_content(resolution.template, content)
-        prepared.append((resolution.template, content))
+        validate_scene_content(template, content)
+        prepared.append((template, content))
     return prepared, dropped_here, fallbacks
 
 
@@ -557,7 +580,7 @@ async def _generate_storyboard(
     failed_segment_ids: list[str] = []
     provider_calls = 0
     dropped_visuals = 0
-    provenance_fallbacks: dict[str, int] = {"visual_dropped": 0, "text_only": 0}
+    provenance_fallbacks: dict[str, int] = {"visual_dropped": 0, "text_only": 0, "text_trimmed": 0}
 
     for index, segment in enumerate(segments):
         await _report_progress(
@@ -617,6 +640,7 @@ async def _generate_storyboard(
                             segment.narration_text,
                             job_id=job_id,
                             script_segment_id=segment.id,
+                            trim_unnamed_text=project.source_type != "pptx",
                         )
                         break
                     except (FabricatedContentError, StoryboardContentError) as exc:
@@ -641,7 +665,11 @@ async def _generate_storyboard(
                                 raise
                             prepared = [("bullet_points", safe)]
                             dropped_here = 0
-                            attempt_fallbacks = {"visual_dropped": 0, "text_only": 1}
+                            attempt_fallbacks = {
+                                "visual_dropped": 0,
+                                "text_only": 1,
+                                "text_trimmed": 0,
+                            }
                             log.warning(
                                 "storyboard.segment_fell_back_to_text",
                                 job_id=str(job_id),
@@ -703,6 +731,8 @@ async def _generate_storyboard(
         "dropped_visual_count": dropped_visuals,
         "provenance_visual_fallback_count": provenance_fallbacks["visual_dropped"],
         "provenance_text_fallback_count": provenance_fallbacks["text_only"],
+        # Bullets and subtitles removed because the narration never says them.
+        "scene_text_trimmed_count": provenance_fallbacks["text_trimmed"],
         "usage": report.as_dict(),
     }
 

@@ -532,6 +532,32 @@ async def test_an_honest_paraphrase_using_only_narration_words_is_accepted(db_se
     assert len(await scenes_repo.list_by_segment_id(db_session, segments[0].id)) == 1
 
 
+async def test_a_bullet_the_narration_never_says_is_taken_off_the_slide(db_session, monkeypatch):
+    """Regression (a real run, scanned PDF): a slide said "This pattern is known as semidiurnal
+    tides." although the narration never does. It is no number, date or name, so the hard
+    provenance rule could not see it."""
+    narration = (
+        "Tides are the regular rise and fall of the sea. "
+        "Most coasts experience two high tides and two low tides each day."
+    )
+    bullets = [
+        "Most coasts experience two high tides and two low tides each day.",
+        "This pattern is known as semidiurnal tides.",
+        "Tides are the regular rise and fall of the sea",
+    ]
+    job, _status, segments = await _run(
+        db_session,
+        monkeypatch,
+        {0: [("bullet_points", {"bullets": bullets})]},
+        narrations=[narration],
+    )
+
+    assert job.result["ready_segment_count"] == 1
+    assert job.result["scene_text_trimmed_count"] == 1
+    [scene] = await scenes_repo.list_by_segment_id(db_session, segments[0].id)
+    assert scene.content["bullets"] == [bullets[0], bullets[2]]
+
+
 async def test_an_unknown_template_rejects_the_segment_but_not_the_job(db_session, monkeypatch):
     _owner, project, script, segments = await _project_with_ready_audio(
         db_session, durations_ms=[9_000]

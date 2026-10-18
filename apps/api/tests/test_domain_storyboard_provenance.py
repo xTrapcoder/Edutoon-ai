@@ -204,3 +204,93 @@ def test_no_overlap_never_raises_only_a_signal() -> None:
 
 def test_empty_content_counts_as_having_overlap() -> None:
     assert has_lexical_overlap({}, NARRATION) is True
+
+
+# --- text on a slide that the narration never says ----------------------------------------------
+#
+# Regression, from a fresh scanned-PDF run: the storyboard model put "This pattern is known as
+# semidiurnal tides." on a slide whose narration said only "Most coasts experience two high tides
+# and two low tides each day", and the subtitle "The dark side" under "At new moon". Neither is a
+# number, date or name, so the hard provenance rule could not see them.
+
+from edutoon.domain.storyboard_provenance import without_unnamed_scene_text  # noqa: E402
+
+TIDES_NARRATION = (
+    "Tides are the regular rise and fall of the sea. The Moon's gravity mainly causes tides. "
+    "Most coasts experience two high tides and two low tides each day."
+)
+
+
+def test_a_bullet_the_narration_never_says_is_removed_and_the_rest_stay():
+    content = {
+        "bullets": [
+            "Most coasts experience two high tides and two low tides each day.",
+            "This pattern is known as semidiurnal tides.",
+            "The Moon's gravity mainly causes tides",
+        ]
+    }
+
+    trimmed, removed = without_unnamed_scene_text("bullet_points", content, TIDES_NARRATION)
+
+    assert removed == ["This pattern is known as semidiurnal tides."]
+    assert trimmed == {
+        "bullets": [
+            "Most coasts experience two high tides and two low tides each day.",
+            "The Moon's gravity mainly causes tides",
+        ]
+    }
+
+
+def test_a_bullet_slide_left_with_fewer_than_two_bullets_gives_none():
+    content = {
+        "bullets": [
+            "This pattern is known as semidiurnal tides.",
+            "Most coasts experience two high tides and two low tides each day.",
+        ]
+    }
+
+    trimmed, removed = without_unnamed_scene_text("bullet_points", content, TIDES_NARRATION)
+
+    assert trimmed is None and len(removed) == 1
+
+
+def test_an_invented_subtitle_is_removed_and_the_title_stays():
+    narration = "At new moon, the side facing Earth is not lit, making it look dark."
+
+    trimmed, removed = without_unnamed_scene_text(
+        "title_card",
+        {"title": "At new moon", "subtitle": "The dark side of lunar phases"},
+        narration,
+    )
+
+    assert trimmed == {"title": "At new moon"} and removed == ["The dark side of lunar phases"]
+
+
+def test_a_subtitle_made_of_the_narrations_words_stays():
+    narration = "At new moon, the side facing Earth is not lit, making it look dark."
+
+    trimmed, removed = without_unnamed_scene_text(
+        "title_card",
+        {"title": "At new moon", "subtitle": "The side facing Earth is not lit"},
+        narration,
+    )
+
+    assert removed == [] and trimmed is not None and trimmed["subtitle"].startswith("The side")
+
+
+def test_a_paraphrase_with_one_stray_word_is_kept():
+    narration = "Suspension bridges use vertical cables to hang the deck from towers."
+
+    trimmed, removed = without_unnamed_scene_text(
+        "bullet_points",
+        {"bullets": ["Cables hang the road deck from towers", "Vertical cables support the deck"]},
+        narration,
+    )
+
+    assert removed == [] and trimmed is not None and len(trimmed["bullets"]) == 2
+
+
+def test_other_templates_are_left_alone():
+    content = {"title": "Anything", "body": "Whatever the model wrote"}
+
+    assert without_unnamed_scene_text("formula_or_code", content, "x") == (content, [])

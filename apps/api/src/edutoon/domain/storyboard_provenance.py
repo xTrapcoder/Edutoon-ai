@@ -536,3 +536,61 @@ def has_lexical_overlap(
 
     narration_words = _content_words(narration_text)
     return bool(scene_words & narration_words)
+
+
+# --- text on a slide that the narration never says ----------------------------------------------
+
+UNNAMED_TEXT_MAX_ABSENT: Final = 1
+"""A bullet or subtitle may use this many content words the narration lacks (a stray "road" in "the
+road deck"); with more, or when over a third of its words are missing, it is not the narration's."""
+
+UNNAMED_TEXT_MAX_SHARE: Final = 0.34
+
+_PREFIX: Final = 5
+
+
+def _is_unnamed(text: str, reference: frozenset[str], prefixes: frozenset[str]) -> bool:
+    words = content_words(text)
+    if not words:
+        return False
+    absent = [word for word in words if word not in reference and word[:_PREFIX] not in prefixes]
+    return (
+        len(absent) > UNNAMED_TEXT_MAX_ABSENT or len(absent) / len(words) > UNNAMED_TEXT_MAX_SHARE
+    )
+
+
+def without_unnamed_scene_text(
+    template: str, content: Mapping[str, object], narration_text: str
+) -> tuple[dict[str, object] | None, list[str]]:
+    """``content`` with each bullet and subtitle removed that says something the narration does
+    not, and the text that was removed. ``None`` for the content when a bullet slide would be left
+    with fewer than :data:`MIN_BULLETS` bullets (the caller replaces such a slide with the
+    narration's own words).
+
+    The hard provenance rule above catches a number, date or name that appears from nowhere; it
+    cannot see a common noun doing the same ("This pattern is known as semidiurnal tides" on a slide
+    about a narration that never says it, "The dark side" under "At new moon"), which a viewer reads
+    as part of the lesson. Titles are left alone: they name the topic. Only text is removed.
+    """
+    reference = content_words(narration_text)
+    prefixes = frozenset(word[:_PREFIX] for word in reference)
+    removed: list[str] = []
+    result: dict[str, object] = dict(content)
+    if template == "title_card":
+        subtitle = result.get("subtitle")
+        if isinstance(subtitle, str) and _is_unnamed(subtitle, reference, prefixes):
+            removed.append(subtitle)
+            result.pop("subtitle")
+    elif template == "bullet_points":
+        bullets = result.get("bullets")
+        if isinstance(bullets, list):
+            kept = [
+                bullet
+                for bullet in bullets
+                if not (isinstance(bullet, str) and _is_unnamed(bullet, reference, prefixes))
+            ]
+            removed.extend(str(b) for b in bullets if b not in kept)
+            if len(kept) < MIN_BULLETS:
+                return None, removed
+            result["bullets"] = kept
+    return result, removed
