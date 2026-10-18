@@ -173,6 +173,37 @@ describe('Video page', () => {
     expect(await within(settings).findByText('60 FPS')).toBeInTheDocument();
   });
 
+  it('opens on the finished Final video after a reload instead of showing the preview as missing', async () => {
+    // Regression: the page always opened on the quick preview, so a project whose Final video was
+    // finished showed "nothing rendered" until the person switched to Final.
+    serveProject(everything);
+    serveMedia();
+    const finished = renderStatus({
+      quality: 'high',
+      is_complete: true,
+      output_is_current: true,
+      output: renderOutput({ width: 1280, height: 720 }),
+    });
+    server.use(
+      http.get(`${base}/scripts/:id/render`, ({ request }) =>
+        HttpResponse.json(
+          new URL(request.url).searchParams.get('quality') === 'high'
+            ? finished
+            : renderStatus({ quality: 'low', output: null }),
+        ),
+      ),
+    );
+    renderProjectPage(<VideoPage />, 'video');
+
+    const video = await screen.findByLabelText('Your video', { selector: 'video' });
+    expect(video).toHaveAttribute('controls');
+    expect(screen.getByRole('radio', { name: /final/i })).toBeChecked();
+    expect(screen.getByRole('link', { name: /download mp4/i })).toHaveAttribute(
+      'download',
+      'video-horizontal-high.mp4',
+    );
+  });
+
   it('is blocked, with the reason, until the earlier stages are complete - and offers no render', async () => {
     const unnarrated = scriptDetail({ status: 'approved', measured_duration_ms: null });
     serveProject({ ...ready, scripts: [unnarrated], scriptDetail: unnarrated });

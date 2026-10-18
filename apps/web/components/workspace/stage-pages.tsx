@@ -18,6 +18,7 @@ import { useState, type ReactNode } from 'react';
 import type { ClaimVerification, Project, ScriptDetail } from '@edutoon/contracts';
 import { ClaimExtractionPanel } from '@/components/topics/claim-extraction-panel';
 import { RenderPanel } from '@/components/script/render-panel';
+import { useRenderSelection } from '@/components/script/use-render-selection';
 import { SegmentAudioPlayer } from '@/components/script/segment-audio-player';
 import { segmentTitle, VERDICT } from '@/components/script/script-model';
 import { SynthesisCard } from '@/components/script/script-studio';
@@ -520,17 +521,14 @@ function VideoSettingsCard({
 }
 
 function VideoWorkspace({ project, script }: { project: Project; script: ScriptDetail }) {
-  const [selection, setSelection] = useState<RenderSelection>({
-    orientation: project.orientation,
-    quality: 'low',
-  });
+  const [selection, chooseSelection] = useRenderSelection(project, script);
   return (
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
       <RenderPanel
         project={project}
         script={script}
         selection={selection}
-        onSelectionChange={setSelection}
+        onSelectionChange={chooseSelection}
       />
       <div>
         <VideoSettingsCard project={project} script={script} selection={selection} />
