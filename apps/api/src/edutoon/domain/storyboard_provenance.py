@@ -423,7 +423,6 @@ was not the model's scene."""
 FallbackKind = Literal["visual_dropped", "text_only"]
 
 _FALLBACK_BULLETS: Final = 3
-_CLAUSE_SPLIT_RE = re.compile(r"[,;:]\s+|\s+(?:and|but|because|so|which|while)\s+")
 
 
 @dataclass(frozen=True, slots=True)
@@ -439,13 +438,65 @@ def _in_illustration(slot_path: str) -> bool:
     return slot_path == "illustration" or slot_path.startswith(("illustration.", "illustration["))
 
 
+_DANGLING_WORDS: Final = frozenset(
+    {
+        "a", "an", "the", "of", "to", "in", "on", "at", "for", "from", "with", "by", "and", "or",
+        "but", "that", "which", "as", "is", "are", "was", "were", "be", "its", "their", "this",
+    }
+)  # fmt: skip
+"""Words a slide line must not end on: a line cut after one reads as a broken sentence."""
+
+
 def _fit(text: str, limit: int) -> str:
-    """``text`` without its closing punctuation, at most ``limit`` characters, cut at a space."""
+    """``text`` without its closing punctuation, at most ``limit`` characters. A line that has to be
+    shortened is cut at its last comma or semicolon when that leaves most of it, else at a space,
+    and never ends on a word that needs a following one ("... the health of")."""
     text = " ".join(text.split()).rstrip(".!?;:, ")
     if len(text) <= limit:
         return text
-    cut = text.rfind(" ", 0, limit + 1)
-    return text[: cut if cut > 0 else limit].rstrip(".!?;:, ")
+    window = text[: limit + 1]
+    clause = max(window.rfind(", "), window.rfind("; "))
+    if clause >= limit // 2:
+        return text[:clause].rstrip(".!?;:, ")
+    cut = window.rfind(" ")
+    shortened = text[: cut if cut > 0 else limit].rstrip(".!?;:, ")
+    words = shortened.split()
+    while len(words) > 2 and words[-1].lower().strip(".,;:") in _DANGLING_WORDS:
+        words.pop()
+    return " ".join(words)
+
+
+def _split_one_sentence(sentence: str) -> list[str]:
+    """A single sentence as two or three whole-phrase pieces: at its commas and semicolons (a piece
+    under three words joins its neighbour), else at the conjunction nearest its middle, else in
+    half. Never at every "and": "After animals and plants die" is one phrase."""
+    parts = [p for p in re.split(r"[;:]\s+|,\s+", sentence.strip()) if p.strip()]
+    pieces: list[str] = []
+    carry = ""
+    for part in parts:
+        carry = f"{carry}, {part}" if carry else part
+        if len(carry.split()) >= 3:
+            pieces.append(carry)
+            carry = ""
+    if carry:
+        if pieces:
+            pieces[-1] = f"{pieces[-1]}, {carry}"
+        else:
+            pieces.append(carry)
+    if len(pieces) >= MIN_BULLETS:
+        return pieces
+    words = sentence.split()
+    middle = len(words) // 2
+    joiners = [
+        i
+        for i, word in enumerate(words)
+        if word.lower() in {"and", "but", "because", "so", "which", "while"}
+        and 2 <= i <= len(words) - 3
+    ]
+    split_at = min(joiners, key=lambda i: abs(i - middle)) if joiners else middle
+    # the second piece does not begin with the conjunction it was cut at
+    second = words[split_at + 1 :] if split_at in joiners else words[split_at:]
+    return [" ".join(words[:split_at]), " ".join(second)]
 
 
 def safe_text_only_content(narration_text: str) -> dict[str, object] | None:
@@ -454,15 +505,15 @@ def safe_text_only_content(narration_text: str) -> dict[str, object] | None:
     token in it is one the narration contains, so it passes the provenance check by construction.
     ``None`` if the narration is too short to make :data:`MIN_BULLETS` bullets from."""
     sentences = [s for s in _SENTENCE_SPLIT_RE.split(narration_text.strip()) if s.strip()]
-    pieces = [_fit(sentence, BULLET_MAX_CHARS) for sentence in sentences[:_FALLBACK_BULLETS]]
-    if len(pieces) < MIN_BULLETS:
-        clauses = [c for c in _CLAUSE_SPLIT_RE.split(narration_text.strip()) if c.strip()]
-        pieces = [_fit(clause, BULLET_MAX_CHARS) for clause in clauses[:_FALLBACK_BULLETS]]
-    if len(pieces) < MIN_BULLETS:
-        words = narration_text.split()
-        middle = len(words) // 2
-        pieces = [_fit(" ".join(words[:middle]), BULLET_MAX_CHARS)]
-        pieces.append(_fit(" ".join(words[middle:]), BULLET_MAX_CHARS))
+    if len(sentences) >= MIN_BULLETS:
+        pieces = [_fit(sentence, BULLET_MAX_CHARS) for sentence in sentences[:_FALLBACK_BULLETS]]
+    elif sentences:
+        pieces = [
+            _fit(piece, BULLET_MAX_CHARS)
+            for piece in _split_one_sentence(sentences[0])[:_FALLBACK_BULLETS]
+        ]
+    else:
+        pieces = []
     pieces = [piece for piece in pieces if piece][:MAX_BULLETS]
     if len(pieces) < MIN_BULLETS:
         return None

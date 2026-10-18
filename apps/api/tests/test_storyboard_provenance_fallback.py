@@ -236,3 +236,47 @@ def test_with_visual_dropped_removes_the_visual_and_sets_our_mark() -> None:
 def test_with_visual_dropped_has_nothing_to_do_for_a_scene_without_a_visual() -> None:
     assert with_visual_dropped(diagram()) is None
     assert with_visual_dropped({"title": "x"}) is None
+
+
+# --- the narration-only slide reads as phrases, not as fragments ---------------------------------
+#
+# Regression, from a fresh run: "After animals and plants die, decomposers break down the dead
+# material." became the bullets "After animals" / "plants die" (split at every "and"), and "We have
+# seen how decomposers recycle nutrients and maintain the health of ecosystems." was cut after "of".
+
+
+def test_a_single_sentence_is_split_into_whole_phrases_not_at_every_and() -> None:
+    narration = "After animals and plants die, decomposers break down the dead material."
+
+    assert safe_text_only_content(narration)["bullets"] == [  # type: ignore[index]
+        "After animals and plants die",
+        "decomposers break down the dead material",
+    ]
+
+
+def test_a_sentence_with_no_comma_is_split_at_the_conjunction_nearest_its_middle() -> None:
+    narration = "Dead material would pile up and nutrients would stay locked in it."
+
+    assert safe_text_only_content(narration)["bullets"] == [  # type: ignore[index]
+        "Dead material would pile up",
+        "nutrients would stay locked in it",
+    ]
+
+
+def test_a_long_line_is_cut_at_a_clause_and_never_ends_on_a_dangling_word() -> None:
+    narration = (
+        "The Tacoma Narrows Bridge collapsed in 1940 because of wind-induced vibration, a failure "
+        "that changed how engineers test bridge designs. Models were then tried in wind tunnels."
+    )
+
+    bullets = safe_text_only_content(narration)["bullets"]  # type: ignore[index]
+
+    assert all(len(bullet) <= BULLET_MAX_CHARS for bullet in bullets)
+    assert all(
+        bullet.split()[-1].lower() not in {"of", "the", "a", "that", "to", "and"}
+        for bullet in bullets
+    )
+    assert (
+        bullets[0]
+        == "The Tacoma Narrows Bridge collapsed in 1940 because of wind-induced vibration"
+    )

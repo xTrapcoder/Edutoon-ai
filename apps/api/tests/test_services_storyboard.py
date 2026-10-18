@@ -1397,7 +1397,7 @@ async def test_scene_text_that_stays_fabricated_falls_back_to_the_narrations_own
         assert job.result["provenance_text_fallback_count"] == 1
         [scene] = await scenes_repo.list_by_segment_id(db_session, segments[0].id)
         assert scene.template == "bullet_points"
-        assert scene.content["bullets"] == ["Now", "let's talk about divergent boundaries"]
+        assert scene.content["bullets"] == ["Now, let's talk", "about divergent boundaries"]
         assert "42" not in str(scene.content)
     finally:
         get_settings.cache_clear()
