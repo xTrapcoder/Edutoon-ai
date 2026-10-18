@@ -282,3 +282,63 @@ def test_a_sentence_that_merely_contains_a_colon_is_kept() -> None:
     sentences = ["There are two kinds: lists and dictionaries, and each one holds items."]
 
     assert ns.without_sentences(sentences, []) == sentences[0]
+
+
+# --- restating: a rejected sentence that is mostly one verified claim ---------------------------
+#
+# Regression, from the real claims and sentences of a bridges run: the judge removed "Temperature
+# changes affect the length of bridge decks, making them expand when heated and contract when
+# cooled" although the claims state both halves, which left the next sentence talking about "these
+# temperature changes" that the lesson never introduced; and removed "Because of this design,
+# suspension bridges can span very long distances", the only statement of a verified fact.
+
+BRIDGE_CLAIMS = [
+    "Bridges must account for temperature changes to prevent cracking.",
+    "Steel expands when heated and contracts when cooled.",
+    "Temperature changes affect the length of bridge decks.",
+    "Suspension bridges can span very long distances.",
+    "The Romans built arch bridges from stone more than two thousand years ago.",
+    "Compression is a force that squeezes a material, making it shorter.",
+]
+
+
+def test_a_sentence_that_is_a_claim_with_a_flourish_is_restated_by_the_claim() -> None:
+    sentence = "Because of this design, suspension bridges can span very long distances."
+
+    assert ns.restating_claim_index(sentence, BRIDGE_CLAIMS) == 3
+
+
+def test_a_sentence_made_of_two_claims_is_restated_by_the_one_it_mostly_is() -> None:
+    sentence = (
+        "Temperature changes affect the length of bridge decks, making them expand when heated "
+        "and contract when cooled."
+    )
+
+    assert ns.restating_claim_index(sentence, BRIDGE_CLAIMS) == 2
+
+
+def test_a_sentence_only_loosely_about_a_claim_is_not_restated() -> None:
+    sentence = (
+        "The Romans were experts in building arch bridges and used them in their vast empire."
+    )
+
+    assert ns.restating_claim_index(sentence, BRIDGE_CLAIMS) is None
+
+
+def test_a_claim_already_said_is_not_said_again() -> None:
+    sentence = "Because of this design, suspension bridges can span very long distances."
+    said = ["Suspension bridges can span very long distances."]
+
+    assert ns.restating_claim_index(sentence, BRIDGE_CLAIMS, said) is None
+
+
+def test_a_contradicting_sentence_is_replaced_by_the_true_claim_never_kept() -> None:
+    claims = ["A plant short of water closes its stomata."]
+
+    index = ns.restating_claim_index("Plants open their stomata when short of water.", claims)
+
+    assert index == 0  # what is read out is the claim, not the contradicting sentence
+
+
+def test_a_short_claim_is_never_restated_by_a_sentence_that_merely_mentions_it() -> None:
+    assert ns.restating_claim_index("Steel is used in many ways.", ["Steel is strong."]) is None

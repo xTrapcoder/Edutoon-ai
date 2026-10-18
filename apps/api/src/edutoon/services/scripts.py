@@ -104,6 +104,8 @@ from edutoon.domain.generation_settings import MAX_TARGET_DURATION_MS
 from edutoon.domain.llm_usage import UsageReport
 from edutoon.domain.narration_support import (
     UnsupportedSentence,
+    is_signpost_only,
+    restating_claim_index,
     split_sentences,
     without_sentences,
 )
@@ -905,6 +907,7 @@ async def _without_rule_violations(
                 words_per_minute=settings.SCRIPT_WORDS_PER_MINUTE,
                 topic=unit.topic.title,
                 support=support,
+                restate_from=unit.claims,
             )
             if not cleaned or _is_hollow(cleaned, unit.claims):
                 raise problems[0][1]
@@ -952,9 +955,24 @@ def _without_unsupported(
     words_per_minute: int,
     topic: str,
     support: SupportLog | None,
+    restate_from: Sequence[Claim] = (),
 ) -> list[ScriptSegmentDraft]:
     """``segments`` with the unsupported sentences taken out. A segment left too short to read out
-    is dropped. Each removal is recorded on the job's result with the judge's reason."""
+    is dropped. Each removal is recorded on the job's result with the judge's reason.
+
+    With ``restate_from`` (the section's verified claims), a rejected sentence that is mostly a
+    wording of one of them is not simply lost: the claim's own text is read out in its place and
+    cited (``domain.narration_support.restating_claim_index``). That is for sentences the judge
+    rejected for a flourish; a sentence removed for breaking a script rule is never replaced."""
+    flagged_positions = {
+        (position, found.position) for position, flagged in unsupported.items() for found in flagged
+    }
+    said = [
+        sentence
+        for position, segment in enumerate(segments)
+        for index, sentence in enumerate(split_sentences(segment.narration_text))
+        if (position, index) not in flagged_positions
+    ]
     kept: list[ScriptSegmentDraft] = []
     for position, segment in enumerate(segments):
         flagged = unsupported.get(position)
@@ -962,24 +980,50 @@ def _without_unsupported(
             kept.append(segment)
             continue
         sentences = split_sentences(segment.narration_text)
-        remaining = without_sentences(sentences, [found.position for found in flagged])
-        if support is not None:
-            for found in flagged:
+        removed_positions: list[int] = []
+        claim_ids = list(segment.claim_ids)
+        for found in flagged:
+            restated = (
+                restating_claim_index(found.text, [c.text for c in restate_from], said)
+                if restate_from
+                else None
+            )
+            note = found.reason
+            if restated is None:
+                removed_positions.append(found.position)
+            else:
+                claim = restate_from[restated]
+                text = claim.text.strip()
+                sentences[found.position] = text if text[-1:] in ".!?" else text + "."
+                said.append(text)
+                if claim.id not in claim_ids:
+                    claim_ids.append(claim.id)
+                note = (
+                    f"{found.reason.strip()} Read out as the verified statement it was "
+                    f'closest to: "{text}"'
+                )
+            if support is not None:
                 support.removed.append(
                     {
                         "topic": topic,
                         "sentence": found.text,
-                        "reason": found.reason,
-                        "segment_dropped": remaining is None,
+                        "reason": note,
+                        "segment_dropped": False,
+                        **({"restated": True} if restated is not None else {}),
                     }
                 )
+        remaining = without_sentences(sentences, removed_positions)
         if remaining is None:
+            if support is not None:
+                for entry in support.removed[-len(flagged) :]:
+                    entry["segment_dropped"] = True
             continue
         words = len(remaining.split())
         kept.append(
             replace(
                 segment,
                 narration_text=remaining,
+                claim_ids=claim_ids,
                 estimated_duration_ms=round(words / words_per_minute * 60_000),
             )
         )
@@ -1158,8 +1202,14 @@ async def _generate_units(
                     words_per_minute=settings.SCRIPT_WORDS_PER_MINUTE,
                     topic=unit.topic.title,
                     support=support,
+                    restate_from=unit.claims,
                 )
-                if not stamped or _is_hollow(stamped, unit.claims):
+                # A section whose only remaining passages move the lesson along ("Today, we will
+                # learn about resistance") is as empty as none: such a passage can share a word with
+                # a claim, so it passes _is_hollow, but with the sentences that said something
+                # taken out the topic would be named in the lesson and never explained.
+                only_signposts = all(is_signpost_only(s.narration_text) for s in stamped)
+                if not stamped or only_signposts or _is_hollow(stamped, unit.claims):
                     raise HollowSectionError(
                         f"Nothing the writer produced for the topic '{unit.topic.title}' was "
                         "supported by its verified claims. Generate the script again."

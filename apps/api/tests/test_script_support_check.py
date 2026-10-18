@@ -271,6 +271,101 @@ async def test_a_section_with_nothing_supported_falls_back_to_reading_its_claims
     assert [c.claim_verification_id for c in cited] == [claim.id]
 
 
+async def test_a_section_left_with_only_a_signpost_reads_its_claims_out_instead(
+    db_session, monkeypatch
+):
+    """Regression (a real run, Electric circuits): the writer's only substantive sentence about
+    resistance was removed by the check, which left "Today, we will learn about resistance in
+    electric circuits." - it shares the word "resistance" with a claim, so the section was not
+    hollow, and the finished lesson never said what resistance is."""
+    monkeypatch.setenv("SCRIPT_FALLBACK_TO_CLAIMS", "true")
+    get_settings.cache_clear()
+    claim_text = "Resistance is the property of materials that opposes the flow of current."
+    _o, _p, topic, claim, enq = await _enqueued(db_session, claim_text=claim_text)
+    llm, _outline, _section = _mock_llm(
+        monkeypatch,
+        sections_by_topic={
+            topic.id: [
+                [
+                    _segment("Today, we will learn about resistance in circuits.", [str(claim.id)]),
+                    _segment(
+                        "Resistance makes wires warm up when current flows through them.",
+                        [str(claim.id)],
+                    ),
+                ]
+            ]
+        },
+    )
+    _judge_with(
+        monkeypatch,
+        llm,
+        lambda s, _second: (
+            ns.SentenceJudgement("unsupported", "warming is not in the claims")
+            if "warm" in s
+            else ns.SentenceJudgement("supported", "a claim says so")
+        ),
+    )
+
+    job = await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
+
+    assert job.status == "succeeded"
+    assert await _texts(db_session, enq) == [claim_text]
+    [fell_back] = job.result["support_check"]["fallback_sections"]
+    assert fell_back["topic"] == "A topic"
+
+
+async def test_a_rejected_flourish_is_replaced_by_the_claim_it_was_mostly_a_wording_of(
+    db_session, monkeypatch
+):
+    """Regression (a real run, Bridges): "Because of this design, suspension bridges can span very
+    long distances" was removed whole, so the lesson never said that they can; a claim states it."""
+    monkeypatch.setenv("MAX_SCRIPT_CORRECTION_ATTEMPTS", "0")
+    get_settings.cache_clear()
+    claim_text = "Suspension bridges can span very long distances."
+    flourish = "Because of this design, suspension bridges can span very long distances."
+    keep = "A suspension bridge hangs its deck from cables."
+    _o, _p, topic, claim, enq = await _enqueued(db_session, claim_text=claim_text)
+    llm, _outline, _section = _mock_llm(
+        monkeypatch,
+        sections_by_topic={topic.id: [[_segment(f"{keep} {flourish}", [str(claim.id)])]]},
+    )
+    _judge_with(
+        monkeypatch,
+        llm,
+        lambda s, _second: (
+            ns.SentenceJudgement("unsupported", "adds a purpose")
+            if s.startswith("Because")
+            else ns.SentenceJudgement("supported", "a claim says so")
+        ),
+    )
+
+    job = await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
+
+    assert job.status == "succeeded"
+    assert await _texts(db_session, enq) == [f"{keep} {claim_text}"]
+    [removed] = job.result["support_check"]["removed_sentences"]
+    assert removed["sentence"] == flourish and removed["restated"] is True
+    assert claim_text in removed["reason"]
+
+
+async def test_a_sentence_that_is_only_loosely_about_a_claim_is_still_just_removed(
+    db_session, monkeypatch
+):
+    monkeypatch.setenv("MAX_SCRIPT_CORRECTION_ATTEMPTS", "0")
+    get_settings.cache_clear()
+    _o, _p, topic, claim, enq = await _enqueued(db_session, claim_text=CLAIM)
+    llm, _outline, _section = _mock_llm(
+        monkeypatch,
+        sections_by_topic={topic.id: [[_segment(f"{GOOD} {BAD}", [str(claim.id)])]]},
+    )
+    _judge_with(monkeypatch, llm, _flags_bad)
+
+    job = await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
+
+    assert await _texts(db_session, enq) == [GOOD]
+    assert not any(r.get("restated") for r in job.result["support_check"]["removed_sentences"])
+
+
 async def test_a_fallback_section_is_never_made_from_anything_but_the_topics_claims(
     db_session, monkeypatch
 ):

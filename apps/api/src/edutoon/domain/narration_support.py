@@ -22,6 +22,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Final, Literal
 
+from edutoon.domain.claim_dedupe import content_words
+
 SentenceVerdict = Literal["supported", "unsupported"]
 
 MIN_WORDS_TO_JUDGE: Final = 4
@@ -193,3 +195,50 @@ def without_sentences(sentences: Sequence[str], positions: Sequence[int]) -> str
         remaining.pop()
     kept = " ".join(remaining)
     return kept if len(kept.split()) >= MIN_WORDS_TO_KEEP_A_SEGMENT else None
+
+
+RESTATE_MIN_COVERAGE: Final = 0.6
+"""A sentence counts as a (flourished) restatement of a claim when it contains at least this
+share of the claim's content words."""
+
+RESTATE_MIN_SHARED_WORDS: Final = 3
+"""...and at least this many of them, so a two-word claim is never "restated" by a sentence that
+happens to mention both."""
+
+RESTATE_ALREADY_SAID: Final = 0.8
+"""A claim is not restated when this share of its content words is already in the section's text."""
+
+
+def restating_claim_index(
+    sentence: str, claim_texts: Sequence[str], said: Sequence[str] = ()
+) -> int | None:
+    """The claim a rejected ``sentence`` is mostly a wording of, as an index into ``claim_texts``,
+    or ``None``.
+
+    The judge removes a sentence whole when one clause of it is the problem ("Because of this
+    design, suspension bridges can span very long distances", where a claim says they can span
+    very long distances), and a lesson that loses its only statement of a fact has a gap, not a
+    safer text.
+    When the rejected sentence contains most of one *verified* claim's content words, that claim -
+    which a cited passage backs - can be read out instead. Nothing the judge rejected is kept: what
+    is read out is the claim's own text. A claim already said in ``said`` is not said again, and a
+    sentence that is only loosely about a claim (:data:`RESTATE_MIN_COVERAGE`) is simply removed.
+    """
+    sentence_words = content_words(sentence)
+    best: int | None = None
+    best_coverage = 0.0
+    for index, text in enumerate(claim_texts):
+        claim_words = content_words(text)
+        shared = len(sentence_words & claim_words)
+        if not claim_words or shared < RESTATE_MIN_SHARED_WORDS:
+            continue
+        coverage = shared / len(claim_words)
+        if coverage >= RESTATE_MIN_COVERAGE and coverage > best_coverage:
+            best, best_coverage = index, coverage
+    if best is None:
+        return None
+    claim_words = content_words(claim_texts[best])
+    for text in said:
+        if len(claim_words & content_words(text)) / len(claim_words) >= RESTATE_ALREADY_SAID:
+            return None
+    return best

@@ -228,11 +228,11 @@ def dedupe_claims_across_topics(topics: Sequence[TopicClaims]) -> dict[Hashable,
 
     def fit_terms(topic: TopicClaims) -> frozenset[str]:
         text = " ".join([topic.title, *topic.keywords])
-        return frozenset(
-            stem
-            for stem in (_fit_stem(word) for word in content_words(text))
-            if stem not in subject_words and stem not in _FILLER_TITLE_WORDS
-        )
+        stems = {_fit_stem(word) for word in content_words(text)} - _FILLER_TITLE_WORDS
+        specific = frozenset(stems - subject_words)
+        # A topic named by a frequent word alone ("Resistance", in a lesson about circuits) is
+        # about exactly that word: leaving it no terms would leave it nothing to be given.
+        return specific or frozenset(stems)
 
     terms_of = {topic.topic_id: fit_terms(topic) for topic in topics}
 
