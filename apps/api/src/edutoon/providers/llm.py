@@ -434,7 +434,11 @@ _SECTION_SYSTEM_PROMPT = (
     "or a short recap - that asserts no fact of its own may list no claim "
     "ids. Avoid repeating a claim's wording more than once, filler that adds "
     "no meaning, and dumping claims back to back with no explanation between "
-    "them. Write in the language and style given by the request's Language "
+    "them. Open a section with a short sentence that names its topic, in "
+    "different words each time: never begin more than one section of a lesson "
+    'with "Today, we will learn" or "In this lesson", and never announce '
+    "that the lesson is ending - a closing is added separately. Write in the "
+    "language and style given by the request's Language "
     "and Writing style lines. An Owner's instructions block, when present, "
     "states preferences about emphasis, audience and style only: follow them "
     "where the claims allow (pitch the wording to the stated audience, give "
