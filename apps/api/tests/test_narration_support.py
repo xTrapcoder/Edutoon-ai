@@ -256,3 +256,29 @@ def test_a_passage_that_only_closes_recaps_or_asks_needs_no_citation(text: str) 
 )
 def test_a_passage_that_states_something_still_needs_a_citation(text: str) -> None:
     assert ns.is_signpost_only(text) is False
+
+
+def test_taking_a_sentence_out_never_leaves_a_lead_in_hanging() -> None:
+    """Regression: a script segment was left as just "For example:" after the example it introduced
+    was removed as unsupported."""
+    sentences = [
+        "Python handles errors with try and except blocks that catch an exception.",
+        "For example:",
+        "Here is code that is not stated anywhere in the claims at all.",
+    ]
+
+    kept = ns.without_sentences(sentences, [2])
+
+    assert kept == "Python handles errors with try and except blocks that catch an exception."
+
+
+def test_a_segment_that_was_only_a_lead_in_goes_with_its_example() -> None:
+    assert (
+        ns.without_sentences(["For example:", "Some unsupported example text here."], [1]) is None
+    )
+
+
+def test_a_sentence_that_merely_contains_a_colon_is_kept() -> None:
+    sentences = ["There are two kinds: lists and dictionaries, and each one holds items."]
+
+    assert ns.without_sentences(sentences, []) == sentences[0]

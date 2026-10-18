@@ -187,5 +187,9 @@ def without_sentences(sentences: Sequence[str], positions: Sequence[int]) -> str
     """``sentences`` with those at ``positions`` (0-based) taken out, joined by single spaces, or
     ``None`` if what is left is too short to read out (:data:`MIN_WORDS_TO_KEEP_A_SEGMENT`)."""
     drop = set(positions)
-    kept = " ".join(sentence for index, sentence in enumerate(sentences) if index not in drop)
+    remaining = [sentence for index, sentence in enumerate(sentences) if index not in drop]
+    # A lead-in ("For example:") whose example was taken out must not be left hanging.
+    while remaining and remaining[-1].rstrip().endswith(":"):
+        remaining.pop()
+    kept = " ".join(remaining)
     return kept if len(kept.split()) >= MIN_WORDS_TO_KEEP_A_SEGMENT else None
