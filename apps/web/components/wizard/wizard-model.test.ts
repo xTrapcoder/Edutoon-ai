@@ -4,8 +4,7 @@ import {
   fileProblem,
   instructionsProblem,
   isModeAvailable,
-  KEYWORD_ONLY_SUPPORTED,
-  KEYWORD_ONLY_UNSUPPORTED_MESSAGE,
+  MODE_UNAVAILABLE_MESSAGE,
   MAX_INSTRUCTIONS_CHARS,
   MAX_KEYWORDS,
   MAX_TEXT_CHARS,
@@ -25,9 +24,9 @@ import {
 } from './wizard-model';
 
 vi.mock('@/lib/scope', () => ({
-  // These tests exercise the dormant modes and instructions, so they run with everything offered;
+  // These tests exercise the dormant PowerPoint mode too, so they run with every mode offered;
   // scope.test.tsx holds the real defaults.
-  OFFERED_MODES: ['pdf', 'pptx', 'text', 'keywords', 'both'],
+  OFFERED_MODES: ['pdf', 'pptx', 'text', 'both', 'instructions', 'scan'],
   INSTRUCTIONS_OFFERED: true,
 }));
 
@@ -97,36 +96,48 @@ describe('sourceErrors', () => {
   });
 });
 
-describe('topic-only projects', () => {
-  it('are available, and need no file and no text', () => {
-    expect(KEYWORD_ONLY_SUPPORTED).toBe(true);
-    for (const mode of ['pdf', 'pptx', 'text', 'keywords', 'both'] as const) {
+describe('the five modes', () => {
+  it('are all available, and each asks only for what it needs', () => {
+    for (const mode of ['pdf', 'pptx', 'text', 'both', 'instructions', 'scan'] as const) {
       expect(isModeAvailable(mode)).toBe(true);
     }
-    expect(sourceErrors(values({ mode: 'keywords', file: null, keywords: ['a'] }))).toEqual({});
-    expect(projectSourceType('keywords')).toBe('topic');
-  });
-
-  it('ask for the topic, in words that fit a topic-only lesson', () => {
-    expect(sourceErrors(values({ mode: 'keywords', file: null, keywords: [] }))).toEqual({
-      keywords: 'Add the topic you want explained.',
+    expect(sourceErrors(values({ mode: 'scan' }))).toEqual({});
+    expect(sourceErrors(values({ mode: 'scan', file: null }))).toEqual({
+      file: 'Choose a PDF to upload.',
     });
+    expect(sourceErrors(values({ mode: 'instructions', instructions: 'Be brief.' }))).toEqual({});
   });
 
-  it('say where it is unavailable and what to do instead, if the server switched it off', () => {
-    expect(KEYWORD_ONLY_UNSUPPORTED_MESSAGE).toContain('not available on this server');
-    expect(KEYWORD_ONLY_UNSUPPORTED_MESSAGE).toContain('Upload a PDF');
+  it('send PDF + keywords, PDF + instructions and a scan to the API as PDF projects', () => {
+    for (const mode of ['pdf', 'both', 'instructions', 'scan'] as const) {
+      expect(projectSourceType(mode)).toBe('pdf');
+      expect(usesFile(mode)).toBe(true);
+    }
+    expect(projectSourceType('text')).toBe('text');
+  });
+
+  it('have no topic-only mode, and say what to do when a mode is not offered', () => {
+    expect(isModeAvailable('keywords' as never)).toBe(false);
+    expect(MODE_UNAVAILABLE_MESSAGE).toContain('not offered');
+    expect(MODE_UNAVAILABLE_MESSAGE).toContain('Upload a PDF');
   });
 });
 
 describe('instructions', () => {
-  it('are optional, and a PowerPoint deck takes none', () => {
+  it('are asked for only by PDF + instructions, which needs them', () => {
     expect(sourceErrors(values({ instructions: '' }))).toEqual({});
-    expect(sourceErrors(values({ instructions: 'Make it suitable for a beginner.' }))).toEqual({});
-    for (const mode of ['pdf', 'text', 'keywords', 'both'] as const) {
-      expect(usesInstructions(mode)).toBe(true);
+    expect(sourceErrors(values({ mode: 'instructions', instructions: '' }))).toEqual({
+      instructions: 'Say how you want the lesson, in your own words.',
+    });
+    expect(
+      sourceErrors(
+        values({ mode: 'instructions', instructions: 'Make it suitable for a beginner.' }),
+      ),
+    ).toEqual({});
+    expect(usesInstructions('instructions')).toBe(true);
+    for (const mode of ['pdf', 'text', 'both', 'scan', 'pptx'] as const) {
+      expect(usesInstructions(mode)).toBe(false);
     }
-    expect(usesInstructions('pptx')).toBe(false);
     expect(
       sourceErrors(values({ mode: 'pptx', instructions: 'x'.repeat(5000), file: pdf('d.pptx') }))
         .instructions,
@@ -138,9 +149,9 @@ describe('instructions', () => {
     expect(instructionsProblem('   a   b   ')).toBeNull();
     const problem = instructionsProblem('x'.repeat(MAX_INSTRUCTIONS_CHARS + 1));
     expect(problem).toContain('2,000');
-    expect(sourceErrors(values({ instructions: 'x'.repeat(2500) })).instructions).toContain(
-      '2,000',
-    );
+    expect(
+      sourceErrors(values({ mode: 'instructions', instructions: 'x'.repeat(2500) })).instructions,
+    ).toContain('2,000');
   });
 });
 
@@ -227,7 +238,6 @@ describe('projectSourceType', () => {
   it('sends a PDF-plus-keywords project to the API as a PDF project', () => {
     expect(projectSourceType('pdf')).toBe('pdf');
     expect(projectSourceType('both')).toBe('pdf');
-    expect(projectSourceType('keywords')).toBe('topic');
   });
 });
 

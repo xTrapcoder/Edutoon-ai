@@ -415,14 +415,16 @@ enqueue path (one hour by default), so killing the worker mid-job leaves a `runn
 `CLERK_SECRET_KEY`; `docs/licensing-and-credentials.md`), and the licensing of Piper, FFmpeg's GPL build and
 H.264/AAC for distribution.
 
-**Offered scope: exactly three modes (owner's decision, 2026-10-18).** PDF -> video, pasted text -> video,
-and PDF + keywords -> focused video. *Topic only*, *PowerPoint decks* and *free-text instructions* are
-switched **off, not deleted**: `KEYWORD_ONLY_PROJECTS_ENABLED`, `PPTX_PROJECTS_ENABLED` and
-`INSTRUCTIONS_ENABLED` default to `false` (`core/config.py`; the API refuses each with a 400 that says what to
-do instead, `domain/topic.py`), the web app offers only the three (`apps/web/lib/scope.ts`), and the test
-environment (`tests/conftest.py`, and a `vi.mock` of `@/lib/scope` in the dormant-mode web tests) turns them on
-so their code stays tested; `tests/test_offered_scope.py` and `components/wizard/scope.test.tsx` hold the
-defaults. OCR stays as part of reading a PDF.
+**Offered scope: exactly five modes (owner's decision, 2026-10-18, supersedes the earlier three).** PDF,
+pasted text, PDF + keywords, PDF + instructions (`INSTRUCTIONS_ENABLED`, default `true`) and scanned PDF (local
+OCR). **Topic-only was removed outright** - no setting; `source_type: topic` and keyword-only topic extraction are
+refused (`domain/topic.KEYWORD_ONLY_UNSUPPORTED`), and `services/general_knowledge` plus its branches in claims,
+scripts and the LLM brief were deleted (existing `general_knowledge` rows stay readable; the web still renders
+them for old projects). *PowerPoint decks* stay dormant (`PPTX_PROJECTS_ENABLED=false`, not offered). The wizard
+(`apps/web/lib/scope.ts`, `components/wizard`) has five cards: `pdf`, `text`, `both`, `instructions` (instructions
+box required) and `scan`; the last three are PDF projects (`source_type: pdf`). `tests/test_offered_scope.py`,
+`tests/test_topic_only_removed.py` and `components/wizard/scope.test.tsx` hold the defaults. Fresh-input
+verification: `docs/final-verification-2026-10-18.md`.
 
 **2026-10-18 verification pass (full record: `docs/verification-report-2026-10-18.md`).** Found by reading real
 runs against their sources, each fixed with a regression test from that run's own data: facts placed under the

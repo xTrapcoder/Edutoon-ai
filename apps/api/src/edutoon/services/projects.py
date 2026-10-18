@@ -47,7 +47,7 @@ async def create_project(
     instructions: str | None = None,
 ) -> ProjectRecord:
     settings = get_settings()
-    if source_type == "topic" and not settings.KEYWORD_ONLY_PROJECTS_ENABLED:
+    if source_type == "topic":
         raise ValidationError(KEYWORD_ONLY_UNSUPPORTED)
     if source_type == "pptx" and not settings.PPTX_PROJECTS_ENABLED:
         raise ValidationError(PPTX_UNSUPPORTED)

@@ -65,20 +65,15 @@ class Settings(BaseSettings):
     CLERK_INVITATION_REDIRECT_URL: str = ""
     INVITATION_TTL_DAYS: int = Field(default=7, ge=1, le=60)
 
-    # Topic-only projects (``source_type: topic``, or a topic extraction with keywords and no parsed
-    # material). With nothing to verify against, the lesson rests on the model's general knowledge:
-    # its claims are recorded ``general_knowledge`` (never ``supported``), the script opens with a
-    # fixed spoken notice saying so, and the UI labels it (``domain.general_knowledge``). Checked
-    # end to end on the local model on 2026-10-17. OFF by default since the 2026-10-18 scope change:
-    # the product offers exactly three modes (PDF, pasted text, PDF + keywords). The code and its
-    # tests remain; set true to offer the mode again. PDF projects with keywords are unaffected.
-    KEYWORD_ONLY_PROJECTS_ENABLED: bool = False
-    # The other two modes taken out of the offered scope on 2026-10-18, kept dormant the same way: a
-    # PowerPoint deck project (``source_type: pptx``, the deterministic deck engine) and free-text
-    # instructions on a project (``domain.instructions``). Off by default; both refuse with a 422
-    # that says so. Existing projects that already have either keep working.
+    # The product offers exactly five ways to make a video: a PDF, pasted text, a PDF with keywords,
+    # a PDF with natural-language instructions, and a scanned PDF (read by local OCR). A topic with
+    # no document ("topic only") is not offered and cannot be switched on: it is refused outright.
+    # A PowerPoint deck project (``source_type: pptx``, the deterministic deck engine) is dormant:
+    # off by default, refused with a 422 that says so; existing deck projects keep working.
     PPTX_PROJECTS_ENABLED: bool = False
-    INSTRUCTIONS_ENABLED: bool = False
+    # Free-text instructions on a project (``domain.instructions``): on, because "PDF +
+    # instructions" is one of the five modes. Set false to refuse them.
+    INSTRUCTIONS_ENABLED: bool = True
     MAX_PDF_PAGES: int = 300
     # Local text recognition (OCR) for scanned or image-only PDF pages (``providers.ocr``): nothing
     # leaves this machine. A page whose own text layer has next to nothing is read by OCR, but only

@@ -34,7 +34,7 @@ from edutoon.services import topic_extraction as topic_extraction_service
 async def _project(db_session):
     owner = await users_repo.create(db_session, email=f"{uuid4()}@example.com")
     project = await projects_repo.create(
-        db_session, owner_id=owner.id, title="Photosynthesis", source_type="topic"
+        db_session, owner_id=owner.id, title="Photosynthesis", source_type="pdf"
     )
     return owner, project
 
@@ -166,7 +166,7 @@ async def test_a_partial_failure_changes_nothing(db_session):
 async def test_update_reports_a_topic_from_another_project_as_missing(db_session):
     owner, home = await _project(db_session)
     away = await projects_repo.create(
-        db_session, owner_id=owner.id, title="Elsewhere", source_type="topic"
+        db_session, owner_id=owner.id, title="Elsewhere", source_type="pdf"
     )
     [topic] = await _add(db_session, owner, home, "Photosynthesis")
 
@@ -201,10 +201,19 @@ async def _committed_project(sessionmaker):
     async with sessionmaker() as setup:
         owner = await users_repo.create(setup, email=f"{uuid4()}@example.com")
         project = await projects_repo.create(
-            setup, owner_id=owner.id, title="Race", source_type="topic"
+            setup, owner_id=owner.id, title="Race", source_type="pdf"
         )
         await setup.commit()
     return owner, project
+
+
+async def _give_material(sessionmaker, project) -> None:
+    """One parsed page, so a topic extraction can be enqueued (keywords alone are never enough)."""
+    from tests.test_services_topic_extraction import _add_chunks
+
+    async with sessionmaker() as setup:
+        await _add_chunks(setup, project, ["Plants make food from light."])
+        await setup.commit()
 
 
 async def _cleanup(owner) -> None:
@@ -258,6 +267,7 @@ async def test_keywords_cannot_be_added_beside_an_extraction_being_enqueued(monk
     )
     sessionmaker = get_sessionmaker()
     owner, project = await _committed_project(sessionmaker)
+    await _give_material(sessionmaker, project)
     async with sessionmaker() as seed:
         await project_topics_repo.create(seed, project_id=project.id, title="Alpha", position=0)
         await seed.commit()
@@ -298,6 +308,7 @@ async def test_a_wording_edit_cannot_slip_in_beside_an_extraction_being_enqueued
     )
     sessionmaker = get_sessionmaker()
     owner, project = await _committed_project(sessionmaker)
+    await _give_material(sessionmaker, project)
     async with sessionmaker() as seed:
         topic = await project_topics_repo.create(
             seed, project_id=project.id, title="Alpha", position=0
@@ -336,7 +347,7 @@ async def test_a_wording_edit_cannot_slip_in_beside_an_extraction_being_enqueued
 async def test_a_no_op_update_cannot_read_a_topic_from_another_project(db_session):
     owner, home = await _project(db_session)
     away = await projects_repo.create(
-        db_session, owner_id=owner.id, title="Elsewhere", source_type="topic"
+        db_session, owner_id=owner.id, title="Elsewhere", source_type="pdf"
     )
     [topic] = await _add(db_session, owner, home, "Photosynthesis")
 

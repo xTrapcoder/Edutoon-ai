@@ -122,14 +122,32 @@ def _headers(base: dict[str, str], key: str | None = None) -> dict[str, str]:
 # --- builders ---------------------------------------------------------------------------
 
 
-async def _create_project(client: httpx.AsyncClient, headers: dict[str, str]) -> str:
+_SESSION: list[Any] = []
+
+
+@pytest.fixture(autouse=True)
+def _remember_session(db_session):
+    """The session the API under test shares, so a project can be given source material."""
+    _SESSION[:] = [db_session]
+    yield
+    _SESSION.clear()
+
+
+async def _create_project(
+    client: httpx.AsyncClient, headers: dict[str, str], *, with_material: bool = True
+) -> str:
+    """A PDF project that already holds one parsed page: topic extraction needs material (a topic
+    with no document is not offered, so keywords alone are never enough)."""
     response = await client.post(
         "/v1/projects",
         json={"title": "How photosynthesis works", "source_type": "pdf"},
         headers=_headers(headers),
     )
     assert response.status_code == 201
-    return response.json()["id"]  # type: ignore[no-any-return]
+    project_id: str = response.json()["id"]
+    if with_material:
+        await _add_chunks(_SESSION[0], project_id, ["Plants make food from light."])
+    return project_id
 
 
 async def _add_keywords(
@@ -587,7 +605,7 @@ async def test_enqueue_extraction_requires_an_idempotency_key(client_factory, au
 async def test_enqueue_extraction_with_nothing_to_extract_from_is_400(client_factory, auth_headers):
     headers = auth_headers()
     async with client_factory() as client:
-        project_id = await _create_project(client, headers)
+        project_id = await _create_project(client, headers, with_material=False)
         response = await client.post(
             f"/v1/projects/{project_id}/topics/extraction", headers=_headers(headers)
         )
@@ -655,6 +673,9 @@ async def test_a_completed_extraction_needs_replace_to_run_again(
     async with client_factory() as client:
         project_id = await _create_project(client, headers)
         await _add_keywords(client, headers, project_id, ["Photosynthesis"])
+        from edutoon.repositories import source_chunks as source_chunks_repo
+
+        [chunk] = await source_chunks_repo.list_by_project_in_order(db_session, UUID(project_id))
         await client.post(f"/v1/projects/{project_id}/topics/extraction", headers=_headers(headers))
         job = await _run_pending_extraction(
             db_session,
@@ -667,7 +688,7 @@ async def test_a_completed_extraction_needs_replace_to_run_again(
                         "title": "Photosynthesis",
                         "summary": "",
                         "keywords": [],
-                        "evidence_chunk_ids": [],
+                        "evidence_chunk_ids": [str(chunk.id)],
                     },
                     {
                         "ref": "b",
@@ -675,7 +696,7 @@ async def test_a_completed_extraction_needs_replace_to_run_again(
                         "parent_ref": "a",
                         "summary": "",
                         "keywords": [],
-                        "evidence_chunk_ids": [],
+                        "evidence_chunk_ids": [str(chunk.id)],
                     },
                 ],
             ),
@@ -1127,63 +1148,6 @@ async def test_patch_wording_is_refused_while_an_extraction_is_in_flight_but_sta
 # =========================================================================================
 # End to end - keywords -> extraction -> outline
 # =========================================================================================
-
-
-async def test_keywords_only_flow_end_to_end(client_factory, auth_headers, db_session, monkeypatch):
-    """Add keywords, enqueue, let the job run with a mocked model, then read the
-    outline and the job result back through the API.
-    """
-    headers = auth_headers()
-    async with client_factory() as client:
-        project_id = await _create_project(client, headers)
-        [seed] = await _add_keywords(client, headers, project_id, ["Photosynthesis"])
-        enqueue = await client.post(
-            f"/v1/projects/{project_id}/topics/extraction", headers=_headers(headers)
-        )
-        job_id = enqueue.json()["id"]
-
-        llm = _fake_llm(
-            monkeypatch,
-            [
-                {
-                    "ref": "a",
-                    "title": "Photosynthesis",
-                    "seed_ref": seed["id"],
-                    "summary": "How plants turn light into sugar.",
-                    "keywords": ["light", "sugar"],
-                    "evidence_chunk_ids": [],
-                },
-                {
-                    "ref": "b",
-                    "title": "Light reactions",
-                    "parent_ref": "a",
-                    "summary": "",
-                    "keywords": [],
-                    "evidence_chunk_ids": [],
-                },
-            ],
-        )
-        job = await _run_pending_extraction(db_session, project_id, llm)
-        assert str(job.id) == job_id and job.status == "succeeded"
-
-        items = await _topics(client, headers, project_id)
-        jobs = await client.get(f"/v1/projects/{project_id}/jobs", headers=headers)
-
-    assert [(i["title"], i["origin"], i["depth"]) for i in items] == [
-        ("Photosynthesis", "user", 0),
-        ("Light reactions", "suggested", 1),
-    ]
-    assert items[0]["id"] == seed["id"]  # the user's own topic kept its identity
-    assert items[0]["summary"] == "How plants turn light into sugar."
-    assert items[0]["keywords"] == ["light", "sugar"]
-    assert items[1]["parent_id"] == seed["id"]
-    assert items[1]["evidence"] == []  # suggested: nothing in the material backs it
-
-    [job_body] = jobs.json()["items"]
-    assert job_body["status"] == "succeeded"
-    assert job_body["result"]["mode"] == "keywords"
-    assert job_body["result"]["topic_count"] == 2
-    assert job_body["result"]["truncated"] is False
 
 
 async def test_pdf_flow_end_to_end_cites_the_pages_it_used(

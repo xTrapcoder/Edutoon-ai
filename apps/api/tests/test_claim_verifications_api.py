@@ -927,7 +927,7 @@ async def test_a_general_knowledge_claim_is_listed_with_its_own_status_never_as_
     async with client_factory() as client:
         created = await client.post(
             "/v1/projects",
-            json={"title": "Machine learning", "source_type": "topic"},
+            json={"title": "Machine learning", "source_type": "pdf"},
             headers={**headers, "Idempotency-Key": "gk-list-1"},
         )
         project_id = created.json()["id"]

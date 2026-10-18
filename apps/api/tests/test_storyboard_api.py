@@ -137,7 +137,7 @@ def _storyboard_llm(scenes: list[dict]) -> LLM:
 
 
 async def _create_project(client: httpx.AsyncClient, headers: dict[str, str]) -> str:
-    body = {"title": "How photosynthesis works", "source_type": "topic"}
+    body = {"title": "How photosynthesis works", "source_type": "pdf"}
     response = await client.post("/v1/projects", json=body, headers=_headers(headers))
     assert response.status_code == 201, response.text
     return response.json()["id"]  # type: ignore[no-any-return]

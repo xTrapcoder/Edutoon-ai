@@ -1,6 +1,13 @@
 'use client';
 
-import { ClipboardPaste, FilePlus2, FileText, ListChecks, Presentation } from 'lucide-react';
+import {
+  ClipboardPaste,
+  FilePlus2,
+  FileText,
+  MessageSquareText,
+  Presentation,
+  ScanText,
+} from 'lucide-react';
 import { useId } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardBody, CardHeader } from '@/components/ui/card';
@@ -11,7 +18,7 @@ import { KeywordInput } from './keyword-input';
 import {
   fileKindOf,
   isModeAvailable,
-  KEYWORD_ONLY_UNSUPPORTED_MESSAGE,
+  MODE_UNAVAILABLE_MESSAGE,
   MAX_INSTRUCTIONS_CHARS,
   MAX_TEXT_CHARS,
   MAX_TITLE_CHARS,
@@ -21,6 +28,7 @@ import {
   usesFile,
   usesInstructions,
   usesKeywords,
+  usesOcr,
   usesText,
   type SourceErrors,
   type SourceMode,
@@ -62,17 +70,22 @@ const MODES: readonly {
     icon: ClipboardPaste,
   },
   {
-    value: 'keywords',
-    title: 'Topic only',
-    description:
-      "Name a topic - written from the AI's general knowledge, not checked against a document",
-    icon: ListChecks,
-  },
-  {
     value: 'both',
     title: 'PDF + Keywords',
     description: 'Upload a PDF and add keywords - a focused video on just those topics',
     icon: FilePlus2,
+  },
+  {
+    value: 'instructions',
+    title: 'PDF + Instructions',
+    description: 'Upload a PDF and say how you want it taught - audience, depth, pages or style',
+    icon: MessageSquareText,
+  },
+  {
+    value: 'scan',
+    title: 'Scanned PDF',
+    description: 'Upload a scan or photographed pages - the text is read locally by OCR',
+    icon: ScanText,
   },
 ];
 
@@ -141,13 +154,14 @@ export function SourceStep({
               ))}
             </div>
             <p className="text-[13px] text-ink-500">
-              {isModeAvailable('keywords')
-                ? "With a PDF, a PowerPoint deck or your own text, every claim in the video is checked against that material. With a topic only there is nothing to check against, so the lesson is written from the AI's general knowledge, those statements are marked as unchecked, and the video says so in its first sentence. With a PDF you can also add keywords to steer which topics it covers."
-                : 'With a PDF or your own text, every claim in the video is checked against that material. Add keywords to a PDF to focus the video on those topics; a keyword your PDF says nothing about is reported to you and left out, never invented.'}
+              With a PDF, a scan or your own text, every claim in the video is checked against that
+              material and nothing is added from outside. Add keywords to a PDF to focus the video
+              on those topics; a keyword your PDF says nothing about is reported to you and left
+              out, never invented.
             </p>
             {errors.mode ? (
               <p role="alert" className="text-[13px] font-medium text-danger-700">
-                {errors.mode || KEYWORD_ONLY_UNSUPPORTED_MESSAGE}
+                {errors.mode || MODE_UNAVAILABLE_MESSAGE}
               </p>
             ) : null}
 
@@ -167,6 +181,14 @@ export function SourceStep({
                     <p className="text-[13px] text-ink-500">
                       Each slide is read as it is - title, bullets, tables and speaker notes - and
                       explained as one connected lesson, in the order of your deck.
+                    </p>
+                  ) : null}
+                  {usesOcr(values.mode) ? (
+                    <p className="text-[13px] text-ink-500">
+                      Pages with no text of their own are read by OCR on this machine; nothing is
+                      sent elsewhere. Clear, upright, well-lit pages read best. Words that cannot be
+                      read are left out, never guessed, and a scan that cannot be read at all is
+                      refused with a reason.
                     </p>
                   ) : null}
                   <FileDropzone
@@ -221,12 +243,11 @@ export function SourceStep({
               {usesKeywords(values.mode) ? (
                 <section aria-labelledby={`${name}-keywords`} className="space-y-3">
                   <h3 id={`${name}-keywords`} className="text-sm font-semibold text-ink-950">
-                    {values.mode === 'both' ? 'Add keywords' : 'Your topic'}
+                    Add keywords
                   </h3>
                   <p className="text-[13px] text-ink-500">
-                    {values.mode === 'both'
-                      ? 'Topics you definitely want covered, taught from your PDF. A keyword your PDF says nothing about is reported to you, never taught as if the PDF said it.'
-                      : 'The subject you want explained, for example "Machine learning". We can suggest subtopics, which are clearly marked as not coming from a source.'}
+                    Topics you definitely want covered, taught from your PDF. A keyword your PDF
+                    says nothing about is reported to you, never taught as if the PDF said it.
                   </p>
                   <KeywordInput
                     keywords={values.keywords}
@@ -246,9 +267,9 @@ export function SourceStep({
         <Card>
           <CardBody>
             <Field
-              label="Instructions (optional)"
+              label="Instructions"
               error={errors.instructions}
-              hint={`Tell us how you want the lesson, in your own words - for example "Make it suitable for a beginner", "Explain the difficult concepts with simple examples" or "Focus on chapter 2". They guide the topics, the script and the scenes; they can never add a fact your source does not contain. ${values.instructions.trim().length.toLocaleString('en-GB')} of ${MAX_INSTRUCTIONS_CHARS.toLocaleString('en-GB')} characters.`}
+              hint={`Tell us how you want the lesson, in your own words - for example "Make it suitable for a beginner", "Explain the difficult concepts with simple examples" or "Focus only on pages 3 to 4". They guide the topics, the script and the scenes; they can never add a fact your source does not contain. ${values.instructions.trim().length.toLocaleString('en-GB')} of ${MAX_INSTRUCTIONS_CHARS.toLocaleString('en-GB')} characters.`}
             >
               {(control) => (
                 <Textarea

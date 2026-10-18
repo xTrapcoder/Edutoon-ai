@@ -19,21 +19,13 @@ export const MAX_TEXT_CHARS = 200_000;
 /** Mirrors `domain.instructions` in the API: the most instruction text it accepts. */
 export const MAX_INSTRUCTIONS_CHARS = 2_000;
 
-export type SourceMode = 'pdf' | 'pptx' | 'text' | 'keywords' | 'both';
+export type SourceMode = 'pdf' | 'pptx' | 'text' | 'both' | 'instructions' | 'scan';
 
-/**
- * A project can be built from a topic alone ("topic only"). With no document to check against, its
- * lesson rests on the AI's general knowledge: the API records those statements as exactly that
- * (never "supported"), and the video says so in its first sentence. If the server has the mode
- * switched off it refuses to create the project and says why (`KEYWORD_ONLY_UNSUPPORTED_MESSAGE`).
- * Dormant since the 2026-10-18 scope change: the mode is no longer offered (`lib/scope.ts`).
- */
-export const KEYWORD_ONLY_SUPPORTED = true;
+/** What a person is told when a mode is not offered. */
+export const MODE_UNAVAILABLE_MESSAGE =
+  'That way of making a video is not offered. Upload a PDF or paste your own text instead.';
 
-export const KEYWORD_ONLY_UNSUPPORTED_MESSAGE =
-  'Topic-only projects are not available on this server. Upload a PDF, a PowerPoint deck or paste your own text instead.';
-
-/** Whether the wizard offers a mode at all (`lib/scope.ts`): the three offered modes only. */
+/** Whether the wizard offers a mode at all (`lib/scope.ts`): the five offered modes only. */
 export const isModeAvailable = (mode: SourceMode): boolean => OFFERED_MODES.includes(mode);
 
 export interface WizardValues {
@@ -51,27 +43,28 @@ export interface WizardValues {
   language: Language;
 }
 
-export const usesPdf = (mode: SourceMode): boolean => mode === 'pdf' || mode === 'both';
+export const usesPdf = (mode: SourceMode): boolean =>
+  mode === 'pdf' || mode === 'both' || mode === 'instructions' || mode === 'scan';
 export const usesDeck = (mode: SourceMode): boolean => mode === 'pptx';
 /** Whether the project is made from an uploaded file (a PDF or a PowerPoint deck). */
 export const usesFile = (mode: SourceMode): boolean => usesPdf(mode) || usesDeck(mode);
-export const usesKeywords = (mode: SourceMode): boolean => mode === 'keywords' || mode === 'both';
+export const usesKeywords = (mode: SourceMode): boolean => mode === 'both';
 export const usesText = (mode: SourceMode): boolean => mode === 'text';
-/**
- * Whether the person may give instructions. A PowerPoint deck is turned into a lesson by fixed
- * rules from its own slides (no model writes it), so there is nothing for instructions to steer.
- */
+/** Whether the mode asks for instructions: "PDF + instructions" does, and needs them. */
 export const usesInstructions = (mode: SourceMode): boolean =>
-  INSTRUCTIONS_OFFERED && mode !== 'pptx';
+  INSTRUCTIONS_OFFERED && mode === 'instructions';
+
+/** Whether the mode is the scanned-PDF one, whose pages are read by local OCR. */
+export const usesOcr = (mode: SourceMode): boolean => mode === 'scan';
 
 /**
- * The API has three source types; "PDF + keywords" is a PDF project that also has keywords.
- * (Keywords for a PowerPoint deck are not offered yet.)
+ * The API has three source types the product uses; "PDF + keywords", "PDF + instructions" and
+ * "scanned PDF" are PDF projects (with keywords, with instructions, or read by OCR).
  */
 export function projectSourceType(mode: SourceMode): ProjectSourceType {
   if (mode === 'pptx') return 'pptx';
   if (mode === 'text') return 'text';
-  return mode === 'keywords' ? 'topic' : 'pdf';
+  return 'pdf';
 }
 
 export type FileKind = 'pdf' | 'pptx';
@@ -168,7 +161,7 @@ export interface SourceErrors {
   instructions?: string;
 }
 
-/** A readable problem with instruction text, or null if it is fine (it is optional). */
+/** A readable problem with instruction text, or null if it is fine (blank is checked separately). */
 export function instructionsProblem(text: string): string | null {
   const length = text.replace(/\s+/g, ' ').trim().length;
   return length > MAX_INSTRUCTIONS_CHARS
@@ -183,7 +176,7 @@ export function sourceErrors(values: WizardValues): SourceErrors {
   else if (title.length > MAX_TITLE_CHARS)
     errors.title = `Keep the name under ${MAX_TITLE_CHARS} characters.`;
 
-  if (!isModeAvailable(values.mode)) errors.mode = KEYWORD_ONLY_UNSUPPORTED_MESSAGE;
+  if (!isModeAvailable(values.mode)) errors.mode = MODE_UNAVAILABLE_MESSAGE;
 
   if (usesFile(values.mode)) {
     const kind = fileKindOf(values.mode);
@@ -200,14 +193,13 @@ export function sourceErrors(values: WizardValues): SourceErrors {
     if (problem) errors.text = problem;
   }
   if (usesKeywords(values.mode) && values.keywords.length === 0) {
-    errors.keywords =
-      values.mode === 'keywords'
-        ? 'Add the topic you want explained.'
-        : 'Add at least one keyword.';
+    errors.keywords = 'Add at least one keyword.';
   }
   if (usesInstructions(values.mode)) {
     const problem = instructionsProblem(values.instructions);
     if (problem) errors.instructions = problem;
+    else if (values.instructions.trim() === '')
+      errors.instructions = 'Say how you want the lesson, in your own words.';
   }
   return errors;
 }

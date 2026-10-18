@@ -9,9 +9,9 @@ Loosening the judge to keep a summary would let in other unsupported synthesis.
 
 So a script that does not already end in a closing gets a short fixed one that says nothing about
 the subject at all: that the lesson is over, and which topics it covered, in the words of the topic
-titles the owner accepted. Like the general-knowledge notice (``domain.general_knowledge``) it is
-code's sentence, free of figures and of anything a claim would need to back, and the script's own
-grounding rule allows it because it names only the project's and its topics' titles.
+titles the owner accepted. It is code's sentence, free of figures and of anything a claim would
+need to back, and the script's own grounding rule allows it because it names only the project's
+and its topics' titles.
 """
 
 from __future__ import annotations

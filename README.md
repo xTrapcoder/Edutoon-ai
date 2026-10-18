@@ -11,19 +11,19 @@ before relying on that.
 
 ## What you can make
 
-Exactly **three modes** are offered (scope decided 2026-10-18):
+Exactly **five modes** are offered (scope decided 2026-10-18; the wizard shows one card for each):
 
 | Mode | How | Notes |
 | --- | --- | --- |
-| **PDF -> video** | Upload | Text PDFs are read directly; a page with no text layer is read with local OCR (see below), as part of reading the PDF, not as a separate mode. |
-| **Pasted text -> video** | Paste (300 to 200,000 characters) | Topics are found from about 40,000 characters, sampled evenly; claims are checked against all of it. |
-| **PDF + keywords -> focused video** | Upload and type keywords | Each keyword becomes one of the lesson's topics, taught from the PDF. A keyword whose words the PDF never contains is reported as *not in your document*, left out of the lesson and never taught as if the PDF said it. |
+| **1. PDF -> video** | Upload a text-based PDF | Claims are checked against the PDF; a PDF with no readable text is refused with a reason. |
+| **2. Pasted text -> video** | Paste (300 to 200,000 characters) | Topics are found from about 40,000 characters, sampled evenly; claims are checked against all of it. |
+| **3. PDF + keywords -> focused video** | Upload and type keywords | Each keyword becomes one of the lesson's topics, taught from the PDF. A keyword whose words the PDF never contains is reported as *not in your document*, left out of the lesson and never taught as if the PDF said it. |
+| **4. PDF + instructions -> customised video** | Upload and describe how you want it taught | Audience, tone, depth, page range or chapter, focus (up to 2,000 characters). See "Instructions". Instructions can never add a fact. |
+| **5. Scanned PDF -> OCR -> video** | Upload a scan | Pages with no text layer are read on this machine by local OCR (RapidOCR); the project records the extraction method (`ocr`) and the number of OCR pages. A scan that cannot be read is refused with a reason, never guessed. |
 
-Three things that were built earlier are **switched off, not deleted**: *topic only* (a lesson from the
-model's general knowledge, `KEYWORD_ONLY_PROJECTS_ENABLED`), *PowerPoint decks* (`PPTX_PROJECTS_ENABLED`)
-and *free-text instructions* (`INSTRUCTIONS_ENABLED`). All three default to `false`; the API refuses them
-with a message that says what to do instead, and the web app does not offer them (`apps/web/lib/scope.ts`).
-Their code and tests remain, and a project that already has them keeps working.
+A topic with no document ("topic only") is **not offered and cannot be switched on**: the API refuses it
+with a 400 and the web app has no card for it. A PowerPoint-deck project is dormant: its code remains,
+`PPTX_PROJECTS_ENABLED` defaults to `false`, and the web app does not offer it.
 
 The pipeline for every mode: source, topics (you accept or reject), claims, script (you review and
 approve), narration, storyboard, video (MP4, at most 720p, 30 fps, 1 to 30 minutes).
@@ -62,11 +62,12 @@ set to *something* but a local backend never uses them. Useful switches:
 | `OCR_ENABLED` | `true` | Read scanned PDF pages with local OCR. |
 | `OCR_MAX_PAGES` | `30` | Most scanned pages read in one document (about 5 s a page). Longer scans are refused with a message, never half-read. |
 | `SCRIPT_SUPPORT_CHECK_ENABLED` | `true` | Judge every script sentence against the verified claims (see below). Costs minutes per script. |
-| `MAX_CLAIMS_PER_TOPIC` | `10` | How many facts one topic can carry; this is what limits a lesson's length. `4`, once recommended for small machines, caps every lesson hard: use `8` there. Set it in the process that runs the **worker**. |
+| `MAX_CLAIMS_PER_TOPIC` | `10` | How many facts one topic can carry; this is what limits a lesson's length. The development `apps/api/.env` sets `8` (the value every verification run used); `4` caps every lesson hard. The worker reads it from `apps/api/.env`; restart the worker after changing it. |
 | `SCRIPT_FIXED_CLOSING` | `true` | A script that does not end in a closing gets a fixed one naming the topics it covered. |
 | `SCRIPT_FALLBACK_TO_CLAIMS` | `true` | A topic whose wording cannot be supported is read out as its verified claims instead of failing the script. |
 | `STORYBOARD_FALLBACK_TO_TEXT` | `true` | A segment whose scene text cannot be grounded gets one bullet scene made of its own narration instead of failing. |
-| `KEYWORD_ONLY_PROJECTS_ENABLED` / `PPTX_PROJECTS_ENABLED` / `INSTRUCTIONS_ENABLED` | `false` | The three modes outside the offered scope (topic only, PowerPoint decks, free-text instructions). Off by default; the code and its tests remain. |
+| `PPTX_PROJECTS_ENABLED` | `false` | PowerPoint-deck projects (dormant, not one of the five modes). |
+| `INSTRUCTIONS_ENABLED` | `true` | Free-text instructions (mode 4). Set `false` to refuse them. |
 
 Sign-in uses Clerk (`apps/web/.env.local`). To try the product without Clerk, development only:
 
@@ -104,9 +105,7 @@ Be exact about this when you demo it:
    can still miss an error or remove a fair sentence.
 4. **Nothing here is a human review.** Narration quality has not been listened to by a person.
 
-## Instructions (switched off)
-
-Free-text instructions are outside the offered scope since 2026-10-18 (`INSTRUCTIONS_ENABLED=false`); to focus a lesson, use PDF + keywords. What follows describes the dormant feature.
+## Instructions (mode 4)
 
 Free text, up to 2,000 characters, kept on the project. Audience, tone, a page range or chapter and
 focus terms are understood by fixed rules and applied in code; definitions and simple examples are passed

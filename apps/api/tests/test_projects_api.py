@@ -96,7 +96,7 @@ async def client_factory(db_session) -> AsyncIterator[Callable[[], httpx.AsyncCl
 
 
 def _create_payload(**overrides: object) -> dict[str, object]:
-    payload: dict[str, object] = {"title": "My video", "source_type": "topic"}
+    payload: dict[str, object] = {"title": "My video", "source_type": "pdf"}
     payload.update(overrides)
     return payload
 
@@ -116,7 +116,7 @@ async def test_create_get_list_update_delete_round_trip(client_factory, auth_hea
         assert create_resp.status_code == 201
         created = create_resp.json()
         assert created["title"] == "My video"
-        assert created["source_type"] == "topic"
+        assert created["source_type"] == "pdf"
         assert created["status"] == "draft"
         assert created["language"] == "en-IN"
         project_id = created["id"]

@@ -46,7 +46,7 @@ KIND = "extract_topics"
 async def _project(db_session):
     owner = await users_repo.create(db_session, email=f"{uuid4()}@example.com")
     project = await projects_repo.create(
-        db_session, owner_id=owner.id, title="Photosynthesis", source_type="topic"
+        db_session, owner_id=owner.id, title="Photosynthesis", source_type="pdf"
     )
     return owner, project
 
@@ -107,6 +107,9 @@ async def test_an_abandoned_extraction_no_longer_blocks_adding_keywords(db_sessi
 async def test_an_abandoned_extraction_no_longer_blocks_a_new_extraction(db_session):
     owner, project = await _project(db_session)
     await project_topics_repo.create(db_session, project_id=project.id, title="Cells")
+    from tests.test_services_topic_extraction import _add_chunks
+
+    await _add_chunks(db_session, project, ["Cells are the unit of life."])
     stale = await _job(db_session, project)
 
     fresh = await service.enqueue_topic_extraction(
@@ -252,7 +255,7 @@ async def test_finished_jobs_are_left_exactly_as_they_are(db_session, status):
 async def test_only_extraction_jobs_of_this_project_are_recovered(db_session):
     owner, project = await _project(db_session)
     other = await projects_repo.create(
-        db_session, owner_id=owner.id, title="Elsewhere", source_type="topic"
+        db_session, owner_id=owner.id, title="Elsewhere", source_type="pdf"
     )
     script_job = await _job(db_session, project, kind="generate_script")
     evidence_job = await _job(db_session, project, kind="build_evidence")
@@ -304,7 +307,7 @@ async def _committed_running_job():
     async with sessionmaker() as setup:
         owner = await users_repo.create(setup, email=f"{uuid4()}@example.com")
         project = await projects_repo.create(
-            setup, owner_id=owner.id, title="Race", source_type="topic"
+            setup, owner_id=owner.id, title="Race", source_type="pdf"
         )
         await project_topics_repo.create(setup, project_id=project.id, title="Cells")
         job = await _job(setup, project)

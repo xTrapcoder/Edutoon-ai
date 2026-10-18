@@ -93,7 +93,6 @@ from edutoon.core.errors import (
     ValidationError,
 )
 from edutoon.core.pagination import DEFAULT_PAGE_SIZE, Page
-from edutoon.domain import general_knowledge as general_knowledge_domain
 from edutoon.domain.claim_dedupe import ClaimRef, TopicClaims, dedupe_claims_across_topics
 from edutoon.domain.evidence_sufficiency import (
     EvidenceAssessment,
@@ -150,7 +149,6 @@ from edutoon.repositories.project_topics import ProjectTopicRecord
 from edutoon.repositories.scripts import ScriptRecord, ScriptSegmentRecord
 from edutoon.services import audit_logs as audit_logs_service
 from edutoon.services import claim_backing as claim_backing_service
-from edutoon.services import general_knowledge as general_knowledge_service
 from edutoon.services import instructions as instructions_service
 from edutoon.services import keyword_coverage as keyword_coverage_service
 from edutoon.services import projects as projects_service
@@ -280,23 +278,17 @@ async def enqueue_script_generation(
 
     missing_evidence: list[str] = []
     supported_counts: list[int] = []
-    general_knowledge = await general_knowledge_service.applies_to(session, project)
     # A keyword the document never mentions can still have "supported" statements: they are judged
     # against the nearest passages, so they describe neighbouring topics. That is not evidence for
     # the keyword (see domain.keyword_coverage), so such a topic counts as having none.
-    uncovered_keywords = (
-        {}
-        if general_knowledge
-        else await keyword_coverage_service.uncovered_keyword_terms(
-            session, project_id=project_id, topics=eligible
-        )
+    uncovered_keywords = await keyword_coverage_service.uncovered_keyword_terms(
+        session, project_id=project_id, topics=eligible
     )
     for topic in eligible:
         supported = await claim_verifications_repo.list_supported_by_topic(
             session,
             project_id=project_id,
             topic_id=topic.id,
-            include_general_knowledge=general_knowledge,
         )
         if topic.id in uncovered_keywords:
             supported = []
@@ -765,19 +757,6 @@ def _corrections_for(
                 "connective and cite nothing - never cite a claim the passage does not state."
             )
     return lines
-
-
-def _general_knowledge_notice(topic_id: UUID, settings: Settings) -> ScriptSegmentDraft:
-    """The fixed opening segment of a lesson based on general knowledge."""
-    words = len(general_knowledge_domain.LESSON_NOTICE.split())
-    return ScriptSegmentDraft(
-        segment_index=0,
-        narration_text=general_knowledge_domain.LESSON_NOTICE,
-        claim_ids=[],
-        estimated_duration_ms=round(words / settings.SCRIPT_WORDS_PER_MINUTE * 60_000),
-        connective=True,
-        topic_id=topic_id,
-    )
 
 
 def _closing_segment(
@@ -1331,13 +1310,11 @@ async def _generate_and_attach(
 
     claims_by_topic: dict[UUID, list[ClaimVerificationRecord]] = {}
     claims_left_out_unbacked = 0
-    general_knowledge = await general_knowledge_service.applies_to(session, project)
     for topic in topics:
         supported = await claim_verifications_repo.list_supported_by_topic(
             session,
             project_id=project_id,
             topic_id=topic.id,
-            include_general_knowledge=general_knowledge,
         )
         backed = await claim_backing_service.keep_backed_claims(
             session, project_id=project_id, claims=supported
@@ -1408,7 +1385,6 @@ async def _generate_and_attach(
         audience=audience,
         tone=tone,
         instructions=instructions_service.prompt_block(project),
-        general_knowledge=general_knowledge,
     )
     outline_topics = [
         OutlineTopicBrief(
@@ -1535,10 +1511,6 @@ async def _generate_and_attach(
         sessionmaker, job_id=job_id, base_payload=payload, stage="validating_provenance"
     )
 
-    if general_knowledge:
-        # A lesson that rests on general knowledge says so aloud before anything else. The
-        # sentence is fixed text (``domain.general_knowledge``), never written by the model.
-        segments = [_general_knowledge_notice(topics[0].id, settings), *segments]
     # A lesson ends. The writer's own closing is often a synthesis no single claim states, which the
     # support check rightly removes, so a script that does not end in one gets a fixed closing that
     # names the topics it covered and asserts nothing else (domain.script_closing).
@@ -1626,9 +1598,6 @@ async def _generate_and_attach(
         # Cited segments whose cited claims cover little of their wording: for the reviewer's
         # second look, never a rejection (an analogy legitimately adds words).
         "weak_citation_segments": weak_citations,
-        # True when the lesson rests on the model's general knowledge (a keyword-only project): its
-        # claims were never checked against a document, and the script opens by saying so.
-        "general_knowledge": general_knowledge,
         # The sentence-level support check (``domain.narration_support``): how many sentences were
         # judged against the verified claims, which were taken out and why, and how many could not
         # be judged. ``None`` when the check is switched off.

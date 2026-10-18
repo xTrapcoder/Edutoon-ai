@@ -542,9 +542,6 @@ class ScriptBrief:
     # The owner's own instructions, already rendered as a prompt block
     # (``domain.instructions.render_for_prompt``); ``None`` when there are none.
     instructions: str | None = None
-    # The claims are the model's own general knowledge (a keyword-only project), not checked
-    # against any document.
-    general_knowledge: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -697,12 +694,6 @@ def _format_script_brief(brief: ScriptBrief) -> list[str]:
         lines.append(f"Audience: {brief.audience}")
     if brief.tone:
         lines.append(f"Tone: {brief.tone}")
-    if brief.general_knowledge:
-        lines.append(
-            "Material: the claims are general knowledge, not checked against any document, and "
-            "the lesson tells its learners so. Keep to plain, widely accepted statements; do not "
-            "add figures, dates, names or examples that a claim does not contain."
-        )
     if brief.instructions:
         lines.append(brief.instructions)
     return lines

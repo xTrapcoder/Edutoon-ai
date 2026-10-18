@@ -131,7 +131,7 @@ async def _project_with_storyboard(
 ) -> tuple[Built, str, str]:
     response = await client.post(
         "/v1/projects",
-        json={"title": "How photosynthesis works", "source_type": "topic"},
+        json={"title": "How photosynthesis works", "source_type": "pdf"},
         headers=_headers(headers),
     )
     assert response.status_code == 201, response.text
@@ -307,7 +307,7 @@ async def test_a_storyboard_that_is_not_ready_is_refused_with_a_message_that_say
     async with client_factory() as client:
         response = await client.post(
             "/v1/projects",
-            json={"title": "T", "source_type": "topic"},
+            json={"title": "T", "source_type": "pdf"},
             headers=_headers(headers),
         )
         project_id = response.json()["id"]

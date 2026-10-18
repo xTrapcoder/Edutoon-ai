@@ -439,72 +439,9 @@ async def test_a_job_that_finds_nothing_to_extract_at_run_time_fails_cleanly(
 # --- keywords only ---------------------------------------------------------------------
 
 
-async def test_keywords_only_keeps_the_users_topics_and_adds_unverified_suggestions(
-    db_session, monkeypatch
-):
-    owner, project = await _project(db_session, source_type="topic")
-    photosynthesis = await _add_seed(db_session, project, "Photosynthesis", position=0)
-    respiration = await _add_seed(db_session, project, "Respiration", position=1)
-    llm, _ = _fake_llm(
-        monkeypatch,
-        [
-            # The model rewords the user's topic and cites something it made up.
-            _topic(
-                "t1",
-                "Photosynthesis!!",
-                summary="How plants make food.",
-                keywords=("light", "glucose"),
-                evidence=(uuid4(),),
-                seed=photosynthesis.id,
-            ),
-            _topic("t2", "Light reactions", parent="t1", evidence=(uuid4(),)),
-            _topic("t3", "Calvin cycle", parent="t1"),
-        ],
-    )
-
-    job = await _extract(db_session, llm, owner, project)
-
-    assert job.status == "succeeded"
-    assert (job.result["mode"], job.result["chunks_total"], job.result["truncated"]) == (
-        "keywords",
-        0,
-        False,
-    )
-    topics = {t.title: t for t in await _topics(db_session, project)}
-    assert set(topics) == {"Photosynthesis", "Respiration", "Light reactions", "Calvin cycle"}
-    # The user's topics: same rows, same wording, still theirs.
-    assert topics["Photosynthesis"].id == photosynthesis.id
-    assert topics["Respiration"].id == respiration.id
-    assert {topics["Photosynthesis"].origin, topics["Respiration"].origin} == {"user"}
-    assert topics["Photosynthesis"].status == "accepted"
-    # ...enriched, never rewritten.
-    assert topics["Photosynthesis"].summary == "How plants make food."
-    assert topics["Photosynthesis"].keywords == ["light", "glucose"]
-    # Suggestions: unverified, so no evidence anywhere.
-    for title in ("Light reactions", "Calvin cycle"):
-        assert topics[title].origin == "suggested"
-        assert topics[title].parent_id == photosynthesis.id
-        assert topics[title].depth == 1
-    evidence = await topic_citations_repo.list_evidence_for_topics(
-        db_session, project_id=project.id, topic_ids=[t.id for t in topics.values()]
-    )
-    assert evidence == {}
-
-
-async def test_keywords_only_needs_no_pdf_chunks(db_session, monkeypatch):
-    owner, project = await _project(db_session, source_type="topic")
-    await _add_seed(db_session, project, "Photosynthesis", position=0)
-    llm, create = _fake_llm(monkeypatch, [])
-
-    job = await _extract(db_session, llm, owner, project)
-
-    assert job.status == "succeeded"
-    assert "Passages:" not in _user_message(create)
-    assert job.result["topic_count"] == 1  # just the user's own topic, kept
-
-
 async def test_a_users_own_summary_and_keywords_are_never_overwritten(db_session, monkeypatch):
-    owner, project = await _project(db_session, source_type="topic")
+    owner, project = await _project(db_session, source_type="pdf")
+    await _add_chunks(db_session, project, ["Plants make food from light."])
     seed = await _add_seed(
         db_session,
         project,
@@ -525,12 +462,13 @@ async def test_a_users_own_summary_and_keywords_are_never_overwritten(db_session
 
 
 async def test_a_rejected_user_topic_is_neither_offered_nor_expanded(db_session, monkeypatch):
-    owner, project = await _project(db_session, source_type="topic")
+    owner, project = await _project(db_session, source_type="pdf")
+    [chunk] = await _add_chunks(db_session, project, ["Plants make food from light."])
     kept = await _add_seed(db_session, project, "Photosynthesis", position=0)
     rejected = await _add_seed(
         db_session, project, "Dropped by the user", position=1, status="rejected"
     )
-    llm, create = _fake_llm(monkeypatch, [_topic("t1", "New idea")])
+    llm, create = _fake_llm(monkeypatch, [_topic("t1", "New idea", evidence=(chunk.id,))])
 
     job = await _extract(db_session, llm, owner, project)
 
@@ -877,7 +815,8 @@ async def test_a_first_extraction_may_legitimately_add_nothing_to_the_users_topi
     """The guard above only protects an existing derived set: with none to lose,
     "just the user's own topics" is a fine result.
     """
-    owner, project = await _project(db_session, source_type="topic")
+    owner, project = await _project(db_session, source_type="pdf")
+    await _add_chunks(db_session, project, ["Plants make food from light."])
     await _add_seed(db_session, project, "Photosynthesis", position=0)
     llm, _ = _fake_llm(monkeypatch, [])
 
@@ -924,7 +863,8 @@ async def test_a_persistence_failure_rolls_back_everything_including_the_deletio
 
 
 async def test_a_failed_first_extraction_leaves_the_users_topics_untouched(db_session, monkeypatch):
-    owner, project = await _project(db_session, source_type="topic")
+    owner, project = await _project(db_session, source_type="pdf")
+    await _add_chunks(db_session, project, ["Plants make food from light."])
     seed = await _add_seed(db_session, project, "Photosynthesis", position=0)
     before = await _snapshot(db_session, project)
 
@@ -1198,8 +1138,9 @@ async def test_two_simultaneous_enqueues_cannot_both_pass_the_active_check(monke
     async with sessionmaker() as setup:
         owner = await users_repo.create(setup, email=f"{uuid4()}@example.com")
         project = await projects_repo.create(
-            setup, owner_id=owner.id, title="Race", source_type="topic"
+            setup, owner_id=owner.id, title="Race", source_type="pdf"
         )
+        await _add_chunks(setup, project, ["Plants make food from light."])
         await _add_seed(setup, project, "Photosynthesis", position=0)
         await setup.commit()
 

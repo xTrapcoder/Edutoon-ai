@@ -208,7 +208,7 @@ async def enqueue_topic_extraction(
         )
     except NoTopicInputError as exc:
         raise ValidationError(str(exc)) from exc
-    if mode == MODE_KEYWORDS and not get_settings().KEYWORD_ONLY_PROJECTS_ENABLED:
+    if mode == MODE_KEYWORDS:
         raise ValidationError(KEYWORD_ONLY_UNSUPPORTED)
 
     await _check_replace_rules(session, project_id, topics=topics, replace=replace)
@@ -407,7 +407,7 @@ async def _extract_and_persist(
         mode = resolve_input_mode(has_passages=bool(chunks), has_seeds=bool(seeds))
     except NoTopicInputError as exc:
         raise ValidationError(str(exc)) from exc
-    if mode == MODE_KEYWORDS and not settings.KEYWORD_ONLY_PROJECTS_ENABLED:
+    if mode == MODE_KEYWORDS:
         # Defence in depth: enqueue refused this, but the project can change while a job waits.
         raise ValidationError(KEYWORD_ONLY_UNSUPPORTED)
 

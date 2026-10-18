@@ -39,7 +39,6 @@ _TEST_ENV = {
     # Keyword-only projects are off in production (test_keyword_only_disabled.py holds that). Many
     # older tests build a project the quickest way - source_type "topic" - to test something else,
     # so they run with the mode on; the tests about the mode being off turn it off again.
-    "KEYWORD_ONLY_PROJECTS_ENABLED": "true",
     # Likewise the two other modes taken out of the offered scope on 2026-10-18 (PowerPoint decks
     # and instructions): their code stays and stays tested, so the suite runs with them on;
     # test_offered_scope.py holds the defaults (off) and the refusals.

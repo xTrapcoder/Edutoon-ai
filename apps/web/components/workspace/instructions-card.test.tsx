@@ -8,9 +8,9 @@ import { API, server } from '@/test/server';
 import { InstructionsCard } from './instructions-card';
 
 vi.mock('@/lib/scope', () => ({
-  // These tests exercise the dormant modes and instructions, so they run with everything offered;
+  // These tests exercise the dormant PowerPoint mode too, so they run with every mode offered;
   // scope.test.tsx holds the real defaults.
-  OFFERED_MODES: ['pdf', 'pptx', 'text', 'keywords', 'both'],
+  OFFERED_MODES: ['pdf', 'pptx', 'text', 'both', 'instructions', 'scan'],
   INSTRUCTIONS_OFFERED: true,
 }));
 

@@ -21,8 +21,9 @@ const MODE_LABEL = {
   pdf: 'PDF document',
   pptx: 'PowerPoint deck',
   text: 'Pasted text',
-  keywords: 'Topic only',
   both: 'PDF + Keywords',
+  instructions: 'PDF + Instructions',
+  scan: 'Scanned PDF (read by OCR)',
 } as const;
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
@@ -57,16 +58,8 @@ export function ReviewSummary({ values }: { values: WizardValues }) {
               <span className="font-normal text-ink-500">(every claim is checked against it)</span>
             </Row>
           ) : null}
-          {values.mode === 'keywords' ? (
-            <Row label="Checking">
-              <span className="font-normal text-ink-700">
-                Nothing is checked against a document: the lesson is written from the AI&apos;s
-                general knowledge, and the video says so in its first sentence.
-              </span>
-            </Row>
-          ) : null}
           {usesKeywords(values.mode) ? (
-            <Row label={values.mode === 'keywords' ? 'Topics' : 'Keywords'}>
+            <Row label="Keywords">
               <ul className="flex flex-wrap gap-1.5">
                 {values.keywords.map((keyword) => (
                   <li

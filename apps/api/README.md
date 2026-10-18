@@ -1596,15 +1596,15 @@ chunks, and is not queued for indexing; a source's `failure_reason` (derived, no
 could not be read, was too long, or had no text. The whole file is still held in memory while it is
 stored and parsed (up to 100 MB): streaming it is future work.
 
-### Keyword-only (topic-only) projects - superseded, now on by default
+### Keyword-only (topic-only) projects - removed
 
-**Superseded 2026-10-17.** This section described the mode as switched off (a keyword-only project cannot
-produce a verified script). It has since been reinstated as a separate, labelled mode - see "Topic-only
-lessons" below: the claims are `general_knowledge`, the script opens with a spoken notice, the UI labels it, and
-the mode was run end to end on the local model before the default was flipped.
-`KEYWORD_ONLY_PROJECTS_ENABLED=false` still refuses it exactly as described here (creating one is a 400, a
-keyword-only topic extraction is refused at enqueue and again when the job runs). PDF projects, with or
-without keywords, are unaffected either way.
+Removed 2026-10-18 (owner's scope decision: exactly five modes, all grounded in a document or pasted text).
+There is no setting: creating a `topic` project is a 400, and a topic extraction with keywords and no parsed
+material is refused at enqueue and again when the job runs (`domain.topic.KEYWORD_ONLY_UNSUPPORTED`). The
+general-knowledge claim path (`services/general_knowledge`, the spoken notice, `include_general_knowledge`)
+was deleted. Projects of that kind that already exist stay listed and their old `general_knowledge` claims
+stay readable (migration 0022's status remains allowed), but they cannot progress. PDF and pasted-text
+projects, with or without keywords, are unaffected.
 
 ### Duration: any length, up to what can actually be made
 
@@ -1765,12 +1765,6 @@ verified claims are read out as they stand (`SCRIPT_FALLBACK_TO_CLAIMS`, on by d
 Everything is recorded on the job's `result["support_check"]` (judged, second opinions, unchecked, removed
 sentences with reasons, fallback sections) and shown on the script page. `SCRIPT_SUPPORT_CHECK_ENABLED=false`
 turns the judge off; it adds one to two local-model calls per sentence (minutes per script).
-
-**Topic-only lessons.** With `KEYWORD_ONLY_PROJECTS_ENABLED=true` (the default) a `topic` project may be built from keywords
-alone. Its claims are recorded `general_knowledge` (never `supported`, never cited), the writer is told so, the
-script opens with the fixed spoken notice `domain.general_knowledge.LESSON_NOTICE`, and the UI labels the lesson.
-`services/general_knowledge.applies_to` decides when this applies; a topic project that has source material
-verifies against it instead.
 
 ### Why a video can be shorter than its target
 

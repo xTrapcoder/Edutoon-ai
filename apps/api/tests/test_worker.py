@@ -580,7 +580,7 @@ async def test_process_one_job_runs_the_synthesise_voice_handler(db_session, wor
     """
     owner = await users_repo.create(db_session, email=f"{uuid4()}@example.com")
     project = await projects_repo.create(
-        db_session, owner_id=owner.id, title="P", source_type="topic"
+        db_session, owner_id=owner.id, title="P", source_type="pdf"
     )
     script = await scripts_repo.create(db_session, project_id=project.id, llm_model=LLM_MODEL)
     await scripts_repo.add_segments(
@@ -663,7 +663,7 @@ async def test_process_one_job_runs_the_generate_storyboard_handler(
     """
     owner = await users_repo.create(db_session, email=f"{uuid4()}@example.com")
     project = await projects_repo.create(
-        db_session, owner_id=owner.id, title="P", source_type="topic"
+        db_session, owner_id=owner.id, title="P", source_type="pdf"
     )
     script = await scripts_repo.create(db_session, project_id=project.id, llm_model=LLM_MODEL)
     [segment] = await scripts_repo.add_segments(
@@ -741,6 +741,27 @@ async def _project_with_a_user_topic(db_session: AsyncSession):
     seed = await project_topics_repo.create(
         db_session, project_id=project.id, title="Photosynthesis", status="accepted"
     )
+    # A topic with no document is not offered: the project holds one parsed page.
+    source = await uploaded_sources_repo.create(
+        db_session,
+        project_id=project.id,
+        original_filename="notes.pdf",
+        storage_bucket=UPLOADS_BUCKET,
+        storage_key=f"{project.id}/{uuid4()}.pdf",
+        byte_size=1024,
+        checksum_sha256=uuid4().hex + uuid4().hex[:32],
+    )
+    await source_chunks_repo.create_many(
+        db_session,
+        [
+            NewSourceChunk(
+                source_id=source.id,
+                project_id=project.id,
+                chunk_index=0,
+                content="Plants make food from light.",
+            )
+        ],
+    )
     return project, seed
 
 
@@ -760,6 +781,7 @@ async def test_process_one_job_runs_the_extract_topics_handler(
     db_session, worker_sessionmaker, monkeypatch
 ):
     project, seed = await _project_with_a_user_topic(db_session)
+    [chunk] = await source_chunks_repo.list_by_project_in_order(db_session, project.id)
     enqueued = await topic_extraction_service.enqueue_topic_extraction(
         db_session, project_id=project.id, owner_id=project.owner_id, idempotency_key="k"
     )
@@ -782,7 +804,7 @@ async def test_process_one_job_runs_the_extract_topics_handler(
                 "parent_ref": "t1",
                 "summary": "",
                 "keywords": [],
-                "evidence_chunk_ids": [],
+                "evidence_chunk_ids": [str(chunk.id)],
             },
         ],
     )
@@ -802,10 +824,10 @@ async def test_process_one_job_runs_the_extract_topics_handler(
     assert finished.status == "succeeded"
     assert finished.result == {
         "instructions": [],
-        "mode": "keywords",
+        "mode": "pdf_keywords",
         "topic_count": 2,
-        "chunks_total": 0,
-        "chunks_used": 0,
+        "chunks_total": 1,
+        "chunks_used": 1,
         "truncated": False,
         "dropped_uncited": 0,
         "dropped_over_limit": 0,
@@ -818,7 +840,7 @@ async def test_process_one_job_runs_the_extract_topics_handler(
     stored = await project_topics_repo.list_all_by_project(db_session, project.id)
     topics = {t.title: t for t in stored}
     assert topics["Light reactions"].parent_id == seed.id
-    assert topics["Light reactions"].origin == "suggested"
+    assert topics["Light reactions"].origin == "source"
 
 
 async def test_process_one_job_marks_extract_topics_failed_on_a_provider_error(

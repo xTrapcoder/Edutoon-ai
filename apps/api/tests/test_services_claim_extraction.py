@@ -330,50 +330,6 @@ async def _run(db_session, llm, embeddings, *, project_id, replace: bool = False
     return await service.run_extract_claims_job(db_session, embeddings, llm, job_id=job.id)
 
 
-async def test_a_keyword_only_topic_with_no_material_is_recorded_as_general_knowledge(
-    db_session, monkeypatch
-):
-    """Nothing to verify against: the claim is the model's general knowledge, recorded as exactly
-    that - never "supported", never cited - and neither the embedding nor the judge is called."""
-    owner, project = await _project(db_session, source_type="topic")
-    topic = await _accepted_keyword_topic(db_session, project)
-    llm, create = _claims_llm(
-        monkeypatch, [["Photosynthesis converts light into chemical energy."]]
-    )
-    embeddings = _fake_embeddings(monkeypatch)
-    embed = AsyncMock(side_effect=AssertionError("a general-knowledge claim is never embedded"))
-    monkeypatch.setattr(embeddings, "embed", embed)
-
-    finished = await _run(db_session, llm, embeddings, project_id=project.id)
-
-    assert finished.status == "succeeded"
-    assert finished.result["topics_processed"] == 1
-    assert finished.result["candidates_generated"] == 1
-    assert finished.result["claims_verified"] == 1
-    assert finished.result["claims_by_status"] == {"general_knowledge": 1}
-
-    [claim] = (
-        await claim_verifications_repo.list_by_project(db_session, project.id, topic_id=topic.id)
-    ).items
-    assert claim.claim_text == "Photosynthesis converts light into chemical energy."
-    assert claim.status == "general_knowledge"
-    assert claim.topic_id == topic.id
-    assert claim.embedding_model == "none"
-    assert claim.rationale is not None and "not checked" in claim.rationale
-    assert await claim_verifications_repo.list_citations(db_session, claim.id) == []
-    # Only submit_claims ran: there was nothing to judge against.
-    assert create.await_count == 1
-    embed.assert_not_awaited()
-
-    # A script may rest on it only for a keyword-only project, and only when asked to.
-    kwargs = {"project_id": project.id, "topic_id": topic.id}
-    assert await claim_verifications_repo.list_supported_by_topic(db_session, **kwargs) == []
-    [usable] = await claim_verifications_repo.list_supported_by_topic(
-        db_session, **kwargs, include_general_knowledge=True
-    )
-    assert usable.id == claim.id
-
-
 async def test_a_pdf_project_with_no_indexed_material_still_verifies_unsupported(
     db_session, monkeypatch
 ):
@@ -640,7 +596,7 @@ async def test_every_topic_failing_marks_the_whole_job_failed(db_session, monkey
 async def test_injected_instruction_text_in_a_candidate_is_stored_as_ordinary_untrusted_text(
     db_session, monkeypatch
 ):
-    owner, project = await _project(db_session, source_type="topic")
+    owner, project = await _project(db_session, source_type="pdf")
     topic = await project_topics_repo.create(
         db_session,
         project_id=project.id,
@@ -660,10 +616,9 @@ async def test_injected_instruction_text_in_a_candidate_is_stored_as_ordinary_un
         await claim_verifications_repo.list_by_project(db_session, project.id, topic_id=topic.id)
     ).items
     # The injected text became nothing but the claim's own text. With no material to verify
-    # against it is recorded as general knowledge - never auto-marked "supported" by anything it
-    # said about itself.
+    # against it is never auto-marked "supported" by anything it said about itself.
     assert claim.claim_text == injected
-    assert claim.status == "general_knowledge"
+    assert claim.status != "supported"
 
 
 # --- token usage: extraction and judging are recorded apart ---------------------------------

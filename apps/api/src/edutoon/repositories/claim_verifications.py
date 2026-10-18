@@ -275,7 +275,6 @@ async def list_supported_by_topic(
     *,
     project_id: UUID,
     topic_id: UUID,
-    include_general_knowledge: bool = False,
 ) -> list[ClaimVerificationRecord]:
     """Every ``status='supported'`` verification extracted for ``topic_id``,
     oldest first - the pool one Phase 7 section is allowed to cite. Project-
@@ -285,19 +284,14 @@ async def list_supported_by_topic(
     Deliberately strict, like :func:`list_supported_by_project`:
     ``partially_supported`` is not included, and a hand-typed claim (whose
     ``topic_id`` is always ``NULL``) never appears here - it belongs to no
-    topic's section. ``include_general_knowledge`` is set only for a keyword-only project
-    (``domain.general_knowledge``), whose claims have no source and so can never be ``supported``;
-    a project with source material never sets it.
+    topic's section.
     """
-    statuses = ["supported"]
-    if include_general_knowledge:
-        statuses.append("general_knowledge")
     stmt = (
         select(claim_verifications)
         .where(
             claim_verifications.c.project_id == project_id,
             claim_verifications.c.topic_id == topic_id,
-            claim_verifications.c.status.in_(statuses),
+            claim_verifications.c.status == "supported",
         )
         .order_by(claim_verifications.c.created_at.asc(), claim_verifications.c.id.asc())
     )
