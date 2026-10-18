@@ -160,6 +160,17 @@ describe('derivePipeline', () => {
     expect(statuses(stages).script).toBe('blocked');
   });
 
+  it('counts general-knowledge statements of a topic-only lesson as done, and says what they are', () => {
+    const stages = pipeline({
+      claims: [claim({ status: 'general_knowledge' }), claim({ status: 'general_knowledge' })],
+    });
+    expect(statuses(stages).claims).toBe('completed');
+    expect(stages.find((stage) => stage.id === 'claims')?.detail).toBe(
+      '2 statements from general knowledge · not checked against a document',
+    );
+    expect(statuses(stages).script).toBe('pending');
+  });
+
   it('holds narration back until the script is approved', () => {
     const draft = pipeline({ scripts: [script({ status: 'draft' })] });
     expect(statuses(draft).script).toBe('pending');

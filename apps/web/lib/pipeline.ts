@@ -209,6 +209,13 @@ function claimsOutcome(input: PipelineInput, topicsStage: Outcome): Outcome {
       `${pluralise(counts.total, 'claim')} checked · ${counts.supported} supported`,
     );
   }
+  if (counts.generalKnowledge > 0) {
+    // A topic-only lesson has no document: its statements are general knowledge, never "supported".
+    return outcome(
+      'completed',
+      `${pluralise(counts.generalKnowledge, 'statement')} from general knowledge · not checked against a document`,
+    );
+  }
   if (topicsStage.status !== 'completed') return blocked('Topics must be extracted first.');
   if (extraction?.status === 'failed' && counts.total === 0) {
     return outcome('failed', 'Verification did not finish');
