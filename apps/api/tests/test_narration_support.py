@@ -342,3 +342,47 @@ def test_a_contradicting_sentence_is_replaced_by_the_true_claim_never_kept() -> 
 
 def test_a_short_claim_is_never_restated_by_a_sentence_that_merely_mentions_it() -> None:
     assert ns.restating_claim_index("Steel is used in many ways.", ["Steel is strong."]) is None
+
+
+# --- an example clause no claim names ----------------------------------------------------------
+#
+# Regression, from the beginner-level ecosystems run: "Carnivores, like tigers, eat other animals
+# and are called secondary consumers." - the claims say what carnivores are; none mentions a tiger.
+
+EXAMPLE_CLAIMS = [
+    "Animals that eat plants are called herbivores, like cows.",
+    "Carnivores eat other animals and are called secondary consumers.",
+    "Tertiary consumers, like snakes, eat secondary consumers.",
+]
+
+
+def test_an_example_no_claim_names_is_taken_out_and_the_sentence_stays() -> None:
+    sentence = "Carnivores, like tigers, eat other animals and are called secondary consumers."
+
+    cleaned, removed = ns.without_unnamed_examples(sentence, EXAMPLE_CLAIMS)
+
+    assert cleaned == "Carnivores eat other animals and are called secondary consumers."
+    assert removed == ["like tigers"]
+
+
+def test_an_example_a_claim_names_is_kept() -> None:
+    for sentence in (
+        "Herbivores, like cows, eat plants and are called primary consumers.",
+        "Tertiary consumers, like snakes, eat secondary consumers.",
+    ):
+        assert ns.without_unnamed_examples(sentence, EXAMPLE_CLAIMS) == (sentence, [])
+
+
+def test_only_a_comma_delimited_clause_is_touched() -> None:
+    for sentence in (
+        "Plants like grass are at the bottom of the chain.",
+        "Animals such as lions and tigers hunt.",
+        "Eagles eat small animals like mice.",
+    ):
+        assert ns.without_unnamed_examples(sentence, EXAMPLE_CLAIMS) == (sentence, [])
+
+
+def test_a_sentence_with_no_example_is_returned_unchanged() -> None:
+    sentence = "Carnivores eat other animals."
+
+    assert ns.without_unnamed_examples(sentence, EXAMPLE_CLAIMS) == (sentence, [])

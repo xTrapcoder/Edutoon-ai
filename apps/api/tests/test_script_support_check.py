@@ -366,6 +366,41 @@ async def test_a_sentence_that_is_only_loosely_about_a_claim_is_still_just_remov
     assert not any(r.get("restated") for r in job.result["support_check"]["removed_sentences"])
 
 
+async def test_an_invented_example_clause_is_taken_out_but_its_sentence_is_kept(
+    db_session, monkeypatch
+):
+    """Regression (a real run, beginner level): "Carnivores, like tigers, eat other animals" - the
+    claim says what carnivores eat; no claim mentions a tiger."""
+    monkeypatch.setenv("MAX_SCRIPT_CORRECTION_ATTEMPTS", "0")
+    get_settings.cache_clear()
+    claim_text = "Carnivores eat other animals and are called secondary consumers."
+    _o, _p, topic, claim, enq = await _enqueued(db_session, claim_text=claim_text)
+    llm, _outline, _section = _mock_llm(
+        monkeypatch,
+        sections_by_topic={
+            topic.id: [
+                [
+                    _segment(
+                        "Carnivores, like tigers, eat other animals and are called "
+                        "secondary consumers.",
+                        [str(claim.id)],
+                    )
+                ]
+            ]
+        },
+    )
+    _judge_with(
+        monkeypatch, llm, lambda s, _second: ns.SentenceJudgement("supported", "a claim says so")
+    )
+
+    job = await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
+
+    assert job.status == "succeeded"
+    assert await _texts(db_session, enq) == [claim_text]
+    [trimmed] = job.result["support_check"]["trimmed_examples"]
+    assert trimmed["removed"] == ["like tigers"]
+
+
 async def test_a_fallback_section_is_never_made_from_anything_but_the_topics_claims(
     db_session, monkeypatch
 ):

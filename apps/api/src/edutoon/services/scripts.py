@@ -108,6 +108,7 @@ from edutoon.domain.narration_support import (
     restating_claim_index,
     split_sentences,
     without_sentences,
+    without_unnamed_examples,
 )
 from edutoon.domain.script import ScriptDraft, ScriptSegmentDraft
 from edutoon.domain.script_closing import closing_text, has_closing
@@ -1040,6 +1041,45 @@ def _without_unsupported(
     return kept
 
 
+def _without_unnamed_examples(
+    segments: list[ScriptSegmentDraft],
+    claims: Sequence[Claim],
+    *,
+    words_per_minute: int,
+    topic: str,
+    support: SupportLog | None,
+) -> list[ScriptSegmentDraft]:
+    """``segments`` with each ", like ..., " example clause taken out whose words no claim of the
+    section uses (``domain.narration_support.without_unnamed_examples``); the rest of the sentence
+    stays. Each trim is recorded on the job's result."""
+    texts = [claim.text for claim in claims]
+    cleaned_segments: list[ScriptSegmentDraft] = []
+    for segment in segments:
+        rebuilt: list[str] = []
+        changed = False
+        for sentence in split_sentences(segment.narration_text):
+            cleaned, removed = without_unnamed_examples(sentence, texts)
+            if removed:
+                changed = True
+                if support is not None:
+                    support.trimmed_examples.append(
+                        {"topic": topic, "sentence": sentence, "removed": removed}
+                    )
+            rebuilt.append(cleaned)
+        if not changed:
+            cleaned_segments.append(segment)
+            continue
+        text = " ".join(rebuilt)
+        cleaned_segments.append(
+            replace(
+                segment,
+                narration_text=text,
+                estimated_duration_ms=round(len(text.split()) / words_per_minute * 60_000),
+            )
+        )
+    return cleaned_segments
+
+
 async def _generate_units(
     llm: LLM,
     brief: ScriptBrief,
@@ -1240,6 +1280,19 @@ async def _generate_units(
                     {"topic": unit.topic.title, "claims": len(stamped), "reason": str(exc)}
                 )
             log.warning("scripts.section_fell_back_to_claims", topic=unit.topic.title)
+        fell_back = support is not None and any(
+            entry["topic"] == unit.topic.title for entry in support.fallback_sections
+        )
+        if not fell_back:
+            # An illustrative "like tigers" no claim names is not kept (a fallback section reads
+            # the claims out as they stand and has none).
+            stamped = _without_unnamed_examples(
+                stamped,
+                unit.claims,
+                words_per_minute=settings.SCRIPT_WORDS_PER_MINUTE,
+                topic=unit.topic.title,
+                support=support,
+            )
         all_segments.extend(stamped)
         if unit.unit_index == unit.unit_count - 1:
             previous_topic_title = unit.topic.title

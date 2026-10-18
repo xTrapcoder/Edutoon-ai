@@ -1783,9 +1783,15 @@ length, and what each setting does:
   carry. It used to be recommended as 4 for small machines, which capped every lesson at roughly 25 to
   40 seconds of narration per topic whatever the source; 8 is a fair compromise. The claim prompt asks for
   every distinct fact the passages state.
-- **Each fact is said once.** Neighbouring topics hold the same claims (they are drawn from the same
-  passages); `domain.claim_dedupe` keeps a fact under the topic whose title fits it best, never leaving a
-  topic with fewer than two claims. The job result records `claims_deduplicated`.
+- **Each fact is said once, under the topic it is about.** Neighbouring topics hold the same claims (they
+  are drawn from the same passages, and in a short source every topic is extracted from all of it), so
+  `domain.claim_dedupe` keeps each distinct fact once and places it under the topic - *any* topic, not only
+  one that listed it - that fits it best: title and keywords count double, summary words count once, each
+  word weighted by how rare it is among the lesson's facts; the lesson's own subject word is ignored. A fact
+  that fits nowhere stays with the earliest topic that holds it; a topic is never left with fewer than two
+  claims. The job result records `claims_deduplicated`. (First version scored title words only: "Python" in
+  the first topic's title won every tie, so a pasted-notes lesson taught variables and dictionaries under
+  "Functions" and ended its "Errors" section with the release year.)
 - **No padding pass.** If a script is short *because the checks trimmed unsupported text* and it already
   cites at least 70% of its claims, it is not re-written with a larger word budget
   (`domain.script_duration.decide_length_correction`); a script that is too long is always corrected.
@@ -1803,6 +1809,29 @@ length, and what each setting does:
 What this does **not** do: it does not make the 7B writer or judge reliable. The judge still removes a whole
 sentence when one clause is the problem, still over-flags an occasional fair paraphrase (21 of 23 on the
 labelled set, one false negative and one over-flag), and the writer still repeats itself a little.
+
+### Grounding and placement fixes from the 2026-10-18 verification pass
+
+Each was found by reading a real run against its source, fixed at the smallest point that is deterministic,
+and pinned by a regression test built from that run's own claims or sentences. None loosens a check.
+
+| Found in a real run | Fix | Where |
+| --- | --- | --- |
+| A keyword the document never mentions ("coral bleaching" over an ecosystems chapter) was reported "covered by 4 statements": statements are judged against the *nearest* passages, so true statements about neighbouring topics were supported, and one was even worded as a link to the keyword that no passage makes | A keyword is covered only if the document contains its words; the report names the missing words; a script cannot be written over such a keyword until it is left out | `domain.keyword_coverage.missing_terms`, `services.keyword_coverage`, `services.scripts.enqueue_script_generation` |
+| The judge approved claims while citing a passage that does not contain them: "land clearing ... to make way for agriculture or development" cited a page on energy flow; "tiny living things that we can't see with our eyes" and "herbivores, like cows" were elaborations; "Animals that eat plants are called herbivores" was true but cited the wrong page | A supported claim's wording must be in what it cites (floor 50% of its content words). Below it: re-pointed to the retrieved passage that states it (>= 60%), else `partially_supported`. Scripts apply the same rule to claims already in the ledger. On the 276 supported claims of the fresh runs it flagged 9 elaborations and re-pointed 8 true claims, and none of the 66 / 61 / 16 claims of three other runs | `domain.claim_grounding`, `services.evidence.verify_claim`, `services.claim_backing` |
+| The judge removes a whole sentence for one flourish, losing the only statement of a verified fact ("Temperature changes affect the length of bridge decks"; "suspension bridges can span very long distances") and leaving a dangling "these temperature changes" | A rejected sentence that contains >= 60% (and >= 3) of one verified claim's content words is replaced by that claim's own text, cited, unless the claim is already said. A loosely related sentence is still removed. Recorded as `restated` in the removed-sentence list | `domain.narration_support.restating_claim_index`, `services.scripts._without_unsupported` |
+| A section was left as "Today, we will learn about resistance." alone (a signpost can share a word with a claim), so the lesson never said what resistance is | After removal, a section whose passages are all signposts reads its verified claims out through the existing fallback | `services.scripts` (hollow check after removal) |
+| "Today, we will learn about ..." opened four of ten sections; a topic-only lesson wrapped up before its closing. The prompt rule did not stop a 7B writer | The first announcement stays, repeats and premature wrap-ups are dropped after the sections are written; every section keeps a passage. Recorded as `repeated_openers_removed` | `domain.script_openers` |
+| A judge that cites one passage twice failed every claim of that topic ("This source chunk is already cited by this verification") | Citations are de-duplicated before they are stored | `services.evidence.verify_claim` |
+| The topic-only pipeline panel said "32 claims checked, none supported yet" | It says "32 statements from general knowledge, not checked against a document" | `apps/web/lib/pipeline.ts` |
+
+**Residual risk, measured, not fixed:** the claim judge and the sentence judge are a 7B model. In the fresh
+runs one claim marked supported contradicted the source ("steel is strong in compression but weak in
+tension"; the source says strong in both, and it did not reach the script); a closing-adjacent sentence,
+"This is due to its rotational period matching its orbital period around Earth", reached a lesson although no
+claim or passage says it; and invented everyday examples ("cows eat grass", "things that move, like cars")
+survive. A lexical backstop on each sentence was measured and rejected: the scores of leaks (0.11 to 0.29 of a
+sentence's words in the section's claims) interleave with those of fair sentences (0.14 to 0.33).
 
 ## Testing, and what is not yet verified against a real provider
 

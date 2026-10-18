@@ -242,3 +242,36 @@ def restating_claim_index(
         if len(claim_words & content_words(text)) / len(claim_words) >= RESTATE_ALREADY_SAID:
             return None
     return best
+
+
+# --- an example clause no claim names -------------------------------------------------------------
+
+_EXAMPLE_PARENTHETICAL: Final = re.compile(
+    r",\s*(?:like|such as)\s+(?P<items>[^,.;!?]{1,60}),", re.IGNORECASE
+)
+
+
+def without_unnamed_examples(sentence: str, claim_texts: Sequence[str]) -> tuple[str, list[str]]:
+    """``sentence`` with each comma-delimited ", like ..., " / ", such as ..., " clause taken out
+    whose words no claim uses, and the clauses that were taken out.
+
+    A beginner-level writer illustrates a fact with an everyday example ("Carnivores, like tigers,
+    eat other animals and are called secondary consumers"). The fact is a claim; the tiger is not,
+    and the sentence judge lets a clause like that through often enough to matter. The rest of the
+    sentence is untouched, so a single invented example never costs a supported sentence, and a
+    clause whose every content word occurs in the claims (``like cows`` when a claim says so) stays.
+    Only a clause delimited by commas on both sides is handled: "plants like grass are ..." is part
+    of the subject and is left to the judge. Only text is ever removed.
+    """
+    claim_words = {word for text in claim_texts for word in content_words(text)}
+    claim_words |= {word[:5] for word in claim_words}
+    removed: list[str] = []
+
+    def _drop(match: re.Match[str]) -> str:
+        items = content_words(match.group("items"))
+        if not items or all(word in claim_words or word[:5] in claim_words for word in items):
+            return match.group(0)
+        removed.append(match.group(0).strip(" ,"))
+        return ""
+
+    return _EXAMPLE_PARENTHETICAL.sub(_drop, sentence), removed
