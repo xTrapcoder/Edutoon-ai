@@ -71,7 +71,7 @@ const MODES: readonly {
   {
     value: 'both',
     title: 'PDF + Keywords',
-    description: 'Upload a PDF and add your own topics',
+    description: 'Upload a PDF and add keywords - a focused video on just those topics',
     icon: FilePlus2,
   },
 ];
@@ -123,7 +123,7 @@ export function SourceStep({
           />
           <CardBody className="space-y-6">
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
-              {MODES.map((mode) => (
+              {MODES.filter((mode) => isModeAvailable(mode.value)).map((mode) => (
                 <RadioCard
                   key={mode.value}
                   name={`${name}-mode`}
@@ -141,11 +141,9 @@ export function SourceStep({
               ))}
             </div>
             <p className="text-[13px] text-ink-500">
-              With a PDF, a PowerPoint deck or your own text, every claim in the video is checked
-              against that material. With a topic only there is nothing to check against, so the
-              lesson is written from the AI&apos;s general knowledge, those statements are marked as
-              unchecked, and the video says so in its first sentence. With a PDF you can also add
-              keywords to steer which topics it covers.
+              {isModeAvailable('keywords')
+                ? "With a PDF, a PowerPoint deck or your own text, every claim in the video is checked against that material. With a topic only there is nothing to check against, so the lesson is written from the AI's general knowledge, those statements are marked as unchecked, and the video says so in its first sentence. With a PDF you can also add keywords to steer which topics it covers."
+                : 'With a PDF or your own text, every claim in the video is checked against that material. Add keywords to a PDF to focus the video on those topics; a keyword your PDF says nothing about is reported to you and left out, never invented.'}
             </p>
             {errors.mode ? (
               <p role="alert" className="text-[13px] font-medium text-danger-700">

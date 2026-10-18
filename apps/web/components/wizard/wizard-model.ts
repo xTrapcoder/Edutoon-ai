@@ -1,5 +1,6 @@
 import type { Language, Orientation, ProjectSourceType } from '@edutoon/contracts';
 import { durationProblem } from '@/lib/generation-settings';
+import { INSTRUCTIONS_OFFERED, OFFERED_MODES } from '@/lib/scope';
 
 /**
  * The create-project form: what is asked for, and the checks made before anything is sent.
@@ -25,14 +26,15 @@ export type SourceMode = 'pdf' | 'pptx' | 'text' | 'keywords' | 'both';
  * lesson rests on the AI's general knowledge: the API records those statements as exactly that
  * (never "supported"), and the video says so in its first sentence. If the server has the mode
  * switched off it refuses to create the project and says why (`KEYWORD_ONLY_UNSUPPORTED_MESSAGE`).
+ * Dormant since the 2026-10-18 scope change: the mode is no longer offered (`lib/scope.ts`).
  */
 export const KEYWORD_ONLY_SUPPORTED = true;
 
 export const KEYWORD_ONLY_UNSUPPORTED_MESSAGE =
   'Topic-only projects are not available on this server. Upload a PDF, a PowerPoint deck or paste your own text instead.';
 
-export const isModeAvailable = (mode: SourceMode): boolean =>
-  mode !== 'keywords' || KEYWORD_ONLY_SUPPORTED;
+/** Whether the wizard offers a mode at all (`lib/scope.ts`): the three offered modes only. */
+export const isModeAvailable = (mode: SourceMode): boolean => OFFERED_MODES.includes(mode);
 
 export interface WizardValues {
   title: string;
@@ -59,7 +61,8 @@ export const usesText = (mode: SourceMode): boolean => mode === 'text';
  * Whether the person may give instructions. A PowerPoint deck is turned into a lesson by fixed
  * rules from its own slides (no model writes it), so there is nothing for instructions to steer.
  */
-export const usesInstructions = (mode: SourceMode): boolean => mode !== 'pptx';
+export const usesInstructions = (mode: SourceMode): boolean =>
+  INSTRUCTIONS_OFFERED && mode !== 'pptx';
 
 /**
  * The API has three source types; "PDF + keywords" is a PDF project that also has keywords.

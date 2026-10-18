@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   fileKindOf,
   fileProblem,
@@ -23,6 +23,13 @@ import {
   usesText,
   type WizardValues,
 } from './wizard-model';
+
+vi.mock('@/lib/scope', () => ({
+  // These tests exercise the dormant modes and instructions, so they run with everything offered;
+  // scope.test.tsx holds the real defaults.
+  OFFERED_MODES: ['pdf', 'pptx', 'text', 'keywords', 'both'],
+  INSTRUCTIONS_OFFERED: true,
+}));
 
 const pdf = (name = 'notes.pdf', size = 1000, type = 'application/pdf') =>
   new File([new Uint8Array(size)], name, { type });

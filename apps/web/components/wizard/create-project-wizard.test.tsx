@@ -8,6 +8,13 @@ import { renderWithClient } from '@/test/render';
 import { API, server } from '@/test/server';
 import { CreateProjectWizard } from './create-project-wizard';
 
+vi.mock('@/lib/scope', () => ({
+  // These tests exercise the dormant modes and instructions, so they run with everything offered;
+  // scope.test.tsx holds the real defaults.
+  OFFERED_MODES: ['pdf', 'pptx', 'text', 'keywords', 'both'],
+  INSTRUCTIONS_OFFERED: true,
+}));
+
 const PDF = new File([new Uint8Array(1000)], 'electronics.pdf', { type: 'application/pdf' });
 const DECK = new File([new Uint8Array(1000)], 'safety_induction.pptx', {
   type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',

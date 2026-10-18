@@ -15,7 +15,7 @@ const HOW_IT_WORKS = [
   {
     icon: FilePlus2,
     title: 'Add your source',
-    body: 'Upload a PDF or a PowerPoint deck. With a PDF you can also type the topics you want covered.',
+    body: 'Upload a PDF or paste your text. With a PDF you can also add keywords for the topics you want covered.',
   },
   {
     icon: ListChecks,
@@ -100,7 +100,7 @@ export function DashboardView() {
                   className="border-0 bg-transparent py-8"
                   icon={FolderPlus}
                   title="Create your first project"
-                  description="Upload a PDF or a PowerPoint deck. We will find what is worth covering and check every claim against your source."
+                  description="Upload a PDF or paste your text. We will find what is worth covering and check every claim against your source."
                   action={<ButtonLink href="/projects/new">Create project</ButtonLink>}
                 />
               </div>

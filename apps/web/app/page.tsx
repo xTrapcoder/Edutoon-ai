@@ -16,7 +16,7 @@ import { Logo } from '@/components/brand/logo';
 import { ButtonLink } from '@/components/ui/button';
 
 const HIGHLIGHTS = [
-  'Works from a PDF or a PowerPoint deck, with keywords to guide a PDF',
+  'Works from a PDF or pasted text, with keywords to focus a PDF lesson',
   'Topics come with the pages or slides they were drawn from',
   'Scripts are written only from claims checked against your source',
   'Nothing moves on until you approve it',
@@ -26,7 +26,7 @@ const FEATURES = [
   {
     icon: FileText,
     title: 'Start from your own material',
-    body: 'Upload a PDF or a PowerPoint deck, and add the topics you want to teach to a PDF. Your source is the ground truth.',
+    body: 'Upload a PDF or paste your text, and add keywords to focus a PDF lesson on the topics you want. Your source is the ground truth.',
   },
   {
     icon: ListTree,
@@ -46,7 +46,7 @@ const FEATURES = [
 ] as const;
 
 const STEPS = [
-  ['Add your source', 'A PDF or a PowerPoint deck, with your chosen length and language.'],
+  ['Add your source', 'A PDF or pasted text, with your chosen length and language.'],
   ['Review the topics', 'Check the outline and the evidence behind each topic.'],
   ['Review the script', 'Read the cited script, one section at a time.'],
   ['Approve it', 'Lock in the script that the next stages will build on.'],
@@ -61,7 +61,7 @@ const AFTER_APPROVAL = [
 const FAQ = [
   {
     q: 'What can I upload?',
-    a: 'A PDF or a PowerPoint (.pptx) deck of up to 100 MB. With a PDF you can also add the topics you want covered.',
+    a: 'A PDF of up to 100 MB, or pasted text. With a PDF you can also add keywords for the topics you want covered.',
   },
   {
     q: 'Does it make things up?',
@@ -181,7 +181,7 @@ export default function LandingPage() {
                 <span className="text-brand-600">verified, cited script</span>
               </h1>
               <p className="mt-5 max-w-xl text-lg leading-8 text-ink-600">
-                Upload a PDF or a PowerPoint deck. EduToon finds what is worth covering, checks each
+                Upload a PDF or paste your text. EduToon finds what is worth covering, checks each
                 claim against your source, and prepares a script for you to review and approve.
               </p>
               <ul className="mt-6 space-y-2.5">

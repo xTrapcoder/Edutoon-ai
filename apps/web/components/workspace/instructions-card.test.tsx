@@ -1,11 +1,18 @@
 import { screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { PROJECT_ID, project } from '@/test/fixtures';
 import { renderProjectPage, serveProject } from '@/test/render';
 import { API, server } from '@/test/server';
 import { InstructionsCard } from './instructions-card';
+
+vi.mock('@/lib/scope', () => ({
+  // These tests exercise the dormant modes and instructions, so they run with everything offered;
+  // scope.test.tsx holds the real defaults.
+  OFFERED_MODES: ['pdf', 'pptx', 'text', 'keywords', 'both'],
+  INSTRUCTIONS_OFFERED: true,
+}));
 
 const withNotes = project({
   instructions: 'Make it suitable for a beginner. Show photos of leaves.',

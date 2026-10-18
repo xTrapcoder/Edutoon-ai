@@ -12,6 +12,7 @@ import { Alert } from '@/components/ui/feedback';
 import { Field, Textarea } from '@/components/ui/field';
 import { describeError } from '@/lib/api/errors';
 import { useUpdateProject } from '@/lib/api/queries';
+import { INSTRUCTIONS_OFFERED } from '@/lib/scope';
 import type { Tone } from '@/lib/workflow';
 import { useWorkspaceContext } from './workspace-context';
 
@@ -33,6 +34,9 @@ export function InstructionsCard() {
   const [draft, setDraft] = useState(project.instructions ?? '');
 
   if (project.source_type === 'pptx') return null;
+  // Instructions are outside the offered scope (lib/scope.ts): a project that already has some
+  // still shows them; no new ones can be added.
+  if (!INSTRUCTIONS_OFFERED && !project.instructions) return null;
 
   const problem = instructionsProblem(draft);
   const unchanged = draft.trim() === (project.instructions ?? '');
