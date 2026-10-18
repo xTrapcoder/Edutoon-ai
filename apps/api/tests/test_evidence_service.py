@@ -430,6 +430,32 @@ async def test_verify_claim_points_a_true_claim_at_the_passage_that_states_it(
     assert "citation was corrected" in verification.rationale
 
 
+async def test_verify_claim_stores_one_citation_when_the_judge_names_a_passage_twice(
+    db_session, monkeypatch
+):
+    """Regression (a real run): a judge that cited the same passage twice raised "This source chunk
+    is already cited by this verification" and failed every claim of that topic."""
+    project, chunk = await _make_indexed_chunk(db_session, content="The sky is blue.")
+    claim_text = "The sky is blue."
+    embeddings = _fake_embeddings(monkeypatch, {claim_text: QUERY_VECTOR})
+    llm = _fake_llm(
+        monkeypatch,
+        {
+            "status": "supported",
+            "rationale": "Directly stated.",
+            "cited_passage_ids": [str(chunk.id), str(chunk.id)],
+        },
+    )
+
+    verification = await evidence_service.verify_claim(
+        db_session, embeddings, llm, project_id=project.id, claim_text=claim_text
+    )
+
+    assert verification.status == "supported"
+    citations = await claim_verifications_repo.list_citations(db_session, verification.id)
+    assert [c.source_chunk_id for c in citations] == [chunk.id]
+
+
 async def test_verify_claim_downgrades_supported_with_no_citations_to_unsupported(
     db_session, monkeypatch
 ):

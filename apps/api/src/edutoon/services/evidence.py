@@ -418,9 +418,15 @@ async def verify_claim(
             status = "partially_supported"
             rationale = downgrade_rationale(rationale, invented)
 
+    # A passage can be cited once per verification (a uniqueness rule in the database); a judge that
+    # names the same passage twice, or a corrected citation that lands on one it already cited,
+    # must not fail the whole topic's claim extraction.
+    distinct: dict[Any, tuple[Any, float]] = {}
+    for chunk, similarity in cited:
+        distinct.setdefault(chunk.id, (chunk, similarity))
     citations = [
         NewClaimCitation(source_chunk_id=chunk.id, similarity=similarity)
-        for chunk, similarity in cited
+        for chunk, similarity in distinct.values()
     ]
 
     return await claim_verifications_repo.create(
