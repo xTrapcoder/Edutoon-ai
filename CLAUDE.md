@@ -394,6 +394,27 @@ pass mark, answers lock on submit) and `/admin/training` (courses, modules from 
 enrolments). Migration head is **0024**. **Still true:** the claim judge and the sentence judge are a 7B local
 model - not proof; no human has listened to the narration; real Clerk sign-in is unverified.
 
+**Why videos came out short, and what changed (2026-10-18; investigation in
+`docs/script-length-investigation.md`, summary in `apps/api/README.md`, "Why a video can be shorter than its
+target").** The sentence judge was mostly right; the causes were upstream: `MAX_CLAIMS_PER_TOPIC=4` in the
+development `.env` and the README capped the evidence (default now 10; the owner's `.env` was **not** edited -
+the worker is started with the override), the length-correction pass asked for *more* words after the checks
+trimmed unsupported text (`domain.script_duration.decide_length_correction`), the writer prompt invited the
+flourish the judge removes, closings were removed (a fixed closing is now added, `domain.script_closing`,
+`SCRIPT_FIXED_CLOSING`), neighbouring topics repeated the same claims (`domain.claim_dedupe`), more than 12
+passages in a section failed the job (`domain.script.merge_to_limit`), and removing a sentence could leave a
+"For example:" hanging. A claim that names something no retrieved passage contains is only partly supported
+(`domain.claim_grounding`). The job result gains `shortfall_reason` (`evidence_limited` / `writer_short`),
+`claims_deduplicated` and `closing_added`; the script page says in words why a script is short, and refusals
+to write a script carry `details.reason` / `details.topics` (the client discards a sentence over 280
+characters, so never rely on message text). **Operational rule:** stale-job recovery runs only on the API's
+enqueue path (one hour by default), so killing the worker mid-job leaves a `running` row - set it back to
+`queued` by hand and restart the worker, and restart at the start of a job, never in the middle of one.
+**Still unverified:** that anyone has listened to the narration or judged a lesson's teaching quality
+(`docs/human-review-checklist.md`), real Clerk sign-in, invitation email delivery (the API has no
+`CLERK_SECRET_KEY`; `docs/licensing-and-credentials.md`), and the licensing of Piper, FFmpeg's GPL build and
+H.264/AAC for distribution.
+
 **Phase 12 has not started and needs the owner's explicit approval.**
 
 ## Commands

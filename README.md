@@ -57,6 +57,8 @@ set to *something* but a local backend never uses them. Useful switches:
 | `OCR_ENABLED` | `true` | Read scanned PDF pages with local OCR. |
 | `OCR_MAX_PAGES` | `30` | Most scanned pages read in one document (about 5 s a page). Longer scans are refused with a message, never half-read. |
 | `SCRIPT_SUPPORT_CHECK_ENABLED` | `true` | Judge every script sentence against the verified claims (see below). Costs minutes per script. |
+| `MAX_CLAIMS_PER_TOPIC` | `10` | How many facts one topic can carry; this is what limits a lesson's length. `4`, once recommended for small machines, caps every lesson hard: use `8` there. Set it in the process that runs the **worker**. |
+| `SCRIPT_FIXED_CLOSING` | `true` | A script that does not end in a closing gets a fixed one naming the topics it covered. |
 | `SCRIPT_FALLBACK_TO_CLAIMS` | `true` | A topic whose wording cannot be supported is read out as its verified claims instead of failing the script. |
 | `STORYBOARD_FALLBACK_TO_TEXT` | `true` | A segment whose scene text cannot be grounded gets one bullet scene made of its own narration instead of failing. |
 | `KEYWORD_ONLY_PROJECTS_ENABLED` | `true` | Topic-only lessons. |
@@ -115,21 +117,31 @@ dark text on a light page for best results.
 
 ## Hardware and timing (this laptop)
 
-Local generation is slow; do not promise instant video. Run one job at a time. Measured on the
-reference machine (CPU inference, `qwen2.5:7b-instruct`) through the real UI, 2026-10-17, finished videos
-all 1280x720, 30 fps, H.264 High + AAC mono 22.05 kHz:
+Local generation is slow; do not promise instant video. Run one job at a time. Measured on the reference
+machine (i7-12700H, 16 GB, RTX 3050 Ti 4 GB; `qwen2.5:7b-instruct` through Ollama) through the real UI on
+2026-10-18, one run each. Finished videos are all 1280x720, 30 fps, H.264 High + AAC mono 22.05 kHz, decode
+cleanly and play in the app after a reload. Stage times, seconds:
 
-| Mode | Topics | Claims | Script | Narration | Storyboard | Render | Video |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| A. PDF (4 pages) | 134 s | 610 s | about 27 min | 11 s | about 12 min (one resume) | 15 s | 143.8 s, 4.6 MB |
-| B. Pasted text | 112 s (+6 s indexing) | 600 s | 31.9 min | 14 s | 741 s | 19 s | 213.9 s, 6.2 MB |
-| C. PDF + keywords | 191 s | 834 s | 24.5 min | 15 s | 857 s | 23 s | 240.4 s, 7.6 MB |
-| E. Scanned PDF (3 pages, OCR in the upload) | not timed | 329 s | not timed | not timed | 11 min | 10 s | 105.2 s, 3.1 MB |
-| F. Topic only | 62 s (suggest) | not timed | 22.5 min | 11 s | 11 min | 15 s | 143.2 s, 4.5 MB |
+| Run | Topics | Claims | Script | Narration | Storyboard | Render | Video |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| A. PDF (3 pages) | 110 | 1,108 | 684 | 11 | 508 | 16 | 2:16, 4.4 MB |
+| B. Pasted notes | 78 | 1,162 | 1,106 | 8 | 323 | 14 | 1:44, 3.3 MB |
+| C. PDF + keywords | 215 | 1,698 | 1,864 | 9 | 624 | 14 | 2:19, 4.3 MB |
+| D1. Same PDF, beginner | 171 | 1,219 | 960 | 11 | 458 | 17 | 2:57, 5.4 MB |
+| D2. Same PDF, advanced, pages 3-4 | 103 | 1,276 | 1,034 | 7 | 286 | 9 | 1:51, 3.4 MB |
+| E. Scanned PDF (OCR in the upload) | 173 | 698 | 371 | 8 | 416 | 9 | 1:34, 2.8 MB |
+| F. Topic only | 104 | 125 | 1,087 | 14 | 565 | 25 | 4:08, 7.2 MB |
 
-A video comes out shorter than its target whenever the sentence check removes unsupported sentences
-(A: 144 s of 300 s; F: 143 s of 240 s; B: 214 s of 240 s; C: 240 s of 300 s). That is the check working, not a
-fault. Roughly 1 to 1.5 hours end to end for a 4-5 minute video.
+Claims and the script are the slow stages (the sentence check judges every sentence; claims are verified
+one by one, up to `MAX_CLAIMS_PER_TOPIC` per topic). Expect roughly 40 to 60 minutes of waiting for a short
+lesson. Two of the scripts above are the second attempt; the first attempt of one failed after 6 minutes and
+of another after 17, both for reasons that have since been fixed (see `docs/script-length-investigation.md`).
+
+**A video is usually shorter than its target, and that is correct.** A lesson may only say what its source
+says, so it runs about as long as the source takes to read aloud (66 to 103% of it in the runs above). The
+sources here were small (228 to 646 words), so a 3 to 5 minute target was out of reach. The script page says
+how long the script really is and why. To get a longer lesson, give it more material, add keywords for more
+detail, or choose a shorter target.
 
 ## Tests and checks
 
@@ -139,11 +151,15 @@ make lint               # eslint + ruff + mypy
 make contracts-check    # the committed API contract is current
 ```
 
-Last full run (2026-10-17, worker stopped): backend 5509 passed, 25 skipped, and the two tests that failed
-(a result key I had added) fixed and re-run on their own; web 285 passed; ruff, mypy, eslint, tsc and prettier
-clean; the API contract is current; migration head 0024. The sentence judge scores 21 of 23 on a small
-hand-labelled set (`scripts/check_support_judge.py --eval`; one false negative, one over-flag). No test calls a model:
-real-model behaviour is only what the end-to-end runs above show.
+Last full run (2026-10-18, worker stopped, machine otherwise idle): backend **5608 passed, 25 skipped**
+(24 are parametrised cases that are impossible by design, one needs symlink permission this Windows account
+lacks); web **300 passed** in 28 files; ruff, mypy, eslint, tsc and prettier clean; the API contract is
+current; migration head 0024, applied. The sentence judge scores 21 of 23 on a small hand-labelled set
+(`scripts/check_support_judge.py --eval --verbose`; one false negative, one over-flag; both stomata reversals
+are caught). No test calls a model: real-model behaviour is only what the end-to-end runs above show.
+
+Run the suites with the worker **stopped**: a few backend tests claim jobs from the same development queue,
+and the web tests time out at their 5-second default while Ollama is saturating the CPU.
 
 ## Troubleshooting
 
@@ -155,6 +171,13 @@ real-model behaviour is only what the end-to-end runs above show.
 - **Ollama is slow or out of memory**: close other GPU programs; `OLLAMA_NUM_CTX` can be lowered.
 - **A worker or API started before a code change keeps the old code** (an old error wording, an old rule):
   restart `make dev` / `make worker`.
+- **A job stays "running" after the worker was stopped.** Stale-job recovery runs only when someone
+  queues the same kind of job again (after one hour by default). For a job you know is dead, put it back:
+  `update jobs set status='queued', started_at=null where id = '...';` and restart the worker. Restart a
+  worker between jobs, not during one, or the job starts again from the beginning.
+- **A script fails after many minutes with "mentions '8'" or "Section has N segments"**: both were bugs
+  in this version's closing and in the section parser, since fixed; if you see them, the worker is running
+  old code.
 - **A few backend tests fail while a worker is running**: they claim jobs from the same development queue.
   Stop the worker before `make test`.
 

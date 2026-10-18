@@ -1772,6 +1772,38 @@ script opens with the fixed spoken notice `domain.general_knowledge.LESSON_NOTIC
 `services/general_knowledge.applies_to` decides when this applies; a topic project that has source material
 verifies against it instead.
 
+### Why a video can be shorter than its target
+
+The target length is a guide. A script may say only what its verified claims say, so a lesson as long as
+its claims can honestly carry is the most one can ask for; nothing is added to reach the target. The full
+investigation, with the sentences that were read, is `docs/script-length-investigation.md`. What decides the
+length, and what each setting does:
+
+- **How many claims there are.** `MAX_CLAIMS_PER_TOPIC` (default 10) is how many facts one topic can
+  carry. It used to be recommended as 4 for small machines, which capped every lesson at roughly 25 to
+  40 seconds of narration per topic whatever the source; 8 is a fair compromise. The claim prompt asks for
+  every distinct fact the passages state.
+- **Each fact is said once.** Neighbouring topics hold the same claims (they are drawn from the same
+  passages); `domain.claim_dedupe` keeps a fact under the topic whose title fits it best, never leaving a
+  topic with fewer than two claims. The job result records `claims_deduplicated`.
+- **No padding pass.** If a script is short *because the checks trimmed unsupported text* and it already
+  cites at least 70% of its claims, it is not re-written with a larger word budget
+  (`domain.script_duration.decide_length_correction`); a script that is too long is always corrected.
+- **A lesson ends.** A script that does not end in a closing gets a fixed one naming the topics it covered
+  (`domain.script_closing`, `SCRIPT_FIXED_CLOSING`, on by default). It carries no figure and is checked
+  against the same figures-and-names rule as everything else, so it cannot fail a generation. The writer's own
+  closing is often a summary that no single claim states, which the support check rightly removes.
+- **Too many passages are joined, not refused.** A section reply with more passages than
+  `MAX_SCRIPT_SEGMENTS` is joined down to it (`domain.script.merge_to_limit`); a reply more than four times
+  over is still rejected.
+- **The job says why.** `result["shortfall_reason"]` is `evidence_limited` (the claims cannot carry more),
+  `writer_short` (claims went unused: write a new version) or absent (the length is as asked), and the script
+  page says so in the owner's words.
+
+What this does **not** do: it does not make the 7B writer or judge reliable. The judge still removes a whole
+sentence when one clause is the problem, still over-flags an occasional fair paraphrase (21 of 23 on the
+labelled set, one false negative and one over-flag), and the writer still repeats itself a little.
+
 ## Testing, and what is not yet verified against a real provider
 
 ```bash

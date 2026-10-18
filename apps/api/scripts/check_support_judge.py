@@ -11,7 +11,8 @@ Two things, both on the local backend named by ``.env``:
 
 It is a measurement, not a test: a result depends on the model and its version.
 
-    uv run python scripts/check_support_judge.py --eval
+    uv run python scripts/check_support_judge.py --eval            # misses only
+    uv run python scripts/check_support_judge.py --eval --verbose  # every case
     uv run python scripts/check_support_judge.py --project 01a148cb-add3-73c2-b2a4-f3b6945034a7
 """
 
@@ -75,7 +76,7 @@ CASES: list[tuple[str, bool]] = [
 ]
 
 
-async def run_eval(llm: LLM) -> None:
+async def run_eval(llm: LLM, *, verbose: bool = False) -> None:
     claims = [Claim(id=str(n), text=claim) for n, claim in enumerate(CLAIMS)]
     report = new_usage_report()
     support = SupportLog()
@@ -86,6 +87,8 @@ async def run_eval(llm: LLM) -> None:
         got = judgement is not None and judgement.verdict == "supported"
         if got == expected:
             right += 1
+            if verbose:
+                print(f"  ok  : {sentence!r} -> {'supported' if got else 'unsupported'}")
         else:
             reason = judgement.reason if judgement else "no answer"
             print(f"  MISS: {sentence!r}\n        expected supported={expected}; judge: {reason}")
@@ -139,12 +142,13 @@ async def run_project(llm: LLM, project_id: UUID) -> None:
 async def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--eval", action="store_true")
+    parser.add_argument("--verbose", action="store_true", help="with --eval: print every case")
     parser.add_argument("--project", type=UUID)
     args = parser.parse_args()
     settings = get_settings()
     llm = llm_from_settings(settings, model=settings.SCRIPT_LLM_MODEL)
     if args.eval:
-        await run_eval(llm)
+        await run_eval(llm, verbose=args.verbose)
     if args.project:
         await run_project(llm, args.project)
 
