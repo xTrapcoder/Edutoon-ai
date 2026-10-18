@@ -117,6 +117,7 @@ from edutoon.domain.script_duration import (
     max_provider_calls,
     split_topic_budget,
 )
+from edutoon.domain.script_openers import drop_repeated_openers
 from edutoon.domain.script_provenance import (
     GROUNDED_KINDS,
     WEAK_CITATION_COVERAGE,
@@ -1469,6 +1470,14 @@ async def _generate_and_attach(
         # so this is a WPM estimate): the result is accepted from here on
         # regardless of whether it is still outside tolerance.
 
+    # The writer opens most sections with "Today, we will learn about ..."; the lesson keeps its
+    # first announcement and loses the repeats, and any "Today, we have learned ..." before the
+    # closing.
+    segments, openers_removed = drop_repeated_openers(
+        segments, words_per_minute=settings.SCRIPT_WORDS_PER_MINUTE
+    )
+    estimated_total = sum(segment.estimated_duration_ms for segment in segments)
+
     await _report_progress(
         sessionmaker, job_id=job_id, base_payload=payload, stage="validating_provenance"
     )
@@ -1536,6 +1545,8 @@ async def _generate_and_attach(
         # Supported claims not used because the passages they cite do not hold their wording and no
         # other passage of the source states them (services.claim_backing).
         "claims_left_out_unbacked": claims_left_out_unbacked,
+        # Announcements ("Today, we will learn ...") taken out after the first one.
+        "repeated_openers_removed": openers_removed,
         # Whether the script was given its fixed closing because it did not end in one.
         "closing_added": closing_added,
         # Why the script is shorter than the target, when it is: ``"evidence_limited"`` means the
