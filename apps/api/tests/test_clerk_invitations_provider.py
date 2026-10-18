@@ -92,3 +92,37 @@ def test_network_failures_become_invitation_errors(monkeypatch):
 
     with pytest.raises(clerk.ClerkInvitationError):
         clerk._post_invitation("https://api.clerk.example/v1/invitations", "sk", {})
+
+
+def test_the_invitation_request_names_itself_rather_than_sending_the_default_python_agent(
+    monkeypatch,
+):
+    """Regression (measured against a real Clerk test instance): the same valid secret key got HTTP
+    403 from the default ``Python-urllib`` agent and 200 with an ordinary one, so every invitation
+    would have failed with "Clerk refused the invitation (HTTP 403)"."""
+    captured = {}
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            return b'{"id": "inv_abc"}'
+
+    def fake_urlopen(request, timeout):
+        captured["headers"] = {k.lower(): v for k, v in request.header_items()}
+        captured["method"] = request.get_method()
+        return _Response()
+
+    monkeypatch.setattr(clerk.urllib.request, "urlopen", fake_urlopen)
+
+    body = clerk._post_invitation("https://api.clerk.example/v1/invitations", "sk_test_x", {"a": 1})
+
+    assert body == {"id": "inv_abc"}
+    assert captured["method"] == "POST"
+    assert captured["headers"]["authorization"] == "Bearer sk_test_x"
+    assert captured["headers"]["user-agent"].startswith("EduToonAI/")
+    assert "python-urllib" not in captured["headers"]["user-agent"].lower()

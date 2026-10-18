@@ -104,6 +104,7 @@ def verify_token(token: str) -> ClerkClaims:
 # --- invitations (Clerk Backend API) ---------------------------------------------------------
 
 _INVITATION_TIMEOUT_SECONDS = 10
+_USER_AGENT = "EduToonAI/1.0 (clerk invitations)"
 
 
 class ClerkInvitationError(Exception):
@@ -122,6 +123,10 @@ def _post_invitation(url: str, secret_key: str, payload: dict[str, Any]) -> dict
         headers={
             "Authorization": f"Bearer {secret_key}",
             "Content-Type": "application/json",
+            # Clerk's API answers the default "Python-urllib" agent with HTTP 403 even for a valid
+            # key (measured 2026-10-18: the same key and endpoint gave 403 with it and 200 without),
+            # so an invitation would be refused for a reason that has nothing to do with the key.
+            "User-Agent": _USER_AGENT,
         },
     )
     try:
