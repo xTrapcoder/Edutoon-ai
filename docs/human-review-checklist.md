@@ -8,17 +8,17 @@ never "reviewed".
 
 ## What to review, and which videos
 
-Review at least one video per mode (they are in `apps/api/var/review/`; the acceptance-run videos are
-named `accept_*`). A 4-5 minute video takes about 10 minutes to review properly.
+The product offers three modes since 2026-10-18. Review at least one video per offered mode (all in
+`apps/api/var/review/`, newest first; a 2-3 minute video takes about 10 minutes to review properly):
 
 | Mode | Video | Also look for |
 | --- | --- | --- |
-| A. PDF | `accept_pdf_*.mp4` | Facts match the PDF; no fact the PDF does not state |
-| B. Pasted text | `accept_text_*.mp4` | Nothing added beyond the notes |
-| C. PDF + keywords | `accept_keywords_*.mp4` | The keyword topics are covered; the unrelated keyword is absent |
-| D. PDF + instructions | `accept_instructions_*_*.mp4` (two) | The two lessons really differ the way the instructions ask |
-| E. Scanned PDF | `accept_scanned_*.mp4` | OCR mistakes did not become wrong facts in the lesson |
-| F. Topic only | `accept_topic_*.mp4` | The first sentence says it is general knowledge; claims are cautious |
+| A. PDF | `v2_A_pdf_electric_circuits.mp4` | Facts match the PDF; resistance, V = I x R and the series/parallel rules are right; no fact the PDF does not state |
+| B. Pasted text | `v2_B_pasted_text_bridges.mp4` | Nothing added beyond the notes; the order follows the notes |
+| C. PDF + keywords (focused) | `v2_C_pdf_keywords_ecosystems.mp4` | The three covered keywords are taught; "blockchain mining" and "coral bleaching" are absent (the topics page says they are not in the document) |
+
+Kept but no longer offered (`v2_dormant_*`): instructions beginner/advanced, scanned PDF, topic only. Review them
+only if those modes come back.
 
 ## Listen (narration)
 

@@ -415,6 +415,30 @@ enqueue path (one hour by default), so killing the worker mid-job leaves a `runn
 `CLERK_SECRET_KEY`; `docs/licensing-and-credentials.md`), and the licensing of Piper, FFmpeg's GPL build and
 H.264/AAC for distribution.
 
+**Offered scope: exactly three modes (owner's decision, 2026-10-18).** PDF -> video, pasted text -> video,
+and PDF + keywords -> focused video. *Topic only*, *PowerPoint decks* and *free-text instructions* are
+switched **off, not deleted**: `KEYWORD_ONLY_PROJECTS_ENABLED`, `PPTX_PROJECTS_ENABLED` and
+`INSTRUCTIONS_ENABLED` default to `false` (`core/config.py`; the API refuses each with a 400 that says what to
+do instead, `domain/topic.py`), the web app offers only the three (`apps/web/lib/scope.ts`), and the test
+environment (`tests/conftest.py`, and a `vi.mock` of `@/lib/scope` in the dormant-mode web tests) turns them on
+so their code stays tested; `tests/test_offered_scope.py` and `components/wizard/scope.test.tsx` hold the
+defaults. OCR stays as part of reading a PDF.
+
+**2026-10-18 verification pass (full record: `docs/verification-report-2026-10-18.md`).** Found by reading real
+runs against their sources, each fixed with a regression test from that run's own data: facts placed under the
+wrong topic (`domain/claim_dedupe`: IDF-weighted fit to title, keywords and summary); a keyword the document never
+mentions reported "covered" (`domain/keyword_coverage.missing_terms`); claims "supported" on a citation that does
+not hold them (`domain/claim_grounding.claim_coverage`, `services/claim_backing`); a rejected sentence that was a
+wording of one claim now reads out that claim (`restating_claim_index`); signpost-only sections fall back to
+claims; repeated "Today, we will learn" removed (`domain/script_openers`); invented ", like tigers," examples
+trimmed; slide text the narration never says removed (`without_unnamed_scene_text`) with a better narration-only
+fallback slide; a duplicate citation no longer fails a topic; the Clerk invitation request now sends a
+`User-Agent` (Clerk answered Python's default with 403 even for a valid key). `MAX_CLAIMS_PER_TOPIC` is **8**
+(owner's `.env`, backed up outside the repository; measured in the report). Scenes are cleared and rebuilt only
+by the product's own whole-set replace. **Still true:** nobody has listened to or watched these videos as a person;
+real Clerk sign-in and an invitation email have not been done; the 7B claim and sentence judges still let some
+embellishment through (examples in the report).
+
 **Phase 12 has not started and needs the owner's explicit approval.**
 
 ## Commands

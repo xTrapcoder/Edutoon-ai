@@ -54,3 +54,13 @@ referential integrity holds):
 
 Deleting rows with SQL is not recommended: the ledger-style tables are append-only and several
 foreign keys are `RESTRICT` on purpose.
+
+## Addendum, 2026-10-18 (verification pass)
+
+Nothing was deleted from the owner's account. The pass added 12 projects under the QA account, all titled
+`(v2 ...)`: three offered-mode runs (electric circuits, bridges, ecosystems with keywords), four runs of modes that
+are now outside the offered scope (beginner and advanced instructions, a scanned PDF, topic only), two scan-failure
+probes, and three claim-limit comparison projects (4, 8, 10). Their scene sets were cleared and rebuilt twice through
+the product's own whole-set replace, so their storyboards reflect the final rules. One course, `v2 verification
+course: ecosystems and Python`, was added by the learning-platform check. Two empty probe projects made to confirm
+the scope refusals were deleted.

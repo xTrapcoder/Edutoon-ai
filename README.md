@@ -11,14 +11,19 @@ before relying on that.
 
 ## What you can make
 
-| Input | How | Notes |
+Exactly **three modes** are offered (scope decided 2026-10-18):
+
+| Mode | How | Notes |
 | --- | --- | --- |
-| **PDF** | Upload | Text PDFs are read directly. **Scanned or image-only PDFs are read with local OCR** (see below). |
-| **Pasted text / notes** | Paste (300 to 200,000 characters) | Topics are found from about 40,000 characters, sampled evenly; claims are checked against all of it. |
-| **PDF + keywords** | Upload and type topics | Keywords become your own topics. A keyword the PDF does not back is reported as *not in your document* and is never taught as if the PDF said it. |
-| **PDF (or text) + instructions** | Free-text box | "Make it suitable for a beginner", "Focus on chapter 2", "Use simple examples". See [Instructions](#instructions). |
-| **Topic only** | Name a topic | Written from the model's general knowledge. Nothing is checked against a document; the claims are marked `general_knowledge`, the script says so in its first spoken sentence and the UI labels it. On by default (`KEYWORD_ONLY_PROJECTS_ENABLED=false` refuses the mode). |
-| **PowerPoint** | Upload `.pptx` | A deterministic deck-to-video path; no model writes it, so instructions do not apply. |
+| **PDF -> video** | Upload | Text PDFs are read directly; a page with no text layer is read with local OCR (see below), as part of reading the PDF, not as a separate mode. |
+| **Pasted text -> video** | Paste (300 to 200,000 characters) | Topics are found from about 40,000 characters, sampled evenly; claims are checked against all of it. |
+| **PDF + keywords -> focused video** | Upload and type keywords | Each keyword becomes one of the lesson's topics, taught from the PDF. A keyword whose words the PDF never contains is reported as *not in your document*, left out of the lesson and never taught as if the PDF said it. |
+
+Three things that were built earlier are **switched off, not deleted**: *topic only* (a lesson from the
+model's general knowledge, `KEYWORD_ONLY_PROJECTS_ENABLED`), *PowerPoint decks* (`PPTX_PROJECTS_ENABLED`)
+and *free-text instructions* (`INSTRUCTIONS_ENABLED`). All three default to `false`; the API refuses them
+with a message that says what to do instead, and the web app does not offer them (`apps/web/lib/scope.ts`).
+Their code and tests remain, and a project that already has them keeps working.
 
 The pipeline for every mode: source, topics (you accept or reject), claims, script (you review and
 approve), narration, storyboard, video (MP4, at most 720p, 30 fps, 1 to 30 minutes).
@@ -61,7 +66,7 @@ set to *something* but a local backend never uses them. Useful switches:
 | `SCRIPT_FIXED_CLOSING` | `true` | A script that does not end in a closing gets a fixed one naming the topics it covered. |
 | `SCRIPT_FALLBACK_TO_CLAIMS` | `true` | A topic whose wording cannot be supported is read out as its verified claims instead of failing the script. |
 | `STORYBOARD_FALLBACK_TO_TEXT` | `true` | A segment whose scene text cannot be grounded gets one bullet scene made of its own narration instead of failing. |
-| `KEYWORD_ONLY_PROJECTS_ENABLED` | `true` | Topic-only lessons. |
+| `KEYWORD_ONLY_PROJECTS_ENABLED` / `PPTX_PROJECTS_ENABLED` / `INSTRUCTIONS_ENABLED` | `false` | The three modes outside the offered scope (topic only, PowerPoint decks, free-text instructions). Off by default; the code and its tests remain. |
 
 Sign-in uses Clerk (`apps/web/.env.local`). To try the product without Clerk, development only:
 
@@ -99,7 +104,9 @@ Be exact about this when you demo it:
    can still miss an error or remove a fair sentence.
 4. **Nothing here is a human review.** Narration quality has not been listened to by a person.
 
-## Instructions
+## Instructions (switched off)
+
+Free-text instructions are outside the offered scope since 2026-10-18 (`INSTRUCTIONS_ENABLED=false`); to focus a lesson, use PDF + keywords. What follows describes the dormant feature.
 
 Free text, up to 2,000 characters, kept on the project. Audience, tone, a page range or chapter and
 focus terms are understood by fixed rules and applied in code; definitions and simple examples are passed
