@@ -92,3 +92,53 @@ def test_assess_uses_empty_counts_for_a_topic_with_no_claims() -> None:
     topic = _topic()
     [item] = kc.assess([topic], {}, scripted_topic_ids=None)
     assert item.state == "not_checked"
+
+
+# --- a keyword the document never mentions -------------------------------------------------------
+
+CHAPTER = (
+    "An ecosystem is a community of living things. Decomposers such as fungi and bacteria return "
+    "nutrients to the soil. Only about 10 percent of the energy is stored at the next trophic "
+    "level; this is known as the ten percent rule. Wolves are a keystone species. Coral reefs are "
+    "ecosystems. A trophic cascade is a chain reaction."
+)
+
+
+def test_missing_terms_names_the_words_the_document_never_uses() -> None:
+    assert kc.missing_terms("coral bleaching", [CHAPTER]) == ("bleaching",)
+    assert kc.missing_terms("blockchain mining", [CHAPTER]) == ("blockchain", "mining")
+
+
+def test_a_keyword_whose_words_are_all_in_the_document_has_none_missing() -> None:
+    for keyword in ("ten percent rule", "decomposers", "keystone species", "trophic cascades"):
+        assert kc.missing_terms(keyword, [CHAPTER]) == (), keyword
+
+
+def test_framing_words_and_plurals_do_not_make_a_keyword_missing() -> None:
+    assert kc.missing_terms("the role of decomposers", [CHAPTER]) == ()
+    assert kc.missing_terms("Ecosystem", [CHAPTER]) == ()
+    assert kc.missing_terms("decomposer", [CHAPTER]) == ()  # begins the document's "decomposers"
+
+
+def test_a_short_word_must_match_exactly_not_by_prefix() -> None:
+    assert kc.missing_terms("cascade", ["A cascading failure."]) == ("cascade",)
+
+
+def test_supported_statements_do_not_cover_a_keyword_the_document_never_mentions() -> None:
+    topic = kc.TopicFacts(
+        topic_id=uuid4(), title="coral bleaching", status="accepted", missing_terms=("bleaching",)
+    )
+    item = kc.assess_keyword(topic, kc.ClaimCounts(supported=4, total=8), scripted_topic_ids=None)
+
+    assert item.state == "not_in_document"
+    assert "never mentions 'bleaching'" in item.message
+    assert "cannot appear in the video as something your document says" in item.message
+
+
+def test_a_rejected_keyword_stays_left_out_even_when_the_document_lacks_it() -> None:
+    topic = kc.TopicFacts(
+        topic_id=uuid4(), title="blockchain", status="rejected", missing_terms=("blockchain",)
+    )
+    item = kc.assess_keyword(topic, kc.ClaimCounts(), scripted_topic_ids=None)
+
+    assert item.state == "left_out"

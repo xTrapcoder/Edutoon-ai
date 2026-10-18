@@ -1550,7 +1550,11 @@ async def _add_claims(db_session, project_id: str, topic_id: str, statuses: list
     from edutoon.repositories.claim_verifications import NewClaimCitation
 
     pid = UUID(project_id)
-    _source, [chunk] = await _add_chunks(db_session, project_id, ["Some evidence text."])
+    _source, [chunk] = await _add_chunks(
+        db_session,
+        project_id,
+        ["Some evidence text on the Calvin cycle, the light-dependent reactions and glycolysis."],
+    )
     for number, status in enumerate(statuses):
         await claim_verifications_repo.create(
             db_session,
@@ -1593,7 +1597,7 @@ async def test_coverage_says_which_keywords_the_document_backs_and_which_it_does
     assert by_title["Light-dependent reactions"]["state"] == "covered"
     assert by_title["Light-dependent reactions"]["total_claims"] == 2
     assert by_title["Quantum computing"]["state"] == "not_in_document"
-    assert "does not support this keyword" in by_title["Quantum computing"]["message"]
+    assert "never mentions 'Quantum', 'computing'" in by_title["Quantum computing"]["message"]
     assert by_title["Glycolysis"]["state"] == "not_checked"
     assert body["complete"] is False
     assert "not in your document: 'Quantum computing'" in body["summary"]
@@ -1645,3 +1649,31 @@ async def test_coverage_of_another_users_project_is_a_404(client_factory, auth_h
         response = await client.get(f"/v1/projects/{project_id}/topics/coverage", headers=other)
 
     assert response.status_code == 404
+
+
+async def test_a_keyword_the_document_never_mentions_is_not_covered_even_with_supported_statements(
+    client_factory, auth_headers, db_session
+) -> None:
+    """Regression (a real run): the keyword "coral bleaching" over a chapter on ecosystems that
+    never mentions bleaching. Statements about the nearest passages (invasive species, keystone
+    species) were judged supported and the keyword was reported "covered by 4 statements"; one of
+    them was even worded as a link to coral bleaching that no passage makes."""
+    headers = auth_headers()
+    async with client_factory() as client:
+        project_id = await _create_project(client, headers)
+        calvin, bleaching = await _add_keywords(
+            client, headers, project_id, ["Calvin cycle", "Coral bleaching"]
+        )
+        await _add_claims(db_session, project_id, calvin["id"], ["supported"])
+        await _add_claims(
+            db_session, project_id, bleaching["id"], ["supported"] * 3 + ["unsupported"]
+        )
+        response = await client.get(f"/v1/projects/{project_id}/topics/coverage", headers=headers)
+
+    body = response.json()
+    by_title = {item["title"]: item for item in body["keywords"]}
+    assert by_title["Calvin cycle"]["state"] == "covered"
+    assert by_title["Coral bleaching"]["state"] == "not_in_document"
+    assert "never mentions 'Coral', 'bleaching'" in by_title["Coral bleaching"]["message"]
+    assert body["complete"] is False
+    assert "not in your document: 'Coral bleaching'" in body["summary"]
