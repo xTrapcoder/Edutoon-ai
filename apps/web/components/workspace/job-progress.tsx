@@ -10,6 +10,7 @@ import { cn } from '@/lib/cn';
 import { formatElapsed } from '@/lib/format';
 import { assessWait } from '@/lib/jobs';
 import { useNow } from '@/lib/use-now';
+import { useWorkerOnline } from '@/lib/use-worker-online';
 
 export type ProgressStepState = 'done' | 'active' | 'pending';
 
@@ -74,6 +75,7 @@ export function JobProgressCard({
 }: JobProgressCardProps) {
   const now = useNow(1000);
   const wait = assessWait(job, now);
+  const workerOnline = useWorkerOnline(job.status === 'queued');
 
   return (
     <Card>
@@ -127,7 +129,13 @@ export function JobProgressCard({
           ) : null}
         </div>
 
-        {wait.message ? (
+        {job.status === 'queued' && workerOnline === false ? (
+          <Alert tone="warning">
+            The background worker is not running, so nothing is being processed. Your work is saved
+            and will start by itself as soon as the worker is started again - ask whoever runs this
+            application to start it.
+          </Alert>
+        ) : wait.message ? (
           <Alert tone={wait.level === 'stalled' ? 'warning' : 'info'}>{wait.message}</Alert>
         ) : (
           <p className="flex gap-2 rounded-md bg-brand-50 p-3 text-[13px] text-ink-600">

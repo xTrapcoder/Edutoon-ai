@@ -109,7 +109,13 @@ migration says so and nobody is promoted. To promote someone afterwards, deliber
 server: `uv run python scripts/grant_admin.py --email someone@company.example` (audited as a
 `system` action). Downgrading drops the role column and the invitations table and loses the roles.
 
-**Dev QA.** `scripts/dev_qa_api.py` accepts two stand-in tokens, `ui-qa-token` (administrator) and
+**Worker liveness.** The queue is the `jobs` table; only a running `python -m edutoon.worker` claims jobs.
+The worker refreshes a Redis key every 5 s (20 s TTL, one key per database - `worker/heartbeat.py`) and
+`GET /health` reports `"worker": "ok" | "offline"` (separate from `status`: the API is fine without a worker).
+The web app asks `/health` only while a step is queued and then says the worker is not running.
+
+**Dev QA.** `scripts/dev_qa_api.py` (port 8001) and `scripts/dev_qa_worker.py` use their own database,
+`edutoon_qa` (`scripts/_qa_database.py`), never the normal one. `scripts/dev_qa_api.py` accepts two stand-in tokens, `ui-qa-token` (administrator) and
 `ui-qa-employee-token` (employee), and creates those two local users if they are missing.
 
 **Tests written before roles existed.** `tests/conftest.py` has an autouse fixture that, for any

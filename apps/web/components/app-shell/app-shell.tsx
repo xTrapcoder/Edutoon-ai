@@ -288,7 +288,8 @@ export function AppShell({ children }: { children: ReactNode }) {
       <div className="flex min-w-0 flex-col">
         {process.env.NEXT_PUBLIC_EDUTOON_UI_QA === '1' ? (
           <p className="bg-warning-100 px-4 py-1.5 text-center text-xs font-semibold text-warning-700">
-            UI QA mode: sample data and no real sign-in. Never enabled in a build.
+            UI QA mode: stand-in sign-in, test data only (QA database or mock). Never enabled in a
+            build.
             <QaPersonaSwitch />
           </p>
         ) : null}

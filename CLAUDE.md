@@ -192,7 +192,9 @@ planned for the ceiling is planned 5% under it (`CEILING_HEADROOM_PERCENT`), bec
 estimated pace came out 1% over once narrated. **Not verified:** how any narration sounds (nobody has
 listened), a real customer deck, a render at exactly 30:00.
 
-**Dev QA without Clerk** (development only): `uv run python scripts/dev_qa_api.py` starts the real API accepting
+**Dev QA without Clerk** (development only; since 2026-10-18 on its own ports and database - API :8001, web :3001,
+database `edutoon_qa`, worker `scripts/dev_qa_worker.py`; the normal app keeps :8000/:3000 and the normal database):
+`uv run python scripts/dev_qa_api.py` starts the real API accepting
 only the web UI-QA stand-in token as one local user; `pnpm --filter @edutoon/web dev:qa:real` runs the web app
 against it (`.claude/launch.json`: `api-qa`, `web-qa-real`). A worker started before a code change keeps the old
 code - **restart `make worker`/`make dev` after pulling** or a deck job can be picked up by a stale worker.

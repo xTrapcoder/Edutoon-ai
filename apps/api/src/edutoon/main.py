@@ -26,6 +26,7 @@ from edutoon.providers.cache import Redis, get_redis_client
 from edutoon.providers.embeddings import Embeddings, embeddings_from_settings
 from edutoon.providers.llm import LLM, llm_from_settings
 from edutoon.providers.storage import Storage, get_storage_client
+from edutoon.worker.heartbeat import heartbeat_key, worker_is_online
 
 REQUEST_ID_HEADER = "X-Request-Id"
 
@@ -113,6 +114,11 @@ def create_app() -> FastAPI:
             "database": database,
             "redis": redis_status,
             "storage": storage_status,
+            # Not part of "status": the API itself is fine without a worker, but nothing queued
+            # is processed. The web app reads this to say so instead of waiting silently.
+            "worker": "ok"
+            if await worker_is_online(request.app.state.redis, heartbeat_key(settings.DATABASE_URL))
+            else "offline",
         }
 
     app.include_router(v1_router)

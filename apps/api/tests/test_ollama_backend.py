@@ -134,6 +134,36 @@ async def test_a_reply_cut_off_at_the_output_limit_is_not_used() -> None:
         await _llm(handler).judge_claim("c", PASSAGES)
 
 
+async def test_a_runaway_reply_is_retried_once_sampled_with_a_repeat_penalty() -> None:
+    seen: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        if len(seen) == 1:
+            return _chat_reply({"status": "supp"}, done_reason="length", eval_count=2048)
+        return _chat_reply(VERDICT)
+
+    verdict = await _llm(handler).judge_claim("c", PASSAGES)
+    assert verdict is not None
+    assert len(seen) == 2
+    assert seen[0]["options"]["temperature"] == 0 and "repeat_penalty" not in seen[0]["options"]
+    assert seen[1]["options"]["temperature"] > 0
+    assert seen[1]["options"]["repeat_penalty"] > 1
+
+
+async def test_a_reply_cut_off_twice_is_still_refused_after_exactly_one_retry() -> None:
+    calls = 0
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return _chat_reply({"status": "supp"}, done_reason="length", eval_count=2048)
+
+    with pytest.raises(LLMResponseError, match="cut off"):
+        await _llm(handler).judge_claim("c", PASSAGES)
+    assert calls == 2
+
+
 async def test_a_prompt_that_fills_the_context_window_is_refused_not_trusted() -> None:
     def handler(_: httpx.Request) -> httpx.Response:
         # A well-formed answer - but to a prompt Ollama had to cut the front off.

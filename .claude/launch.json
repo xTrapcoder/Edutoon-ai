@@ -3,27 +3,57 @@
   "configurations": [
     {
       "name": "web-mock-api",
-      "runtimeExecutable": "C:\\Users\\durge\\AppData\\Local\\Temp\\n22\\pnpm.cmd",
-      "runtimeArgs": ["--filter", "@edutoon/web", "mock-api"],
+      "runtimeExecutable": "C:\\Users\\durge\\AppData\\Roaming\\npm\\pnpm.cmd",
+      "runtimeArgs": [
+        "--filter",
+        "@edutoon/web",
+        "mock-api"
+      ],
       "port": 8787
     },
     {
       "name": "web-qa",
-      "runtimeExecutable": "C:\\Users\\durge\\AppData\\Local\\Temp\\n22\\pnpm.cmd",
-      "runtimeArgs": ["--filter", "@edutoon/web", "dev:qa"],
+      "runtimeExecutable": "C:\\Users\\durge\\AppData\\Roaming\\npm\\pnpm.cmd",
+      "runtimeArgs": [
+        "--filter",
+        "@edutoon/web",
+        "dev:qa"
+      ],
       "port": 3000
     },
     {
       "name": "web-qa-real",
-      "runtimeExecutable": "C:\\Users\\durge\\AppData\\Local\\Temp\\n22\\pnpm.cmd",
-      "runtimeArgs": ["--filter", "@edutoon/web", "dev:qa:real"],
-      "port": 3000
+      "runtimeExecutable": "C:\\Users\\durge\\AppData\\Roaming\\npm\\pnpm.cmd",
+      "runtimeArgs": [
+        "--filter",
+        "@edutoon/web",
+        "dev:qa:real"
+      ],
+      "port": 3001
     },
     {
       "name": "api-qa",
       "runtimeExecutable": "uv",
-      "runtimeArgs": ["--directory", "apps/api", "run", "python", "scripts/dev_qa_api.py"],
-      "port": 8000
+      "runtimeArgs": [
+        "--directory",
+        "apps/api",
+        "run",
+        "python",
+        "scripts/dev_qa_api.py"
+      ],
+      "port": 8001
+    },
+    {
+      "name": "worker-qa",
+      "runtimeExecutable": "uv",
+      "runtimeArgs": [
+        "--directory",
+        "apps/api",
+        "run",
+        "python",
+        "scripts/dev_qa_worker.py"
+      ],
+      "port": 0
     }
   ]
 }

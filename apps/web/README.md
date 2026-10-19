@@ -163,8 +163,10 @@ draw and the two ways a scene is drawn as text (one whose visual was dropped cou
 `MOCK_VISUALS=0` turns that off. Check narrow layouts with `resize_window` / a 375 px viewport: no card may scroll sideways.
 
 To drive the signed-in screens against the **real** API, worker, Piper and FFmpeg when Clerk sign-in is not
-available, run `uv run python scripts/dev_qa_api.py` in `apps/api` (it accepts only this stand-in's fixed token, as one
-local user, and refuses to run outside `ENVIRONMENT=development`) and `pnpm --filter @edutoon/web dev:qa:real`.
+available, run `uv run python scripts/dev_qa_api.py` (API :8001) and `uv run python scripts/dev_qa_worker.py` in `apps/api`
+(they accept only this stand-in's fixed token, as one local user, use their own `edutoon_qa` database so nothing
+appears in the normal app, and refuse to run outside `ENVIRONMENT=development`) and
+`pnpm --filter @edutoon/web dev:qa:real` (web :3001). The normal app stays on :8000 / :3000 with real Clerk sign-in.
 A PowerPoint project is built from a `.pptx` (`lib/source-kind.ts` decides the wording: slides, not pages).
 
 **This is not authentication.** `dev:qa` swaps `@clerk/nextjs` for `test-support/qa` through a

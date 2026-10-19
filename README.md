@@ -69,13 +69,26 @@ set to *something* but a local backend never uses them. Useful switches:
 | `PPTX_PROJECTS_ENABLED` | `false` | PowerPoint-deck projects (dormant, not one of the five modes). |
 | `INSTRUCTIONS_ENABLED` | `true` | Free-text instructions (mode 4). Set `false` to refuse them. |
 
-Sign-in uses Clerk (`apps/web/.env.local`). To try the product without Clerk, development only:
+Sign-in uses Clerk (`apps/web/.env.local`). **The normal app is three processes, and a video is only made if
+all three run** (`make dev` starts them together; `GET /health` shows `"worker": "offline"` when the worker is
+missing, and the web app then says so on any queued step instead of waiting silently):
 
 ```bash
-cd apps/api && uv run python scripts/dev_qa_api.py          # API that accepts the UI QA stand-in token
-pnpm --filter @edutoon/web dev:qa:real                       # web against it
-cd apps/api && uv run python -m edutoon.worker               # the worker
+cd apps/api && uv run uvicorn edutoon.main:app --port 8000   # API
+cd apps/api && uv run python -m edutoon.worker               # the worker - the queue is the jobs table
+cd apps/web && pnpm dev                                      # web on :3000, real Clerk sign-in
+```
+
+To try the product without Clerk, development only, run the **QA stack beside it** - own ports (API :8001, web
+:3001) and its own database (`edutoon_qa`, created and migrated on first start), so its stand-in people and test
+projects never appear in the normal app:
+
+```bash
+cd apps/api && uv run python scripts/dev_qa_api.py           # QA API on :8001, database edutoon_qa
+cd apps/api && uv run python scripts/dev_qa_worker.py        # QA worker for that database
+pnpm --filter @edutoon/web dev:qa:real                       # QA web on :3001 (shows the UI QA banner)
 cd apps/api && uv run python scripts/make_qa_inputs.py       # sample PDF, scanned PDF, text in var/qa_inputs
+cd apps/api && uv run python scripts/e2e_acceptance.py --mode pdf --file var/qa_inputs/human_heart.pdf
 ```
 
 In that mode the banner has a switch between the administrator and the employee.

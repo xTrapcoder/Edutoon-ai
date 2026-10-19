@@ -54,6 +54,13 @@ _CONTEXT_FULL_FRACTION: Final = 0.98
 # Constrained decoding is most reliable at temperature 0 (Ollama's advice for structured output).
 _TEMPERATURE: Final = 0
 
+# Greedy decoding can fall into a repetition loop and run to the output limit (seen once, with a
+# 7B model, on a keyword topic outline: 6,076 tokens of repetition). The one retry that follows a
+# reply cut off at ``num_predict`` is sampled, with a repeat penalty, so it cannot loop the same
+# way.
+_RETRY_TEMPERATURE: Final = 0.3
+_RETRY_REPEAT_PENALTY: Final = 1.15
+
 _StopReason = Literal["end_turn", "max_tokens", "tool_use", "model_context_window_exceeded"]
 
 
@@ -203,7 +210,19 @@ class _LocalMessages:
             payload["think"] = False
 
         body = await _post_json(self._http, "/api/chat", payload, what="chat")
-        return self._as_message(body, model=model, tool_name=tool_name, max_tokens=max_tokens)
+        message = self._as_message(body, model=model, tool_name=tool_name, max_tokens=max_tokens)
+        if message.stop_reason == "max_tokens" and temperature is None:
+            log.warning("ollama.runaway_reply_retrying", model=model, max_tokens=max_tokens)
+            payload["options"] = {
+                **payload["options"],
+                "temperature": _RETRY_TEMPERATURE,
+                "repeat_penalty": _RETRY_REPEAT_PENALTY,
+            }
+            body = await _post_json(self._http, "/api/chat", payload, what="chat")
+            message = self._as_message(
+                body, model=model, tool_name=tool_name, max_tokens=max_tokens
+            )
+        return message
 
     def _as_message(
         self, body: dict[str, Any], *, model: str, tool_name: str, max_tokens: int
