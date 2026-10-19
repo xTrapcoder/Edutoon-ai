@@ -9,6 +9,7 @@ export default tseslint.config(
     ignores: [
       '**/node_modules/**',
       '**/.next/**',
+      '**/.next-qa/**',
       '**/dist/**',
       '**/.turbo/**',
       // Generated: Next.js rewrites next-env.d.ts, openapi-typescript writes the contract types.
