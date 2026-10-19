@@ -37,6 +37,8 @@ export interface ApiErrorInit {
   reason?: string | null;
   /** `error.details.topics`: the topic titles a refusal is about, when it names any. */
   topics?: string[];
+  /** `error.details.*` figures (numbers only), e.g. the durations of an evidence refusal. */
+  figures?: Record<string, number>;
 }
 
 export class ApiError extends Error {
@@ -49,6 +51,7 @@ export class ApiError extends Error {
   readonly requestId: string | null;
   readonly reason: string | null;
   readonly topics: string[];
+  readonly figures: Record<string, number>;
 
   constructor(init: ApiErrorInit) {
     super(`API request failed (${init.status ?? init.kind})`);
@@ -61,6 +64,7 @@ export class ApiError extends Error {
     this.requestId = init.requestId ?? null;
     this.reason = init.reason ?? null;
     this.topics = init.topics ?? [];
+    this.figures = init.figures ?? {};
   }
 
   /**
@@ -134,6 +138,15 @@ function readReason(details: unknown): string | null {
   return isRecord(details) && typeof details.reason === 'string' ? details.reason : null;
 }
 
+function readFigures(details: unknown): Record<string, number> {
+  const figures: Record<string, number> = {};
+  if (!isRecord(details)) return figures;
+  for (const [key, value] of Object.entries(details)) {
+    if (typeof value === 'number' && Number.isFinite(value)) figures[key] = value;
+  }
+  return figures;
+}
+
 function readTopics(details: unknown): string[] {
   if (!isRecord(details) || !Array.isArray(details.topics)) return [];
   return details.topics.filter((topic): topic is string => typeof topic === 'string');
@@ -151,6 +164,7 @@ export function apiErrorFromResponse(response: Response, body: unknown): ApiErro
     requestId: response.headers.get('X-Request-Id'),
     reason: envelope ? readReason(envelope.details) : null,
     topics: envelope ? readTopics(envelope.details) : [],
+    figures: envelope ? readFigures(envelope.details) : {},
   });
 }
 

@@ -116,6 +116,76 @@ describe('Script step', () => {
     expect(screen.queryByText(/doesn.t have any verified claims yet/i)).not.toBeInTheDocument();
   });
 
+  it('explains too little evidence for the length, with the figures and both real remedies', async () => {
+    // Regression: this sentence is ~380 characters, so the client dropped it and showed only
+    // "Some of the details were not accepted". The figures now travel as data.
+    serveProject({ ...ready, scripts: [], claims: [claim()] });
+    const long = `There is not enough verified evidence for a video of 10:00. ${'Add more source material. '.repeat(12)}`;
+    server.use(
+      http.post(`${base}/scripts`, () =>
+        HttpResponse.json(
+          {
+            error: {
+              code: 'validation_error',
+              message: long,
+              details: {
+                reason: 'insufficient_evidence',
+                target_duration_ms: 600_000,
+                defensible_duration_ms: 125_000,
+                supported_claims: 8,
+                topic_count: 1,
+              },
+            },
+          },
+          { status: 400 },
+        ),
+      ),
+    );
+
+    renderProjectPage(<ScriptPage />, 'script');
+    await userEvent.click(await screen.findByRole('button', { name: /generate script/i }));
+
+    expect(await screen.findByText(/does not yet support a 10 minutes video/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/8 claims checked against your source across 1 accepted topic/i),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/about 2 min 05 s of narration/i)).toBeInTheDocument();
+    expect(screen.getByText(/choose 2 min 05 s or shorter/i)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /review topics/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /change the length/i })).toBeInTheDocument();
+    expect(screen.queryByText(/some of the details were not accepted/i)).not.toBeInTheDocument();
+  });
+
+  it('offers no shorter length when even the shortest video is more than the evidence can carry', async () => {
+    serveProject({ ...ready, scripts: [], claims: [claim()] });
+    server.use(
+      http.post(`${base}/scripts`, () =>
+        HttpResponse.json(
+          {
+            error: {
+              code: 'validation_error',
+              message: 'x'.repeat(400),
+              details: {
+                reason: 'insufficient_evidence',
+                target_duration_ms: 300_000,
+                defensible_duration_ms: 55_000,
+                supported_claims: 1,
+                topic_count: 1,
+              },
+            },
+          },
+          { status: 400 },
+        ),
+      ),
+    );
+
+    renderProjectPage(<ScriptPage />, 'script');
+    await userEvent.click(await screen.findByRole('button', { name: /generate script/i }));
+
+    expect(await screen.findByText(/too little for even the shortest video/i)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /change the length/i })).not.toBeInTheDocument();
+  });
+
   it('starts generation with an idempotency key and the signed-in token, then shows real progress', async () => {
     let started = false;
     let seen: { key: string | null; auth: string | null } | undefined;

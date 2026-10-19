@@ -104,3 +104,24 @@ describe('apiErrorFromResponse - what a refusal says about itself', () => {
     expect(error.topics).toEqual([]);
   });
 });
+
+describe('apiErrorFromResponse details', () => {
+  it('keeps the numeric figures of a refusal, and drops anything that is not a number', () => {
+    const error = apiErrorFromResponse(response(400), {
+      error: {
+        code: 'validation_error',
+        message: 'x'.repeat(400),
+        details: {
+          reason: 'insufficient_evidence',
+          target_duration_ms: 600000,
+          supported_claims: 8,
+          note: 'not a number',
+        },
+      },
+    });
+    expect(error.reason).toBe('insufficient_evidence');
+    expect(error.figures).toEqual({ target_duration_ms: 600000, supported_claims: 8 });
+    // The long sentence is still not shown; the figures are what the page explains from.
+    expect(error.serverMessage).toBeNull();
+  });
+});

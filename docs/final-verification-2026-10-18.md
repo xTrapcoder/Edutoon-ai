@@ -260,3 +260,78 @@ CRLF working copy is the likely cause; not changed.
   (`apps/api/var/review/acceptance/`, git-ignored) were kept.
 - Manual action for the owner: run the three normal processes (section C), sign in with Clerk, and always start the
   worker with the API (`GET /health` now shows `"worker"`).
+
+---
+
+# Addendum, 2026-10-20: "stuck" topic extraction and the script 400
+
+## Topic extraction: slow, not stuck (reproduced from the owner's own data)
+
+- The owner's real runs in the normal database: *Machine Learning* `extract_topics` took **6 min 39 s** and *Software
+  Verification, Validation and Testing* took **5 min 45 s**, both `succeeded` on the first attempt; no job was `queued` or
+  `running` afterwards. Fresh run in the QA database (plate tectonics, 4-page PDF, 10 topics): **168 s**. The call is one
+  local 7B model request (about 11,700 input tokens in, about 1,800 out), so minutes are normal on this computer.
+- So the job was not stuck, did not fail silently and did not time out. What was wrong is the page: after a minute it
+  showed only a spinner and "Extracting and organising topics". Fixed in the UI: after 90 s a running job now says it is
+  still working, that a long document can take 5 to 10 minutes with the local AI, and that nothing is wrong unless the
+  page says the step failed (`lib/jobs.ts`, `assessWait`); the message for a job running over 12 minutes no longer
+  promises an immediate "failed" (a truly stuck job is only reclaimed within the hour, `TOPIC_EXTRACTION_STALE_AFTER_SECONDS`)
+  and tells the owner to check the worker and Ollama.
+- Bounds that already exist and are now tested (`tests/test_local_timeout_recovery.py`): a model timeout is retried at most
+  `PROVIDER_RETRY_ATTEMPTS` (3) times with backoff; a timeout that clears succeeds; one that never clears raises after exactly
+  three calls; a topic-extraction job whose model keeps timing out ends `failed` with the fixed sentence ("The local AI model
+  took too long to respond...") and `finished_at` set, and the next extraction can be started. Worst case per call is
+  `OLLAMA_TIMEOUT_SECONDS` (900 s) x 3 tries.
+- Earlier today (2026-10-18/19) the worker-offline cause of a never-starting job was fixed with a heartbeat; that is a
+  different failure from this one.
+
+## Script 400: insufficient verified evidence (reproduced, exact rule)
+
+- Rule: `services/scripts.py`, `enqueue_script_generation`, after `assess_evidence` (`domain/evidence_sufficiency.py`): the
+  verified claims, capped at `MAX_CLAIMS_PER_SECTION` per topic, can carry only so many seconds; a longer target is refused
+  **before any job or model call** because it could only repeat claims or invent facts.
+- The owner's case: project *Machine Learning*, target 10:00, 1 accepted topic of 9, 8 supported claims. Live reproduction
+  over HTTP (QA database): 9 claims across 2 topics, target 10:00 -> 400 `validation_error`, "can carry about 5:05",
+  `details = {reason: insufficient_evidence, target_duration_ms: 600000, defensible_duration_ms: 305000,
+  supported_claims: 9, topic_count: 2}`.
+- Why the page said only "Some of the details were not accepted": the sentence is ~380 characters and the client shows
+  server text only up to 280 characters (a deliberate screen against technical text). Fixed without loosening that rule: the
+  refusal now carries its figures as `details` and the page (`InsufficientEvidenceNotice`) writes the explanation itself - how many claims and
+  topics, what length they can carry, and the two real remedies (a "Review topics" link to accept more topics your source
+  supports, and "Change the length" which opens the project's settings). Below the 1:00 minimum there is no shorter length
+  to suggest, and the page says to accept more topics or add source material. No path writes the script anyway, and nothing
+  is auto-accepted.
+- Verified: following the remedy works (`test_the_suggested_shorter_target_is_then_accepted_without_inventing_anything`).
+
+## Controlled end-to-end run (fresh project, QA database; `scripts/e2e_acceptance.py`)
+
+Input `var/qa_inputs/plate_tectonics.pdf`, target 10:00, all 10 extracted topics accepted. Job states from the database:
+
+| Job | Status | Attempts | Seconds |
+| --- | --- | --- | --- |
+| build_evidence | succeeded | 1 | 6 |
+| extract_topics | succeeded | 1 | 168 |
+| extract_claims | succeeded | 1 | 1,562 |
+| generate_script | succeeded | 1 | 769 |
+| synthesise_voice | succeeded | 1 | 13 |
+| generate_storyboard | succeeded | 1 | 723 |
+| render_video | succeeded | 1 | 63 |
+
+Claims: 65 (63 supported, 1 unsupported, 1 partially supported). Script `evidence_limited` (shorter than 10:00; said so,
+not padded). Video `var/review/acceptance/e2e_fix_plate_tectonics.mp4` (git-ignored): H.264 High 1280x720 30 fps, AAC-LC mono
+22.05 kHz, **193.1 s**, 6,212,572 bytes, **0 decode errors**, mean level -15.2 dB, `Range` request -> 206. The evidence
+refusal did not occur in this run (65 claims were enough for the script to be accepted), so it was exercised separately as above.
+
+## Checks
+
+`pytest` **5,684 passed, 25 skipped**, `ruff check`, `ruff format --check`, `mypy src` clean; `export_openapi.py --check`
+up to date; web `tsc`, `eslint` clean, `vitest` **314 passed** (5 new: evidence notice with and without a shorter
+length, error figures, long-running message, polling to completion). Backend added: 4 timeout/recovery tests, 2
+evidence-details tests. The source-grounding guards (claim grounding and backing, keyword coverage,
+`no_verified_evidence`, provenance) were not touched and are in the same full run.
+
+## Not verified
+
+Real Clerk sign-in (owner action); a person has not read the new page in the browser against the real refusal (the
+component is tested against the real error shape, not seen live because the QA project that reproduced it already had a
+script); nobody has watched the new video. A 7B model's topic extraction time varies (168 s to 6 min 39 s observed).

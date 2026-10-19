@@ -26,6 +26,14 @@ describe('assessWait', () => {
     expect(wait.message).toMatch(/nothing is lost/i);
   });
 
+  it('explains a long-running job after a minute and a half, instead of a bare spinner', () => {
+    const running = job({ status: 'running', started_at: '2026-09-26T10:00:00Z' });
+    const wait = assessWait(running, at('2026-09-26T10:02:00Z'));
+    expect(wait.level).toBe('slow');
+    expect(wait.message).toMatch(/5 to 10 minutes/);
+    expect(wait.message).toMatch(/unless this page says the step failed/);
+  });
+
   it('escalates a job that has run far too long', () => {
     const running = job({ status: 'running', started_at: '2026-09-26T10:00:00Z' });
     expect(assessWait(running, at('2026-09-26T10:20:00Z')).level).toBe('stalled');

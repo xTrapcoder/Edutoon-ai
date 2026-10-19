@@ -32,6 +32,36 @@ describe('Topics step', () => {
     expect(screen.getByRole('progressbar')).not.toHaveAttribute('aria-valuenow');
   });
 
+  it('polls a running extraction and moves on by itself when the job finishes', async () => {
+    // Regression for "stuck on Extracting": the spinner must end on its own once the job does.
+    let polls = 0;
+    serveProject({ sources: [source()] });
+    server.use(
+      http.get(`${base}/jobs`, () => {
+        polls += 1;
+        const status = polls < 2 ? 'running' : 'succeeded';
+        return HttpResponse.json({
+          items: [job({ status, started_at: new Date().toISOString() })],
+          next_cursor: null,
+        });
+      }),
+      http.get(`${base}/topics`, () =>
+        HttpResponse.json({
+          items: polls < 2 ? [] : [topic({ title: 'Photosynthesis basics', status: 'proposed' })],
+          next_cursor: null,
+        }),
+      ),
+    );
+
+    renderProjectPage(<TopicsPage />, 'topics');
+    expect(await screen.findByRole('heading', { name: /extracting topics/i })).toBeInTheDocument();
+
+    const found = await screen.findAllByText('Photosynthesis basics', {}, { timeout: 10_000 });
+    expect(found.length).toBeGreaterThan(0);
+    expect(screen.queryByRole('heading', { name: /extracting topics/i })).not.toBeInTheDocument();
+    expect(polls).toBeGreaterThanOrEqual(2);
+  }, 20_000);
+
   it('tells the person a failed extraction failed, in words for them, and never shows raw error text', async () => {
     serveProject({
       sources: [source()],

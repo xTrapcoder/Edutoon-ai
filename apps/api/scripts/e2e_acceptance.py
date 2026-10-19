@@ -179,7 +179,27 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         d.say("claims", total=len(claims), by_status=by)
 
     t = d.now()
-    d.call("POST", f"/v1/projects/{pid}/scripts", json={})
+    refusal: dict[str, Any] | None = None
+    first = d.http.post(
+        f"/v1/projects/{pid}/scripts", json={}, headers={"Idempotency-Key": str(uuid.uuid4())}
+    )
+    if first.status_code == 400 and (
+        first.json()["error"].get("details", {}).get("reason") == "insufficient_evidence"
+    ):
+        # The product's own remedy: the evidence cannot honestly fill the target, so the person
+        # chooses the length it can carry (or accepts more topics). Nothing is padded or invented.
+        refusal = first.json()["error"]["details"]
+        d.say("script refused: insufficient evidence", details=refusal)
+        d.call(
+            "PATCH",
+            f"/v1/projects/{pid}",
+            json={"target_duration_ms": max(60_000, refusal["defensible_duration_ms"])},
+        )
+        first = d.http.post(
+            f"/v1/projects/{pid}/scripts", json={}, headers={"Idempotency-Key": str(uuid.uuid4())}
+        )
+    if first.status_code not in (200, 201, 202):
+        raise StopRun(f"POST scripts -> {first.status_code}: {first.text[:500]}")
     job = d.wait_job(pid, "generate_script", t, minutes=90)
     scripts = d.call("GET", f"/v1/projects/{pid}/scripts")["items"]
     script = max(scripts, key=lambda s: s["created_at"])
@@ -229,6 +249,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "stream_status": rng.status_code,
         "outcome": "video_downloaded",
         "coverage": coverage,
+        "evidence_refusal": refusal,
     }
 
 

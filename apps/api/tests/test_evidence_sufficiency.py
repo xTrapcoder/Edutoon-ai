@@ -15,6 +15,7 @@ from edutoon.core.config import get_settings
 from edutoon.core.errors import ValidationError
 from edutoon.domain import evidence_sufficiency as es
 from edutoon.repositories import jobs as jobs_repo
+from edutoon.repositories import projects as projects_repo
 from edutoon.services import scripts as scripts_service
 from tests.test_services_scripts import (  # noqa: F401 - shared fixtures/helpers
     _no_duration_correction,
@@ -352,3 +353,43 @@ async def test_the_ceiling_is_the_render_limit_so_raising_it_lifts_it(
     result = await _enqueue(db_session, project, owner, key="after")
 
     assert result.job.status == "queued"
+
+
+async def test_the_refusal_carries_its_figures_so_a_client_can_explain_the_remedy(
+    db_session, real_default
+):
+    """The sentence is long and a client may not show it; the figures are the contract."""
+    owner, project, _topics, _claims = await _project_with_topics(
+        db_session, [("Only topic", ["The single supported fact."])]
+    )
+
+    with pytest.raises(ValidationError) as caught:
+        await _enqueue(db_session, project, owner)
+
+    assert caught.value.details == {
+        "reason": "insufficient_evidence",
+        "target_duration_ms": project.target_duration_ms,
+        "defensible_duration_ms": 55_000,
+        "supported_claims": 1,
+        "topic_count": 1,
+    }
+
+
+async def test_the_suggested_shorter_target_is_then_accepted_without_inventing_anything(
+    db_session, real_default
+):
+    """Following the remedy works: at the length the evidence can carry, the refusal is gone."""
+    owner, project, _topics, _claims = await _project_with_topics(
+        db_session, [("Only topic", ["Fact one.", "Fact two.", "Fact three.", "Fact four."])]
+    )
+    with pytest.raises(ValidationError) as caught:
+        await _enqueue(db_session, project, owner)
+    defensible = caught.value.details["defensible_duration_ms"]
+    assert 60_000 <= defensible < project.target_duration_ms
+
+    await projects_repo.update(
+        db_session, project_id=project.id, owner_id=owner.id, target_duration_ms=defensible
+    )
+    enqueued = await _enqueue(db_session, project, owner, key="shorter")
+
+    assert enqueued.job.status == "queued"

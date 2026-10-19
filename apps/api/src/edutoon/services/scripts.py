@@ -336,7 +336,16 @@ async def enqueue_script_generation(
             supported_claims=assessment.supported_claims,
             topics=assessment.topic_count,
         )
-        raise ValidationError(_insufficient_evidence_message(assessment, settings))
+        raise ValidationError(
+            _insufficient_evidence_message(assessment, settings),
+            details={
+                "reason": INSUFFICIENT_EVIDENCE_REASON,
+                "target_duration_ms": assessment.target_duration_ms,
+                "defensible_duration_ms": assessment.defensible_duration_ms,
+                "supported_claims": assessment.supported_claims,
+                "topic_count": assessment.topic_count,
+            },
+        )
 
     await spend_guard.ensure_can_start_provider_job(session, project_id=project_id)
 
@@ -372,6 +381,11 @@ def _shortfall_reason(*, short: bool, evidence_limited: bool) -> str | None:
         return None
     return "evidence_limited" if evidence_limited else "writer_short"
 
+
+INSUFFICIENT_EVIDENCE_REASON = "insufficient_evidence"
+"""``error.details.reason`` of the refusal to write a script whose target the verified claims cannot
+fill (``details`` also carries the figures, so a client can explain the remedy without parsing the
+sentence - a long one is not shown by every client)."""
 
 NO_VERIFIED_EVIDENCE_REASON = "no_verified_evidence"
 """``error.details.reason`` of the refusal to write a script while an accepted topic has no

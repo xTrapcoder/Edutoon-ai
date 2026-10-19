@@ -1,12 +1,13 @@
 'use client';
 
 import { ArrowLeft, ListChecks, PenLine, Wand2 } from 'lucide-react';
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { ButtonLink, Button } from '@/components/ui/button';
 import { Card, CardBody } from '@/components/ui/card';
 import { Alert, EmptyState, ErrorState, Progress, Skeleton } from '@/components/ui/feedback';
 import { JobProgressCard, stepsForJob } from '@/components/workspace/job-progress';
+import { EditSettingsModal } from '@/components/workspace/edit-settings-modal';
 import { QueryGate } from '@/components/workspace/query-gate';
 import { useWorkspaceContext } from '@/components/workspace/workspace-context';
 import { ApiError, describeError } from '@/lib/api/errors';
@@ -22,6 +23,7 @@ import {
 } from '@/lib/jobs';
 import { ApprovedPanel } from './approved-panel';
 import { ScriptStudio } from './script-studio';
+import { InsufficientEvidenceNotice, readEvidenceShortfall } from './insufficient-evidence-notice';
 import { VerificationRequired } from './verification-required';
 import { SupportCheckNotice } from './support-check-notice';
 import { WeakCitationNotice } from './weak-citation-notice';
@@ -145,6 +147,7 @@ function ScriptView() {
   const generate = useGenerateScript(project.id);
   const script = workflow.script;
   const job = useMemo(() => latestJobOfKind(jobs.data, 'generate_script'), [jobs.data]);
+  const [changingLength, setChangingLength] = useState(false);
 
   if (!workflow.canOpenScript) return <ReviewTopicsFirst projectId={project.id} />;
 
@@ -164,8 +167,16 @@ function ScriptView() {
       /no verified evidence/i.test(generate.error.serverMessage ?? ''));
   const topicsWithoutEvidence =
     refused && generate.error instanceof ApiError ? generate.error.topics : [];
+  // Too little verified evidence for the length asked for: said with its figures and its two real
+  // remedies, from `details` (the sentence itself is too long for the client to show).
+  const shortfall =
+    generate.error instanceof ApiError &&
+    generate.error.status === 400 &&
+    generate.error.reason === 'insufficient_evidence'
+      ? readEvidenceShortfall(generate.error.figures)
+      : null;
   const generateError =
-    generate.isError && !refused
+    generate.isError && !refused && !shortfall
       ? describeError(generate.error, { action: 'start your script' })
       : null;
 
@@ -223,12 +234,24 @@ function ScriptView() {
           checking={claims.isRefetching}
         />
       ) : (
-        <GenerateScriptCard
-          onGenerate={start}
-          loading={generate.isPending}
-          error={generateError}
-          failureMessage={script?.status === 'failed' ? jobFailureMessage(job) : undefined}
-        />
+        <>
+          {shortfall ? (
+            <InsufficientEvidenceNotice
+              shortfall={shortfall}
+              projectId={project.id}
+              onChangeLength={() => setChangingLength(true)}
+            />
+          ) : null}
+          <GenerateScriptCard
+            onGenerate={start}
+            loading={generate.isPending}
+            error={generateError}
+            failureMessage={script?.status === 'failed' ? jobFailureMessage(job) : undefined}
+          />
+          {changingLength ? (
+            <EditSettingsModal project={project} open onClose={() => setChangingLength(false)} />
+          ) : null}
+        </>
       )}
     </QueryGate>
   );

@@ -294,7 +294,7 @@ export interface WaitAssessment {
 // How long each phase may take before it is called out. Deliberately generous: a long PDF is a
 // long model call.
 const QUEUED_SLOW_MS = 90_000;
-const RUNNING_SLOW_MS = 4 * 60_000;
+const RUNNING_SLOW_MS = 90_000;
 const RUNNING_STALLED_MS = 12 * 60_000;
 
 /** How long a queued or running job has been waiting, and whether that is unusual. */
@@ -316,14 +316,15 @@ export function assessWait(job: Job, now: number = Date.now()): WaitAssessment {
       level: 'stalled',
       elapsedMs,
       message:
-        "This is taking much longer than expected. Refresh to check on it; if it still hasn't finished, it will be marked as failed and you can try again.",
+        'This is taking much longer than expected. Check that the worker and the local AI (Ollama) are running. A step that is truly stuck is marked as failed within the hour, and then you can try again.',
     };
   }
   if (!queued && elapsedMs > RUNNING_SLOW_MS) {
     return {
       level: 'slow',
       elapsedMs,
-      message: 'Longer documents take longer. You can leave this page - we will keep going.',
+      message:
+        'Still working. Reading a long document with the local AI can take 5 to 10 minutes, and nothing is wrong unless this page says the step failed. You can leave this page - we will keep going.',
     };
   }
   return { level: 'normal', elapsedMs, message: null };
