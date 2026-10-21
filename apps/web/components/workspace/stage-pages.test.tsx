@@ -262,6 +262,36 @@ describe('Storyboard page', () => {
     expect(screen.getByText('Networks share resources')).toBeInTheDocument();
   });
 
+  it('offers Continue to Video once the storyboard is complete, linking to the Video page', async () => {
+    serveProject(everything);
+    renderProjectPage(<StoryboardPage />, 'storyboard');
+
+    const link = await screen.findByRole('link', { name: /continue to video/i });
+    expect(link).toHaveAttribute('href', `/projects/${PROJECT_ID}/video`);
+    // Regenerate stays available as a secondary action; it must not replace the next-step action.
+    expect(screen.getByRole('button', { name: /regenerate storyboard/i })).toBeInTheDocument();
+  });
+
+  it('does not offer Continue to Video before the storyboard is complete', async () => {
+    serveProject({
+      ...ready,
+      scripts: [approved],
+      scriptDetail: approved,
+      synthesisStatus: narrated,
+      storyboardStatus: storyboardStatus({
+        script: approved,
+        segments: [segmentStoryboard({ id: segment.id, is_ready: false, scenes: [] })],
+        ready_segment_count: 0,
+        not_ready_segment_ids: [segment.id],
+        is_complete: false,
+      }),
+    });
+    renderProjectPage(<StoryboardPage />, 'storyboard');
+
+    expect(await screen.findByRole('button', { name: /generate storyboard/i })).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /continue to video/i })).toBeNull();
+  });
+
   it('is blocked, and says why, before the narration is complete', async () => {
     const unnarrated = scriptDetail({ status: 'approved', measured_duration_ms: null });
     serveProject({ ...ready, scripts: [unnarrated], scriptDetail: unnarrated });
