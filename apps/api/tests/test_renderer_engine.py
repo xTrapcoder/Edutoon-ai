@@ -183,9 +183,9 @@ async def test_a_chunk_is_a_video_only_h264_mp4_with_the_canonical_frame_count(t
     renderer = PillowFfmpegRenderer()
     spec = _spec(2_333)
     chunk = await renderer.render_chunk(spec, tmp_path / "c.mp4")
-    # 2 333 ms at 60 fps is 139.98 frames: rendered with the ceiling, 140.
-    assert chunk.frame_count == spec.canonical_frames == 140
-    assert _packet_count(chunk.path) == 140
+    # 2 333 ms at 30 fps is 69.99 frames: rendered with the ceiling, 70.
+    assert chunk.frame_count == spec.canonical_frames == 70
+    assert _packet_count(chunk.path) == 70
     streams = subprocess.run(
         [
             "ffprobe",
@@ -232,9 +232,9 @@ async def test_assembly_keeps_exactly_the_frames_the_absolute_timeline_calls_for
 
     probe = await renderer.probe(final)
     assert probe.video_frames == r.frame_at(total_ms) == sum(f.keep_frames for f in files)
-    assert (probe.width, probe.height, probe.fps) == (960, 540, 60.0)
+    assert (probe.width, probe.height, probe.fps) == (640, 360, 30.0)
     assert probe.constant_frame_rate is True
-    assert probe.video_level == r.level_idc(r.profile_for("low").x264_level) == 32
+    assert probe.video_level == r.level_idc(r.profile_for("low").x264_level) == 30
     assert (probe.video.codec, probe.audio.codec, probe.sample_rate, probe.channels) == (
         "h264",
         "aac",
@@ -292,11 +292,11 @@ async def test_a_finished_video_passes_the_output_check_and_a_wrong_one_does_not
 
 @requires_ffmpeg
 @pytest.mark.parametrize("orientation", ["horizontal", "vertical"])
-async def test_a_full_size_60_fps_video_signals_a_level_that_is_valid_for_what_it_holds(
+async def test_a_full_size_30_fps_video_signals_a_level_that_is_valid_for_what_it_holds(
     tmp_path, orientation
 ):
-    """The real encoder at the production size and rate: 1920x1080 / 1080x1920 at 60 fps must
-    signal H.264 High level 4.2 (level 4.0 cannot carry 489 600 macroblocks a second), be constant
+    """The real encoder at the production size and rate: 1280x720 / 720x1280 at 30 fps must
+    signal H.264 High level 3.1 (level 3.0 cannot carry 108 000 macroblocks a second), be constant
     frame rate with exactly the planned frame count, and pass the same output check the render job
     applies before it publishes a video."""
     renderer = PillowFfmpegRenderer()
@@ -328,20 +328,20 @@ async def test_a_full_size_60_fps_video_signals_a_level_that_is_valid_for_what_i
     )
     probe = await renderer.probe(final)
     assert (probe.width, probe.height) == r.output_size(orientation, "high")
-    assert probe.fps == 60.0 and probe.constant_frame_rate is True
-    assert probe.video_frames == plan.total_frames == 120
-    assert probe.video_profile == "High" and probe.video_level == 42
+    assert probe.fps == 30.0 and probe.constant_frame_rate is True
+    assert probe.video_frames == plan.total_frames == 60
+    assert probe.video_profile == "High" and probe.video_level == 31
     assert r.check_output(probe.summary(), plan) == []
     # A file that claimed the old level would have been caught, not published.
-    falsely_signalled = {**probe.summary(), "video_level": 40}
+    falsely_signalled = {**probe.summary(), "video_level": 30}
     assert any("too low" in p for p in r.check_output(falsely_signalled, plan))
 
 
 @requires_ffmpeg
-async def test_every_frame_timestamp_of_a_60_fps_video_is_exactly_one_frame_after_the_last(
+async def test_every_frame_timestamp_of_a_30_fps_video_is_exactly_one_frame_after_the_last(
     tmp_path,
 ):
-    """PTS and DTS: constant frame rate means every packet is exactly 1/60 s after the previous
+    """PTS and DTS: constant frame rate means every packet is exactly 1/30 s after the previous
     one, and decode order is presentation order (no B-frames), so DTS == PTS - across the
     boundaries where separately encoded chunks are joined."""
     renderer = PillowFfmpegRenderer()

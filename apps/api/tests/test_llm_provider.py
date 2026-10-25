@@ -430,6 +430,33 @@ async def test_compose_script_section_returns_segments_and_token_usage(monkeypat
     assert (usage.input_tokens, usage.output_tokens) == (1234, 567)
 
 
+def test_section_system_prompt_tells_the_writer_to_open_with_the_defining_claim() -> None:
+    # Observed on two drafts: the writer paraphrased a topic's defining claim
+    # with additions the judge rejected, leaving topics (Dynamic Testing,
+    # Software Testing Levels) severely under their budget. The prompt now
+    # tells the writer to state that claim close to its wording first.
+    prompt = llm_module._SECTION_SYSTEM_PROMPT
+    assert "first content segment" in prompt
+    assert "first verified claim" in prompt
+    assert "close to its original wording" in prompt
+    assert "Only then elaborate" in prompt
+
+
+async def test_compose_script_section_passes_section_system_prompt_to_the_model(monkeypatch):
+    # The system prompt the model actually receives is the one we edited. If a
+    # refactor ever stops routing _SECTION_SYSTEM_PROMPT through compose_script_section,
+    # this fails and so does Fix B's effect.
+    llm, create = _llm_for_section(
+        monkeypatch,
+        {"segments": [{"narration_text": "A sentence of narration.", "claim_ids": ["cl1"]}]},
+    )
+
+    await _section(llm)
+
+    create.assert_called_once()
+    assert create.call_args.kwargs["system"] == llm_module._SECTION_SYSTEM_PROMPT
+
+
 async def test_compose_script_section_assigns_segment_positions_from_order(monkeypatch):
     llm, _ = _llm_for_section(
         monkeypatch,
@@ -517,7 +544,7 @@ async def test_compose_script_section_deduplicates_claim_ids_within_a_segment(mo
     assert segments[0].claim_ids == ["cl1", "cl2"]
 
 
-async def test_compose_script_section_rejects_a_claim_id_that_was_not_supplied(monkeypatch):
+async def test_compose_script_section_drops_a_claim_id_that_was_not_supplied(monkeypatch):
     llm, _ = _llm_for_section(
         monkeypatch,
         {
@@ -527,11 +554,17 @@ async def test_compose_script_section_rejects_a_claim_id_that_was_not_supplied(m
         },
     )
 
-    with pytest.raises(LLMResponseError):
-        await _section(llm)
+    segments, _ = await _section(llm)
+
+    assert segments[0].claim_ids == ["cl1"]  # the invented one is gone, never kept or guessed
 
 
-async def test_compose_script_section_rejects_a_section_with_too_many_segments(monkeypatch):
+async def test_compose_script_section_joins_a_reply_with_too_many_segments_down_to_the_limit(
+    monkeypatch,
+):
+    """Regression: told to cover every claim, the writer replied with 26 one-sentence passages for a
+    section whose limit is 12, and the whole six-minute generation failed. The passages are joined
+    down to the limit, keeping every citation."""
     llm, _ = _llm_for_section(
         monkeypatch,
         {
@@ -542,7 +575,20 @@ async def test_compose_script_section_rejects_a_section_with_too_many_segments(m
         },
     )
 
-    with pytest.raises(LLMResponseError):
+    segments, _ = await _section(llm, max_segments=1)
+
+    assert [s.narration_text for s in segments] == ["One. Two."]
+    assert segments[0].claim_ids == ["cl1", "cl2"]
+    assert segments[0].segment_index == 0
+
+
+async def test_compose_script_section_still_rejects_a_reply_far_over_the_limit(monkeypatch):
+    llm, _ = _llm_for_section(
+        monkeypatch,
+        {"segments": [{"narration_text": f"Passage {n}.", "claim_ids": ["cl1"]} for n in range(5)]},
+    )
+
+    with pytest.raises(LLMResponseError, match="limit is 1"):
         await _section(llm, max_segments=1)
 
 
@@ -665,7 +711,9 @@ async def test_compose_script_section_puts_topic_and_continuity_in_the_prompt(mo
     assert "Introduction" in content
     assert "sets the stage" in content
     assert "Calvin cycle" in content
-    assert "[cl1]" in content and "[cl2]" in content
+    # The model sees short handles, not the 36-character ids (which it can mistype).
+    assert "[c1]" in content and "[c2]" in content
+    assert "cl1" not in content
 
 
 # --- the language a script is written in --------------------------------------------------

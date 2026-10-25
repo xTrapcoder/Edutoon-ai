@@ -55,7 +55,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Protocol
 from uuid import UUID
 
 import structlog
@@ -72,10 +72,14 @@ from edutoon.core.errors import (
 from edutoon.domain.llm_usage import UsageReport
 from edutoon.domain.storyboard_provenance import (
     FALLBACK_MARKER,
+    FabricatedContentError,
+    check_provenance,
     has_lexical_overlap,
     resolve_provenance,
+    safe_text_only_content,
+    without_unnamed_scene_text,
 )
-from edutoon.domain.storyboard_template import validate_scene_content
+from edutoon.domain.storyboard_template import StoryboardContentError, validate_scene_content
 from edutoon.domain.storyboard_timing import (
     SegmentTimingInput,
     allocate_scene_durations,
@@ -85,7 +89,11 @@ from edutoon.domain.storyboard_timing import (
     timeline_positions,
 )
 from edutoon.domain.visual import visual_problem, without_invalid_visual
-from edutoon.providers.llm import LLM, StoryboardSegmentBrief
+from edutoon.providers.llm import (
+    StoryboardSceneSetDraft,
+    StoryboardSegmentBrief,
+    TokenUsage,
+)
 from edutoon.repositories import jobs as jobs_repo
 from edutoon.repositories import projects as projects_repo
 from edutoon.repositories import script_segment_audio as script_segment_audio_repo
@@ -96,6 +104,7 @@ from edutoon.repositories.script_segment_audio import ScriptSegmentAudioRecord
 from edutoon.repositories.script_segment_scenes import NewScene, ScriptSegmentSceneRecord
 from edutoon.repositories.scripts import ScriptRecord, ScriptSegmentRecord
 from edutoon.services import audit_logs as audit_logs_service
+from edutoon.services import instructions as instructions_service
 from edutoon.services import projects as projects_service
 from edutoon.services import script_audio as script_audio_service
 from edutoon.services.job_errors import describe_job_failure, public_job_error
@@ -349,9 +358,108 @@ async def _recover_stale_storyboards(session: AsyncSession, *, project_id: UUID)
 # --- run (background job) --------------------------------------------------------
 
 
+MAX_SEGMENT_REWRITES = 2
+"""How many times one segment's scenes may be rewritten after the provenance or slot checks reject
+them. Bounded: each rewrite is one more provider call."""
+
+
+def _storyboard_corrections(exc: Exception) -> list[str]:
+    """What to tell the scene writer was wrong, in plain words, from the check that rejected it."""
+    if isinstance(exc, FabricatedContentError):
+        return [
+            f"In '{violation.slot_path}' the {violation.kind.replace('_', ' ')} "
+            f"'{violation.token}' is not in the narration. Use only words and numbers the "
+            "narration itself says, in sentence case, and do not add words such as 'Basics' or "
+            "'Explained', or numbers such as 'Lesson 1'."
+            for violation in exc.violations[:6]
+        ]
+    return [str(exc)]
+
+
+def _prepare_scenes(
+    draft: StoryboardSceneSetDraft,
+    narration_text: str,
+    *,
+    job_id: UUID,
+    script_segment_id: UUID,
+    trim_unnamed_text: bool = True,
+) -> tuple[list[tuple[str, dict[str, object]]], int, dict[str, int]]:
+    """Check one drafted scene set the way a segment's scenes always are - provenance on what the
+    model actually wrote (including the text of a visual about to be dropped), an invalid visual
+    dropped and the scene kept, then the template's slot contract - and return the scenes to
+    store, how many lost a visual, and how many fell back for provenance. Raises
+    :class:`FabricatedContentError` or :class:`StoryboardContentError` if the set must be
+    rejected."""
+    prepared: list[tuple[str, dict[str, object]]] = []
+    dropped_here = 0
+    fallbacks = {"visual_dropped": 0, "text_only": 0, "text_trimmed": 0}
+    for scene in draft.scenes:
+        resolution = resolve_provenance(scene.template, scene.content, narration_text)
+        if resolution.fallback is not None:
+            fallbacks[resolution.fallback] += 1
+            log.warning(
+                "storyboard.provenance_fallback",
+                job_id=str(job_id),
+                script_segment_id=str(script_segment_id),
+                template=scene.template,
+                fallback=resolution.fallback,
+            )
+        if resolution.fallback is None:
+            # The model's scene as written: an invalid visual (and any visual_dropped flag the
+            # model wrote itself) is dealt with here.
+            content, dropped = without_invalid_visual(scene.template, scene.content)
+            if dropped:
+                log.warning(
+                    "storyboard.visual_dropped",
+                    job_id=str(job_id),
+                    script_segment_id=str(script_segment_id),
+                    template=scene.template,
+                    reason=visual_problem(scene.template, scene.content),
+                )
+        else:
+            # Already rebuilt without the unsupported part, with our own mark on it.
+            content = resolution.content
+        template = resolution.template
+        if trim_unnamed_text and resolution.fallback is None:
+            # A slide must not say what the narration does not (domain.storyboard_provenance).
+            trimmed, removed = without_unnamed_scene_text(template, content, narration_text)
+            if removed:
+                fallbacks["text_trimmed"] += len(removed)
+                log.warning(
+                    "storyboard.scene_text_trimmed",
+                    job_id=str(job_id),
+                    script_segment_id=str(script_segment_id),
+                    template=template,
+                    removed=removed,
+                )
+            if trimmed is None:
+                replacement = safe_text_only_content(narration_text)
+                if replacement is None or check_provenance(replacement, narration_text):
+                    raise FabricatedContentError(check_provenance(content, narration_text))
+                template, content = "bullet_points", replacement
+                fallbacks["text_only"] += 1
+            else:
+                content = trimmed
+        if _content_visual_was_dropped(content):
+            dropped_here += 1
+        validate_scene_content(template, content)
+        prepared.append((template, content))
+    return prepared, dropped_here, fallbacks
+
+
+class SceneComposer(Protocol):
+    """What writes a segment's scenes: the language model (``providers.llm.LLM``) or, for a
+    PowerPoint deck, the deterministic deck composer (``services.deck_lesson``). Whatever it is,
+    its output is validated and checked for provenance here exactly the same way."""
+
+    async def compose_storyboard_scenes(
+        self, segment: StoryboardSegmentBrief, *, max_scenes: int
+    ) -> tuple[StoryboardSceneSetDraft, TokenUsage]: ...
+
+
 async def run_generate_storyboard_job(
     session: AsyncSession,
-    llm: LLM,
+    llm: SceneComposer,
     *,
     job_id: UUID,
     sessionmaker: async_sessionmaker[AsyncSession] | None = None,
@@ -420,7 +528,7 @@ async def run_generate_storyboard_job(
 
 async def _generate_storyboard(
     session: AsyncSession,
-    llm: LLM,
+    llm: SceneComposer,
     *,
     project_id: UUID,
     script_id: UUID,
@@ -472,7 +580,7 @@ async def _generate_storyboard(
     failed_segment_ids: list[str] = []
     provider_calls = 0
     dropped_visuals = 0
-    provenance_fallbacks: dict[str, int] = {"visual_dropped": 0, "text_only": 0}
+    provenance_fallbacks: dict[str, int] = {"visual_dropped": 0, "text_only": 0, "text_trimmed": 0}
 
     for index, segment in enumerate(segments):
         await _report_progress(
@@ -506,64 +614,80 @@ async def _generate_storyboard(
                     sessionmaker, session, script_segment_id=segment.id, scenes=[]
                 )
             else:
-                draft = await record_call(
-                    report,
-                    "storyboard",
-                    llm.compose_storyboard_scenes(
-                        StoryboardSegmentBrief(
-                            segment_index=segment.segment_index,
-                            narration_text=segment.narration_text,
-                            orientation=project.orientation,
-                            lesson_title=project.title,
-                        ),
-                        max_scenes=expected_count,
-                    ),
+                brief = StoryboardSegmentBrief(
+                    segment_index=segment.segment_index,
+                    narration_text=segment.narration_text,
+                    orientation=project.orientation,
+                    lesson_title=project.title,
+                    style_hints=instructions_service.storyboard_hints(project),
                 )
-                provider_calls += 1
-
-                # Provenance is checked on what the model actually wrote - including the text of
-                # a visual about to be dropped. Unsupported text in a scene's own slots fails the
-                # segment; unsupported text in its illustration falls back (module docstring).
-                # An invalid visual is dropped (the scene stays); everything else about the
-                # scene must still meet its template's contract.
-                prepared: list[tuple[str, dict[str, object]]] = []
-                dropped_here = 0
-                for scene in draft.scenes:
-                    resolution = resolve_provenance(
-                        scene.template, scene.content, segment.narration_text
+                corrections: list[str] = []
+                rewrites = 0
+                while True:
+                    draft = await record_call(
+                        report,
+                        "storyboard",
+                        llm.compose_storyboard_scenes(
+                            brief,
+                            max_scenes=expected_count,
+                            **({"corrections": corrections} if corrections else {}),
+                        ),
                     )
-                    if resolution.fallback is not None:
-                        provenance_fallbacks[resolution.fallback] += 1
-                        log.warning(
-                            "storyboard.provenance_fallback",
-                            job_id=str(job_id),
-                            script_segment_id=str(segment.id),
-                            template=scene.template,
-                            fallback=resolution.fallback,
+                    provider_calls += 1
+                    try:
+                        prepared, dropped_here, attempt_fallbacks = _prepare_scenes(
+                            draft,
+                            segment.narration_text,
+                            job_id=job_id,
+                            script_segment_id=segment.id,
+                            trim_unnamed_text=project.source_type != "pptx",
                         )
-                    if resolution.fallback is None:
-                        # The model's scene as written: an invalid visual (and any visual_dropped
-                        # flag the model wrote itself) is dealt with here.
-                        content, dropped = without_invalid_visual(scene.template, scene.content)
-                        if dropped:
+                        break
+                    except (FabricatedContentError, StoryboardContentError) as exc:
+                        # One bounded rewrite, told exactly what was wrong. Nothing is loosened: the
+                        # rewrite is checked by the very same rules, and a segment whose rewrite
+                        # still breaks them fails as it always did.
+                        if rewrites >= MAX_SEGMENT_REWRITES:
+                            # The model keeps writing scene text the narration does not contain
+                            # (typically for a very short hand-off like "Now, let's talk about X").
+                            # Nothing unsupported is shown, and the segment is not left without
+                            # scenes: one bullet scene made only of the narration's own words, which
+                            # passes the provenance check by construction.
+                            safe = safe_text_only_content(segment.narration_text)
+                            if (
+                                not settings.STORYBOARD_FALLBACK_TO_TEXT
+                                or safe is None
+                                or check_provenance(safe, segment.narration_text)
+                                or not isinstance(
+                                    exc, FabricatedContentError | StoryboardContentError
+                                )
+                            ):
+                                raise
+                            prepared = [("bullet_points", safe)]
+                            dropped_here = 0
+                            attempt_fallbacks = {
+                                "visual_dropped": 0,
+                                "text_only": 1,
+                                "text_trimmed": 0,
+                            }
                             log.warning(
-                                "storyboard.visual_dropped",
+                                "storyboard.segment_fell_back_to_text",
                                 job_id=str(job_id),
                                 script_segment_id=str(segment.id),
-                                template=scene.template,
-                                reason=visual_problem(scene.template, scene.content),
                             )
-                    else:
-                        # Already rebuilt without the unsupported part, with our own mark on it.
-                        content = resolution.content
-                    if _content_visual_was_dropped(content):
-                        dropped_here += 1
-                    validate_scene_content(resolution.template, content)
-                    prepared.append((resolution.template, content))
+                            break
+                        rewrites += 1
+                        corrections = _storyboard_corrections(exc)
+                        log.warning(
+                            "storyboard.segment_rewritten",
+                            job_id=str(job_id),
+                            script_segment_id=str(segment.id),
+                            rewrite=rewrites,
+                        )
+                for kind_of_fallback, count in attempt_fallbacks.items():
+                    provenance_fallbacks[kind_of_fallback] += count
 
-                durations = allocate_scene_durations(
-                    audio.measured_duration_ms or 0, len(draft.scenes)
-                )
+                durations = allocate_scene_durations(audio.measured_duration_ms or 0, len(prepared))
                 timings = scene_timings(segment_starts[index], durations)
                 new_scenes = [
                     NewScene(
@@ -607,6 +731,8 @@ async def _generate_storyboard(
         "dropped_visual_count": dropped_visuals,
         "provenance_visual_fallback_count": provenance_fallbacks["visual_dropped"],
         "provenance_text_fallback_count": provenance_fallbacks["text_only"],
+        # Bullets and subtitles removed because the narration never says them.
+        "scene_text_trimmed_count": provenance_fallbacks["text_trimmed"],
         "usage": report.as_dict(),
     }
 
@@ -736,9 +862,7 @@ async def get_storyboard_status(
     computed fresh from current state, never copied from a job's historical
     result (spec: completeness is separate from job status).
     """
-    project = await projects_service.get_project(
-        session, project_id=project_id, owner_id=owner_id
-    )
+    project = await projects_service.get_project(session, project_id=project_id, owner_id=owner_id)
 
     script = await scripts_repo.get_by_id_for_project(session, script_id, project_id)
     if script is None:

@@ -88,23 +88,26 @@ from edutoon.domain.visual import visual_drawing_id
 
 # --- production constants -----------------------------------------------------------
 
-FPS: Final = 60
-"""The production frame rate: a constant 60 fps. It is a whole-number divisor of nothing awkward
-for web and mobile playback (every mainstream player handles constant-frame-rate 60), and every
-frame position in this module is derived from it through :func:`frame_at`, never from a second
-copy of the number. It was 30 until the pre-API readiness pass; the change is not just the
+FPS: Final = 30
+"""The production frame rate: a constant 30 fps. Every frame position in this module is derived
+from it through :func:`frame_at`, never from a second copy of the number. The product's output
+specification is at most 720p at 30 fps: the lessons are mostly still text and simple diagrams, so a
+higher rate buys nothing visible and costs encoding time, memory and file size. (It was 60 between
+the pre-API readiness pass and the deck work, and 30 before that.) Changing it is not just the
 constant - the H.264 level each profile signals has to be valid for the frame size *at this rate*
 (:func:`profile_level_problem`, held by a test and re-checked on every render plan and on every
 finished video by :func:`check_output`), and a keyframe interval is stated in seconds
 (:data:`GOP_SECONDS`), not in frames. Phase 9 stores no frame rate; only the render configuration
 does."""
 
-RENDERER_VERSION: Final = "pillow-ffmpeg/4"
+RENDERER_VERSION: Final = "pillow-ffmpeg/5"
 """Identifies the drawing code *and* the assembly recipe. Bump it whenever a change would
 alter the pixels or the bitstream of an existing scene - every chunk fingerprint includes it,
 so artifacts from an older renderer are never treated as current.
 
-History: ``/4`` (60 fps) - the production frame rate went from 30 to 60, the H.264 levels were
+History: ``/5`` (720p, 30 fps) - the output specification became at most 1280x720 at 30 fps:
+the frame sizes, the frame rate and the H.264 levels all changed, so no earlier chunk is valid.
+``/4`` (60 fps) - the production frame rate went from 30 to 60, the H.264 levels were
 raised to ones that are valid at that rate and the keyframe interval was re-stated in seconds.
 Every chunk fingerprint already includes ``fps`` and the encoding profile, so chunks rendered at
 30 fps could never have been reused; the bump makes the break explicit and independent of those
@@ -139,9 +142,9 @@ since), ``failed`` (the latest attempt could not render it)."""
 class EncodingProfile:
     """Everything that decides the *bytes* of a rendered chunk and the final MP4.
 
-    ``scale_percent`` is the output size relative to the full 1080-pixel frame. ``low`` is a
-    review render: half the linear size, so a preview costs roughly a quarter of the pixels.
-    ``high`` is the deliverable: 1920x1080 / 1080x1920.
+    ``scale_percent`` is the output size relative to the full frame (:data:`_FULL_SIZE`). ``low`` is
+    a review render: half the linear size, so a preview costs roughly a quarter of the pixels.
+    ``high`` is the deliverable: 1280x720 / 720x1280, the largest size the product produces.
     """
 
     quality: Quality
@@ -183,12 +186,12 @@ X264_PARAMS: Final = "scenecut=0:threads=4:rc-lookahead=10"
 
 # The H.264 level each profile signals, and why (ITU-T H.264 Annex A, Table A-1). A level bounds
 # the macroblock (16x16) rate, the frame size and the decoded-picture buffer; a decoder is entitled
-# to refuse a stream that signals a level below what its pictures actually need. At 60 fps:
-#   * ``high``: 1920x1080 (and 1080x1920) is 120 x 68 = 8160 macroblocks a frame, 489 600 a
-#     second. Level 4.0/4.1 allow 245 760 a second (enough for 30 fps, 244 800 - not for 60);
-#     level 4.2 allows 522 240 and a frame of 8704, so 4.2 is the lowest valid level.
-#   * ``low``: 960x540 is 60 x 34 = 2040 macroblocks a frame, 122 400 a second. Level 3.1 allows
-#     108 000 (enough for 30 fps only); level 3.2 allows 216 000, the lowest valid level.
+# to refuse a stream that signals a level below what its pictures actually need. At 30 fps:
+#   * ``high``: 1280x720 (and 720x1280) is 80 x 45 = 3600 macroblocks a frame, 108 000 a second.
+#     Level 3.0 allows 40 500 a second; level 3.1 allows 108 000 and a frame of 3600, exactly
+#     enough, so 3.1 is the lowest valid level.
+#   * ``low``: 640x360 is 40 x 23 = 920 macroblocks a frame, 27 600 a second. Level 2.2 allows
+#     20 250; level 3.0 allows 40 500, the lowest valid level.
 # :func:`profile_level_problem` recomputes this from the frame size and rate, so the table above is
 # checked by a test rather than trusted, and :func:`check_output` checks the level a finished file
 # really signals.
@@ -204,7 +207,7 @@ PROFILES: Final[Mapping[str, EncodingProfile]] = {
         crf=30,
         preset="veryfast",
         x264_profile="high",
-        x264_level="3.2",
+        x264_level="3.0",
         pix_fmt="yuv420p",
         gop_frames=GOP_SECONDS * FPS,
         bframes=0,
@@ -219,7 +222,7 @@ PROFILES: Final[Mapping[str, EncodingProfile]] = {
         crf=20,
         preset="medium",
         x264_profile="high",
-        x264_level="4.2",
+        x264_level="3.1",
         pix_fmt="yuv420p",
         gop_frames=GOP_SECONDS * FPS,
         bframes=0,
@@ -230,10 +233,10 @@ PROFILES: Final[Mapping[str, EncodingProfile]] = {
     ),
 }
 
-# The full-quality frame size; ``low`` scales it by ``scale_percent``.
+# The full-quality frame size - 720p, the product's ceiling; ``low`` scales it by ``scale_percent``.
 _FULL_SIZE: Final[Mapping[str, tuple[int, int]]] = {
-    "horizontal": (1920, 1080),
-    "vertical": (1080, 1920),
+    "horizontal": (1280, 720),
+    "vertical": (720, 1280),
 }
 
 # Tolerance the finished video's stream durations must meet against the measured narration
@@ -260,7 +263,7 @@ def profile_for(quality: str) -> EncodingProfile:
 
 
 def output_size(orientation: str, quality: str) -> tuple[int, int]:
-    """The pixel size of a render: ``(1920, 1080)`` / ``(1080, 1920)`` at ``high``, scaled
+    """The pixel size of a render: ``(1280, 720)`` / ``(720, 1280)`` at ``high``, scaled
     (and kept even, as H.264 4:2:0 requires) for ``low``."""
     if orientation not in ORIENTATIONS:
         raise RenderPlanError(f"Unknown orientation {orientation!r}.")

@@ -33,6 +33,9 @@ class UploadedSourceRecord:
     status: str
     created_at: datetime
     updated_at: datetime
+    extraction_method: str = "text"
+    ocr_page_count: int | None = None
+    failure_code: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +62,9 @@ def _from_row(row: RowMapping) -> UploadedSourceRecord:
         status=row["status"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
+        extraction_method=row["extraction_method"],
+        ocr_page_count=row["ocr_page_count"],
+        failure_code=row["failure_code"],
     )
 
 
@@ -74,12 +80,14 @@ async def create(
     uploader_id: UUID | None = None,
     content_type: str = "application/pdf",
     page_count: int | None = None,
+    kind: str = "pdf",
 ) -> UploadedSourceRecord:
     stmt = (
         uploaded_sources.insert()
         .values(
             project_id=project_id,
             uploader_id=uploader_id,
+            kind=kind,
             original_filename=original_filename,
             content_type=content_type,
             storage_bucket=storage_bucket,

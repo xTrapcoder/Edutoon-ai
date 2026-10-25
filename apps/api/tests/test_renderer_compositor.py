@@ -198,3 +198,44 @@ def test_vertical_and_horizontal_are_laid_out_differently_not_just_squeezed():
         h = _compositor(template, "horizontal").arrangement
         v = _compositor(template, "vertical").arrangement
         assert h != v
+
+
+@pytest.mark.parametrize(
+    ("orientation", "width", "height"),
+    [("horizontal", 1280, 720), ("vertical", 720, 1280), ("horizontal", 640, 360)],
+)
+def test_a_longest_allowed_subtitle_is_wrapped_whole_inside_the_frame(
+    orientation: str, width: int, height: int
+) -> None:
+    """The first frame of a real video once showed a subtitle ending "... differ in their obj".
+    The cut was in the stored text (decoding stopped at the slot limit), not in the compositor;
+    this pins the compositor's half: a subtitle of the longest allowed length keeps every word,
+    is never given an ellipsis, and every layer stays inside the frame."""
+    subtitle = (
+        "we will explore the concepts of investments and savings, and understand how they differ "
+        "in their objectives"
+    )[:100]
+    scene = SceneCompositor(
+        template="title_card",
+        content={"title": "in this lesson", "subtitle": subtitle},
+        orientation=orientation,
+        width=width,
+        height=height,
+        duration_ms=4000,
+    )
+    for layer in scene.layers:
+        assert layer.x >= 0 and layer.y >= 0
+        assert layer.x + layer.rgb.width <= width
+        assert layer.y + layer.rgb.height <= height
+    scale = (height if orientation == "horizontal" else width) / 1080
+    fitted = fit_text(
+        subtitle,
+        max_width=round(width * 0.6),
+        max_height=round(height * 0.26),
+        max_size=round(44 * scale),
+        min_size=round(24 * scale),
+    )
+    assert " ".join(fitted.lines) == subtitle and "…" not in "".join(fitted.lines)
+    subtitle_layer = scene.layers[-1]
+    assert subtitle_layer.rgb.height <= height * 0.3
+    assert subtitle_layer.rgb.width <= width - 2 * 40

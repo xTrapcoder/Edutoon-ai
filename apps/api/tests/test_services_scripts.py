@@ -60,6 +60,7 @@ from edutoon.services import audit_logs as audit_logs_service
 from edutoon.services import job_errors
 from edutoon.services import scripts as scripts_service
 from tests.leaky_errors import assert_clean, leaky_anthropic
+from tests.storage_isolation import UPLOADS_BUCKET
 
 # Stands in for an external provider (OpenAI / Anthropic): these tests prove how our code
 # handles a response, never how a real provider behaves. See "Provider-mocked tests"
@@ -100,7 +101,7 @@ async def _add_supported_claim(db_session, project, topic: ProjectTopicRecord, t
         db_session,
         project_id=project.id,
         original_filename="notes.pdf",
-        storage_bucket="edutoon-uploads",
+        storage_bucket=UPLOADS_BUCKET,
         storage_key=f"{project.id}/{uuid4()}.pdf",
         byte_size=1024,
         checksum_sha256=uuid4().hex + uuid4().hex[:32],
@@ -132,7 +133,12 @@ async def _project_with_topics(
     claims_by_topic: dict[UUID, list[ClaimVerificationRecord]] = {}
     for position, (title, claim_texts) in enumerate(topic_specs):
         topic = await project_topics_repo.create(
-            db_session, project_id=project.id, title=title, status="accepted", position=position
+            db_session,
+            project_id=project.id,
+            title=title,
+            status="accepted",
+            origin="source",
+            position=position,
         )
         topics.append(topic)
         claims_by_topic[topic.id] = [
@@ -172,6 +178,8 @@ def _mock_llm(
     """
     llm = LLM(AsyncAnthropic(api_key="sk-ant-test-not-a-real-key"), model=model)
     call_counts: dict[UUID, int] = {}
+    received_corrections: list[str] = []
+    llm.received_corrections = received_corrections  # type: ignore[attr-defined]
 
     async def _outline(
         brief: ScriptBrief, topics: Sequence[OutlineTopicBrief]
@@ -199,7 +207,10 @@ def _mock_llm(
         max_segments: int,
         max_claims: int,
         words_per_minute: int,
+        corrections: Sequence[str] = (),
     ) -> tuple[list[ScriptSegmentDraft], TokenUsage]:
+        if corrections:
+            received_corrections.extend(corrections)
         generations = sections_by_topic[topic.topic_id]
         index = call_counts.get(topic.topic_id, 0)
         call_counts[topic.topic_id] = index + 1
@@ -239,6 +250,26 @@ def _llm_raising_on_outline(monkeypatch: Any, exc: Exception, *, model: str = SC
 # --- fake segments -------------------------------------------------------------------
 
 
+# The words of every claim these tests create, so a padded segment that cites a claim shares
+# wording with it (a citation that shares none is dropped - domain.script_provenance).
+_PAD_WORDS = [
+    "fact",
+    "first",
+    "second",
+    "third",
+    "chlorophyll",
+    "absorbs",
+    "light",
+    "carbon",
+    "fixed",
+    "plants",
+    "convert",
+    "energy",
+    "another",
+    "word",
+]
+
+
 def _words_for_duration(duration_ms: int, *, wpm: int = 150) -> int:
     return max(1, round(duration_ms / 60_000 * wpm))
 
@@ -248,7 +279,8 @@ def _narration_of_duration(duration_ms: int, *, wpm: int = 150) -> str:
     so a test controls the duration the service will compute without needing
     to hand-count words in realistic prose.
     """
-    return " ".join(["word"] * _words_for_duration(duration_ms, wpm=wpm))
+    count = _words_for_duration(duration_ms, wpm=wpm)
+    return " ".join(_PAD_WORDS[index % len(_PAD_WORDS)] for index in range(count))
 
 
 def _segment(
@@ -316,7 +348,11 @@ async def test_enqueue_requires_at_least_one_accepted_topic(db_session):
 async def test_enqueue_requires_every_accepted_topic_to_have_supported_evidence(db_session):
     owner, project = await _make_project(db_session)
     await project_topics_repo.create(
-        db_session, project_id=project.id, title="Photosynthesis", status="accepted"
+        db_session,
+        project_id=project.id,
+        title="Photosynthesis",
+        status="accepted",
+        origin="source",
     )
 
     with pytest.raises(ValidationError, match="Photosynthesis"):
@@ -325,10 +361,62 @@ async def test_enqueue_requires_every_accepted_topic_to_have_supported_evidence(
         )
 
 
+async def _keyword_topic_with_a_supported_claim(db_session, *, title: str, document_text: str):
+    """A keyword the owner typed (origin ``user``) whose one supported statement is cited from a
+    document that says ``document_text``."""
+    owner, project = await _make_project(db_session, title="Ecosystems")
+    topic = await project_topics_repo.create(
+        db_session,
+        project_id=project.id,
+        title=title,
+        status="accepted",
+        origin="user",
+    )
+    await _add_supported_claim(db_session, project, topic, document_text)
+    return owner, project
+
+
+async def test_enqueue_refuses_a_keyword_the_document_never_mentions_despite_supported_claims(
+    db_session,
+):
+    """Regression (a real run): "coral bleaching" over a chapter on ecosystems. Statements about
+    the nearest passages were judged supported, so the keyword looked covered and a section titled
+    "coral bleaching" would have taught invasive species and keystone species under it."""
+    owner, project = await _keyword_topic_with_a_supported_claim(
+        db_session,
+        title="Coral bleaching",
+        document_text="Invasive species can harm native ecosystems by spreading quickly.",
+    )
+
+    with pytest.raises(ValidationError, match="Coral bleaching") as refused:
+        await scripts_service.enqueue_script_generation(
+            db_session, project_id=project.id, owner_id=owner.id, idempotency_key="k"
+        )
+    assert refused.value.details["topics"] == ["Coral bleaching"]
+
+
+async def test_enqueue_accepts_a_keyword_the_document_does_mention(db_session):
+    owner, project = await _keyword_topic_with_a_supported_claim(
+        db_session,
+        title="Invasive species",
+        document_text="Invasive species can harm native ecosystems by spreading quickly.",
+    )
+
+    result = await scripts_service.enqueue_script_generation(
+        db_session, project_id=project.id, owner_id=owner.id, idempotency_key="k"
+    )
+
+    assert result.replayed is False
+
+
 async def test_enqueue_ignores_a_partially_supported_claim_as_evidence(db_session):
     owner, project = await _make_project(db_session)
     topic = await project_topics_repo.create(
-        db_session, project_id=project.id, title="Photosynthesis", status="accepted"
+        db_session,
+        project_id=project.id,
+        title="Photosynthesis",
+        status="accepted",
+        origin="source",
     )
     await claim_verifications_repo.create(
         db_session,
@@ -353,7 +441,11 @@ async def test_enqueue_ignores_a_hand_typed_claim_with_no_topic(db_session):
     """
     owner, project = await _make_project(db_session)
     await project_topics_repo.create(
-        db_session, project_id=project.id, title="Photosynthesis", status="accepted"
+        db_session,
+        project_id=project.id,
+        title="Photosynthesis",
+        status="accepted",
+        origin="source",
     )
     await claim_verifications_repo.create(
         db_session,
@@ -583,32 +675,78 @@ async def test_run_never_raises_on_a_value_error_from_the_provider(db_session, m
     assert job.status == "failed"
 
 
-async def test_run_marks_failed_when_a_segment_is_unsourced(db_session, monkeypatch):
+async def test_run_takes_out_a_passage_that_stays_unsourced_after_the_rewrites(
+    db_session, monkeypatch
+):
+    """Nothing unsourced reaches the script: the writer is asked to fix it, and a passage that is
+    still uncited after the bounded rewrites is taken out, with the cited one kept (a whole section
+    is not thrown away for one passage). It is recorded on the job's result."""
     _owner, project, topic, claim, enq = await _enqueued(db_session)
     llm, _outline_mock, _section_mock = _mock_llm(
         monkeypatch,
         sections_by_topic={
             topic.id: [
                 [
-                    _segment("A properly cited sentence.", [str(claim.id)]),
+                    _segment("A properly cited fact.", [str(claim.id)]),
                     _segment("An unsourced assertion with no citation.", []),
                 ]
+            ]  # the last entry repeats: the retry writes the same thing
+        },
+    )
+
+    job = await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
+
+    assert job.status == "succeeded"
+    assert llm.received_corrections  # it was told what was wrong
+    texts = [
+        segment.narration_text
+        for segment in await scripts_repo.list_segments(
+            db_session, project_id=enq.job.project_id, script_id=enq.script.id
+        )
+    ]
+    assert texts == ["A properly cited fact."]
+    [removed] = job.result["support_check"]["removed_sentences"]
+    assert removed["sentence"] == "An unsourced assertion with no citation."
+    assert "cites no verified claim" in removed["reason"]
+
+
+async def test_run_accepts_a_section_that_the_writer_fixes_when_told_what_was_wrong(
+    db_session, monkeypatch
+):
+    """The retry never lowers a bar: the rewritten section passes the same checks, the rejected
+    wording is not in the script, and the job's result says the section was rewritten and why."""
+    _owner, project, topic, claim, enq = await _enqueued(db_session)
+    llm, _outline_mock, _section_mock = _mock_llm(
+        monkeypatch,
+        sections_by_topic={
+            topic.id: [
+                [
+                    _segment("A properly cited fact.", [str(claim.id)]),
+                    _segment("An unsourced assertion with no citation.", []),
+                ],
+                [
+                    _segment("A properly cited fact.", [str(claim.id)]),
+                    _segment("A short hand-off.", [], connective=True),
+                ],
             ]
         },
     )
 
     job = await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
 
-    assert job.status == "failed"
-    script = await scripts_repo.get_by_id(db_session, enq.script.id)
-    assert script.status == "failed"
-    # nothing partial persisted
-    assert (
-        await scripts_repo.list_segments(
+    assert job.status == "succeeded"
+    texts = [
+        segment.narration_text
+        for segment in await scripts_repo.list_segments(
             db_session, project_id=enq.job.project_id, script_id=enq.script.id
         )
-        == []
-    )
+    ]
+    assert texts == ["A properly cited fact.", "A short hand-off."]
+    assert "unsourced" not in " ".join(texts)
+    [retry] = job.result["section_retries"]
+    assert retry["rejected_passages"] == 1
+    assert "lists no claim ids" in retry["problems"][0]
+    assert "An unsourced assertion" in retry["problems"][0]
 
 
 async def test_run_persists_nothing_when_a_later_topic_fails_even_though_an_earlier_one_succeeded(
@@ -1035,7 +1173,11 @@ async def test_progress_is_visible_mid_run_without_blocking_or_partial_script_da
             setup_session, owner_id=owner.id, title="P", source_type="pdf"
         )
         topic = await project_topics_repo.create(
-            setup_session, project_id=project.id, title="A topic", status="accepted"
+            setup_session,
+            project_id=project.id,
+            title="A topic",
+            status="accepted",
+            origin="source",
         )
         claim = await _add_supported_claim(setup_session, project, topic, "A fact.")
         await setup_session.commit()
@@ -1274,3 +1416,244 @@ async def test_ordinary_teaching_language_is_not_mistaken_for_an_added_fact(
     job = await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
 
     assert job.status == "succeeded"
+
+
+async def test_run_refuses_a_section_that_cites_no_claim_at_all(db_session, monkeypatch):
+    """A topic explained only by hand-offs is in the script by name and absent in substance: the
+    writer is asked to rewrite it, and a section that still cites nothing fails the generation."""
+    _owner, project, topic, claim, enq = await _enqueued(db_session)
+    llm, _outline_mock, _section_mock = _mock_llm(
+        monkeypatch,
+        sections_by_topic={topic.id: [[_segment("A short hand-off only.", [], connective=True)]]},
+    )
+
+    job = await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
+
+    assert job.status == "failed"
+    assert "cites none of its verified claims" in (job.error or "")
+    assert any("No passage of this section cites a claim" in c for c in llm.received_corrections)
+    assert (
+        await scripts_repo.list_segments(
+            db_session, project_id=enq.job.project_id, script_id=enq.script.id
+        )
+        == []
+    )
+
+
+async def test_run_accepts_a_hollow_section_that_is_rewritten_with_cited_content(
+    db_session, monkeypatch
+):
+    _owner, project, topic, claim, enq = await _enqueued(db_session)
+    llm, _outline_mock, _section_mock = _mock_llm(
+        monkeypatch,
+        sections_by_topic={
+            topic.id: [
+                [_segment("A short hand-off only.", [], connective=True)],
+                [
+                    _segment("A short hand-off only.", [], connective=True),
+                    _segment("A properly cited fact.", [str(claim.id)]),
+                ],
+            ]
+        },
+    )
+
+    job = await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
+
+    assert job.status == "succeeded"
+    [retry] = job.result["section_retries"]
+    assert retry["hollow"] is True and retry["rejected_passages"] == 0
+
+
+async def test_run_keeps_the_first_draft_when_the_correction_pass_cannot_pass_the_checks(
+    db_session, monkeypatch
+):
+    """The length-correction pass is optional tuning. If its rewrite breaks a script rule even after
+    its own rewrites, it is not used - but it does not cost the valid first draft either."""
+    monkeypatch.setenv("MAX_SCRIPT_CORRECTION_ATTEMPTS", "1")
+    get_settings.cache_clear()
+    try:
+        _owner, project, topic, claim, enq = await _enqueued(db_session)
+        llm, _outline_mock, _section_mock = _mock_llm(
+            monkeypatch,
+            sections_by_topic={
+                topic.id: [
+                    # first draft: valid, but far too short, so a correction pass runs
+                    [_on_target([str(claim.id)], duration_ms=10_000)],
+                    # the correction pass and its rewrites: an uncited, non-connective passage
+                    [_segment("An unsourced assertion with no citation.", [])],
+                ]
+            },
+        )
+
+        job = await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
+
+        assert job.status == "succeeded"
+        assert job.result["correction_applied"] is False
+        assert "cites none of its verified claims" in job.result["correction_failed"]
+        script = await scripts_repo.get_by_id(db_session, enq.script.id)
+        assert script.estimated_duration_ms == 10_000  # the first draft, as written
+        texts = [
+            segment.narration_text
+            for segment in await scripts_repo.list_segments(
+                db_session, project_id=enq.job.project_id, script_id=enq.script.id
+            )
+        ]
+        assert "unsourced" not in " ".join(texts)
+    finally:
+        get_settings.cache_clear()
+
+
+async def test_a_fact_two_topics_hold_is_written_once_under_the_topic_it_fits(
+    db_session, monkeypatch
+):
+    """Regression: neighbouring topics' claims come from the same passages, so a lesson said the
+    same fact in several sections. Each fact now goes to one section - the one whose title fits."""
+    owner, project, [britain, steam], claims_by_topic = await _project_with_topics(
+        db_session,
+        [
+            (
+                "Conditions in Britain",
+                [
+                    "Britain had large coal and iron ore deposits close to its ports.",
+                    "Steam engines let factories be built anywhere, away from rivers.",
+                    "A stable government and a growing banking system helped industry.",
+                ],
+            ),
+            (
+                "Steam engines",
+                [
+                    "Steam engines allowed factories to be built anywhere, away from rivers.",
+                    "James Watt added a separate condenser, making the engine far more efficient.",
+                    "Coal became the fuel of the new age.",
+                ],
+            ),
+        ],
+    )
+    enq = await scripts_service.enqueue_script_generation(
+        db_session, project_id=project.id, owner_id=owner.id, idempotency_key="idem-dedupe"
+    )
+    first = {topic.id: claims_by_topic[topic.id][0] for topic in (britain, steam)}
+    llm, _outline, section = _mock_llm(
+        monkeypatch,
+        sections_by_topic={
+            topic_id: [[_segment(claim.claim_text, [str(claim.id)])]]
+            for topic_id, claim in first.items()
+        },
+    )
+
+    job = await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
+
+    assert job.status == "succeeded"
+    texts_by_topic = {
+        call.args[1].topic_id: [claim.text for claim in call.args[2]]
+        for call in section.await_args_list
+    }
+    assert not any("anywhere" in text for text in texts_by_topic[britain.id])
+    assert any("anywhere" in text for text in texts_by_topic[steam.id])
+    assert len(texts_by_topic[britain.id]) == 2
+    assert len(texts_by_topic[steam.id]) == 3
+    assert job.result["claims_deduplicated"] == 1
+
+
+async def test_a_script_that_just_stops_is_given_a_fixed_closing_naming_its_topics(
+    db_session, monkeypatch
+):
+    """Regression: the writer's own closing is a synthesis no single claim states, which the support
+    check removes, so scripts ended abruptly. The fixed closing names only the accepted topics."""
+    monkeypatch.setenv("SCRIPT_FIXED_CLOSING", "true")
+    get_settings.cache_clear()
+    _o, _p, topic, claim, enq = await _enqueued(db_session, claim_text="A fact.")
+    llm, _outline, _section = _mock_llm(
+        monkeypatch,
+        sections_by_topic={topic.id: [[_segment("A fact.", [str(claim.id)])]]},
+    )
+
+    job = await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
+
+    assert job.status == "succeeded"
+    assert job.result["closing_added"] is True
+    segments = await scripts_repo.list_segments(
+        db_session, project_id=enq.job.project_id, script_id=enq.script.id
+    )
+    assert segments[-1].narration_text == (
+        "That brings us to the end of this lesson. We covered A topic."
+    )
+    claim_links = await scripts_repo.list_segment_claims(
+        db_session, project_id=enq.job.project_id, script_segment_id=segments[-1].id
+    )
+    assert claim_links == []
+
+
+async def test_a_script_that_already_ends_in_a_closing_gets_no_second_one(db_session, monkeypatch):
+    monkeypatch.setenv("SCRIPT_FIXED_CLOSING", "true")
+    get_settings.cache_clear()
+    _o, _p, topic, claim, enq = await _enqueued(db_session, claim_text="A fact.")
+    llm, _outline, _section = _mock_llm(
+        monkeypatch,
+        sections_by_topic={
+            topic.id: [
+                [
+                    _segment("A fact.", [str(claim.id)]),
+                    _segment("In conclusion, that is the lesson.", connective=True),
+                ]
+            ]
+        },
+    )
+
+    job = await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
+
+    assert job.status == "succeeded"
+    assert job.result["closing_added"] is False
+    segments = await scripts_repo.list_segments(
+        db_session, project_id=enq.job.project_id, script_id=enq.script.id
+    )
+    assert [s.narration_text for s in segments][-1] == "In conclusion, that is the lesson."
+    assert sum("end of this lesson" in s.narration_text for s in segments) == 0
+
+
+async def test_the_closing_can_be_switched_off(db_session, monkeypatch):
+    assert get_settings().SCRIPT_FIXED_CLOSING is False  # the test fixture's pin
+    _o, _p, topic, claim, enq = await _enqueued(db_session, claim_text="A fact.")
+    llm, _outline, _section = _mock_llm(
+        monkeypatch, sections_by_topic={topic.id: [[_segment("A fact.", [str(claim.id)])]]}
+    )
+
+    job = await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
+
+    assert job.result["closing_added"] is False
+
+
+async def test_a_closing_over_many_topics_cannot_fail_the_generation(db_session, monkeypatch):
+    """Regression: with eight topics the closing said "We covered 8 topics" and the figure rule
+    rejected it, failing the whole generation at the end."""
+    monkeypatch.setenv("SCRIPT_FIXED_CLOSING", "true")
+    monkeypatch.setenv("MIN_SECTION_DURATION_MS", "1000")
+    get_settings.cache_clear()
+    specs = [(f"Topic {chr(65 + n)}", [f"Fact number {chr(65 + n)} is stated."]) for n in range(8)]
+    owner, project, topics, claims_by_topic = await _project_with_topics(db_session, specs)
+    enq = await scripts_service.enqueue_script_generation(
+        db_session, project_id=project.id, owner_id=owner.id, idempotency_key="idem-many"
+    )
+    llm, _outline, _section = _mock_llm(
+        monkeypatch,
+        sections_by_topic={
+            topic.id: [
+                [
+                    _segment(
+                        claims_by_topic[topic.id][0].claim_text,
+                        [str(claims_by_topic[topic.id][0].id)],
+                    )
+                ]
+            ]
+            for topic in topics
+        },
+    )
+
+    job = await scripts_service.run_generate_script_job(db_session, llm, job_id=enq.job.id)
+
+    assert job.status == "succeeded"
+    assert job.result["closing_added"] is True
+    segments = await scripts_repo.list_segments(
+        db_session, project_id=enq.job.project_id, script_id=enq.script.id
+    )
+    assert segments[-1].narration_text.endswith("We covered everything from Topic A to Topic H.")

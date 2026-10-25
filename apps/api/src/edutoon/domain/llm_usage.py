@@ -31,6 +31,7 @@ LLM_CALL_KINDS: Final[tuple[str, ...]] = (
     "script_section",
     "script_correction",
     "storyboard",
+    "narration_support",
 )
 """Every kind of language-model call the application makes. ``script_correction`` is the section
 calls of the one bounded duration-correction pass, kept apart from the first pass's

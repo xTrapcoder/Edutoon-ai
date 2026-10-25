@@ -27,6 +27,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from edutoon.api.dependencies import IdempotencyKey, RedisDep, StorageDep, get_current_user
+from edutoon.api.policies import require_admin_for_project
 from edutoon.api.schemas.jobs import JobResponse
 from edutoon.api.schemas.render import (
     Orientation,
@@ -43,7 +44,11 @@ from edutoon.services import idempotency as idempotency_service
 from edutoon.services import render as render_service
 from edutoon.services.users import UserRecord
 
-router = APIRouter(prefix="/projects/{project_id}", tags=["render"])
+router = APIRouter(
+    prefix="/projects/{project_id}",
+    tags=["render"],
+    dependencies=[Depends(require_admin_for_project)],
+)
 
 CurrentUser = Annotated[UserRecord, Depends(get_current_user)]
 Session = Annotated[AsyncSession, Depends(get_session)]

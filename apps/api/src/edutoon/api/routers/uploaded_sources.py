@@ -1,4 +1,4 @@
-"""``/v1/projects/{project_id}/sources`` - PDF upload onto a project.
+"""``/v1/projects/{project_id}/sources`` - PDF or PowerPoint (``.pptx``) upload onto a project.
 
 ``project_id`` ownership is checked first on every route (rule 9: a project
 the caller doesn't own looks exactly like one that doesn't exist - 404,
@@ -26,9 +26,11 @@ from fastapi.exceptions import RequestValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from edutoon.api.dependencies import IdempotencyKey, RedisDep, StorageDep, get_current_user
+from edutoon.api.policies import require_admin_for_project
 from edutoon.api.schemas.jobs import JobResponse
 from edutoon.api.schemas.source_chunks import SourceChunkListResponse, SourceChunkResponse
 from edutoon.api.schemas.uploaded_sources import (
+    PastedTextRequest,
     UploadedSourceListResponse,
     UploadedSourceResponse,
 )
@@ -43,14 +45,48 @@ from edutoon.services import source_chunks as source_chunks_service
 from edutoon.services import uploaded_sources as uploaded_sources_service
 from edutoon.services.users import UserRecord
 
-router = APIRouter(prefix="/projects/{project_id}/sources", tags=["uploaded-sources"])
+router = APIRouter(
+    prefix="/projects/{project_id}/sources",
+    tags=["uploaded-sources"],
+    dependencies=[Depends(require_admin_for_project)],
+)
 
 CurrentUser = Annotated[UserRecord, Depends(get_current_user)]
 Session = Annotated[AsyncSession, Depends(get_session)]
 
 _ALLOWED_FORM_FIELDS = {"file"}
-_PDF_MAGIC_BYTES = b"%PDF"
-_ACCEPTED_CONTENT_TYPE = "application/pdf"
+_PDF_CONTENT_TYPE = "application/pdf"
+_PPTX_CONTENT_TYPE = uploaded_sources_service.PPTX_CONTENT_TYPE
+_LEGACY_PPT_CONTENT_TYPE = "application/vnd.ms-powerpoint"
+# What a browser may call a .pptx it does not recognise; the file's own bytes still decide.
+_GENERIC_CONTENT_TYPES = {
+    "",
+    "application/octet-stream",
+    "application/zip",
+    "application/x-zip-compressed",
+}
+_KIND_LABEL = {"pdf": "a PDF", "pptx": "a PowerPoint (.pptx) presentation"}
+
+
+def _declared_kind(content_type: str | None, filename: str) -> str:
+    """The kind of file the client says this is, or a 422: ``pdf`` or ``pptx``."""
+    name = filename.strip().lower()
+    declared = (content_type or "").lower()
+    if declared == _LEGACY_PPT_CONTENT_TYPE or name.endswith(".ppt"):
+        _raise_validation_error(
+            "file",
+            "Older .ppt files are not supported. Open it in PowerPoint and save it as .pptx.",
+            "content_type_error",
+        )
+    if declared == _PDF_CONTENT_TYPE:
+        return "pdf"
+    if declared == _PPTX_CONTENT_TYPE or (
+        declared in _GENERIC_CONTENT_TYPES and name.endswith(".pptx")
+    ):
+        return "pptx"
+    _raise_validation_error(
+        "file", "Only PDF and PowerPoint (.pptx) uploads are accepted.", "content_type_error"
+    )
 
 
 def _raise_validation_error(field: str, msg: str, error_type: str = "value_error") -> NoReturn:
@@ -61,9 +97,7 @@ def _raise_validation_error(field: str, msg: str, error_type: str = "value_error
     class is for deeper domain checks, e.g. a pagination ``limit``, not
     "the request itself is malformed").
     """
-    raise RequestValidationError(
-        [{"loc": ("body", field), "msg": msg, "type": error_type}]
-    )
+    raise RequestValidationError([{"loc": ("body", field), "msg": msg, "type": error_type}])
 
 
 def _reject_unknown_form_fields(field_names: set[str]) -> None:
@@ -100,15 +134,11 @@ async def upload_source(
 
     await projects_service.get_project(session, project_id=project_id, owner_id=current_user.id)
 
-    if file.content_type != _ACCEPTED_CONTENT_TYPE:
-        _raise_validation_error(
-            "file", f"Only {_ACCEPTED_CONTENT_TYPE} uploads are accepted.", "content_type_error"
-        )
-    content_type = _ACCEPTED_CONTENT_TYPE
-
     filename = file.filename
     if not filename or not filename.strip():
         _raise_validation_error("file", "A filename is required.", "missing")
+    declared_kind = _declared_kind(file.content_type, filename)
+    content_type = _PDF_CONTENT_TYPE if declared_kind == "pdf" else _PPTX_CONTENT_TYPE
 
     settings = get_settings()
     # The body was already refused if it declared more than the limit (api.middleware); this is
@@ -121,8 +151,10 @@ async def upload_source(
     content = await file.read(settings.MAX_UPLOAD_BYTES + 1)
     if len(content) > settings.MAX_UPLOAD_BYTES:
         raise too_large
-    if not content.startswith(_PDF_MAGIC_BYTES):
-        _raise_validation_error("file", "File does not look like a PDF.", "value_error")
+    if uploaded_sources_service.detect_kind(content) != declared_kind:
+        _raise_validation_error(
+            "file", f"File does not look like {_KIND_LABEL[declared_kind]}.", "value_error"
+        )
 
     async def _execute() -> tuple[int, Any]:
         source = await uploaded_sources_service.upload_source(
@@ -135,6 +167,54 @@ async def upload_source(
             content=content,
             bucket=settings.BUCKET_UPLOADS,
             max_pages=settings.MAX_PDF_PAGES,
+            max_slides=settings.MAX_DECK_SLIDES,
+        )
+        return status.HTTP_201_CREATED, UploadedSourceResponse.from_record(source).model_dump(
+            mode="json"
+        )
+
+    _, response_body = await idempotency_service.run_with_idempotency(
+        redis,
+        owner_id=current_user.id,
+        method="POST",
+        path=request.url.path,
+        idempotency_key=idempotency_key,
+        handler=_execute,
+        commit=session.commit,
+    )
+    return UploadedSourceResponse.model_validate(response_body)
+
+
+@router.post("/text", status_code=status.HTTP_201_CREATED)
+async def paste_text_source(
+    request: Request,
+    project_id: UUID,
+    body: PastedTextRequest,
+    current_user: CurrentUser,
+    session: Session,
+    redis: RedisDep,
+    storage: StorageDep,
+    idempotency_key: IdempotencyKey,
+) -> UploadedSourceResponse:
+    """Add text the owner pasted as the source of a ``text`` project. It is cleaned, cut into
+    chunks and indexed exactly like a PDF's pages, so every later stage - topics, claim
+    verification, script - checks against it. A project that is not a ``text`` project is a 409;
+    text too short, too long or without words is a 400; identical text sent twice is a 409."""
+    project = await projects_service.get_project(
+        session, project_id=project_id, owner_id=current_user.id
+    )
+    settings = get_settings()
+
+    async def _execute() -> tuple[int, Any]:
+        source = await uploaded_sources_service.upload_pasted_text(
+            session,
+            storage,
+            project_id=project_id,
+            project_source_type=project.source_type,
+            uploader_id=current_user.id,
+            title=body.title,
+            text=body.text,
+            bucket=settings.BUCKET_UPLOADS,
         )
         return status.HTTP_201_CREATED, UploadedSourceResponse.from_record(source).model_dump(
             mode="json"

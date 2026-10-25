@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 import structlog
-from fastapi import FastAPI, Request, Response
+from fastapi import Depends, FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from edutoon import __version__
 from edutoon.api import v1_router
 from edutoon.api.middleware import MULTIPART_OVERHEAD_BYTES, BodySizeLimitMiddleware
+from edutoon.api.policies import public_route
 from edutoon.core.config import Settings, get_settings
 from edutoon.core.context import bind_request_id
 from edutoon.core.errors import register_exception_handlers
@@ -25,6 +26,7 @@ from edutoon.providers.cache import Redis, get_redis_client
 from edutoon.providers.embeddings import Embeddings, embeddings_from_settings
 from edutoon.providers.llm import LLM, llm_from_settings
 from edutoon.providers.storage import Storage, get_storage_client
+from edutoon.worker.heartbeat import heartbeat_key, worker_is_online
 
 REQUEST_ID_HEADER = "X-Request-Id"
 
@@ -99,7 +101,7 @@ def create_app() -> FastAPI:
         response.headers[REQUEST_ID_HEADER] = request_id
         return response
 
-    @app.get("/health")
+    @app.get("/health", dependencies=[Depends(public_route)])
     async def health(request: Request) -> dict[str, Any]:
         database = await _check_database(request.app.state.engine)
         redis_status = await _check_redis(request.app.state.redis)
@@ -112,6 +114,11 @@ def create_app() -> FastAPI:
             "database": database,
             "redis": redis_status,
             "storage": storage_status,
+            # Not part of "status": the API itself is fine without a worker, but nothing queued
+            # is processed. The web app reads this to say so instead of waiting silently.
+            "worker": "ok"
+            if await worker_is_online(request.app.state.redis, heartbeat_key(settings.DATABASE_URL))
+            else "offline",
         }
 
     app.include_router(v1_router)

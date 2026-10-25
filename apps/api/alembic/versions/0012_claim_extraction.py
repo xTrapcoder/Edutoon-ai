@@ -58,9 +58,7 @@ def upgrade() -> None:
                 FOREIGN KEY (topic_id) REFERENCES project_topics (id) ON DELETE SET NULL;
         """
     )
-    op.execute(
-        "CREATE INDEX ix_claim_verifications_topic_id ON claim_verifications (topic_id);"
-    )
+    op.execute("CREATE INDEX ix_claim_verifications_topic_id ON claim_verifications (topic_id);")
 
     op.execute("ALTER TABLE jobs DROP CONSTRAINT ck_jobs_kind;")
     op.execute(

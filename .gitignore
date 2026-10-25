@@ -3,6 +3,7 @@ node_modules/
 
 # Next.js
 .next/
+.next-qa/
 
 # Python
 __pycache__/

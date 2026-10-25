@@ -15,12 +15,12 @@ const HOW_IT_WORKS = [
   {
     icon: FilePlus2,
     title: 'Add your source',
-    body: 'Upload a PDF, type the topics you want covered, or use both.',
+    body: 'Upload a PDF or paste your text. With a PDF you can also add keywords for the topics you want covered.',
   },
   {
     icon: ListChecks,
     title: 'Review the topics',
-    body: 'See the topics we found, each with the pages it came from.',
+    body: 'See the topics we found, each with the pages or slides it came from.',
   },
   {
     icon: PenLine,
@@ -30,7 +30,7 @@ const HOW_IT_WORKS = [
   {
     icon: ShieldCheck,
     title: 'Approve it',
-    body: 'Approve the wording when you are happy. Narration and video come next.',
+    body: 'Approve the wording when you are happy. After approval, the script can be narrated, storyboarded, and rendered into video.',
   },
 ] as const;
 
@@ -100,7 +100,7 @@ export function DashboardView() {
                   className="border-0 bg-transparent py-8"
                   icon={FolderPlus}
                   title="Create your first project"
-                  description="Upload a PDF or enter the topics you want to teach. We will find what is worth covering and check every claim against your source."
+                  description="Upload a PDF or paste your text. We will find what is worth covering and check every claim against your source."
                   action={<ButtonLink href="/projects/new">Create project</ButtonLink>}
                 />
               </div>

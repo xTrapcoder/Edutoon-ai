@@ -1,6 +1,7 @@
 import type {
   ClaimVerification,
   Job,
+  KeywordCoverage,
   Orientation,
   Project,
   ProjectCreateRequest,
@@ -118,6 +119,21 @@ export function uploadSource(projectId: string, file: File, key: string): Promis
   );
 }
 
+/** Text pasted in as a `text` project's source. Cleaned, chunked and indexed like a PDF. */
+export function pasteTextSource(
+  projectId: string,
+  input: { title: string; text: string },
+  key: string,
+): Promise<Source> {
+  return unwrap(
+    getApiClient().POST('/v1/projects/{project_id}/sources/text', {
+      params: { path: { project_id: projectId }, header: idempotent(key) },
+      body: input,
+      signal: timeoutSignal(),
+    }),
+  );
+}
+
 /** Every chunk of one source, in reading order, with its text. */
 export async function listSourceChunks(
   projectId: string,
@@ -142,6 +158,16 @@ export async function listTopics(projectId: string): Promise<Topic[]> {
     }),
   );
   return data.items;
+}
+
+/** Whether the document backs each keyword the person typed. */
+export function getKeywordCoverage(projectId: string): Promise<KeywordCoverage> {
+  return unwrap(
+    getApiClient().GET('/v1/projects/{project_id}/topics/coverage', {
+      params: { path: { project_id: projectId } },
+      signal: timeoutSignal(),
+    }),
+  );
 }
 
 export async function addKeywords(

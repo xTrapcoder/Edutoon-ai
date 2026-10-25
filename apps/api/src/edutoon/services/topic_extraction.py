@@ -52,6 +52,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from edutoon.core.config import Settings, get_settings
 from edutoon.core.errors import ConflictError, JobError, NotFoundError, ValidationError
+from edutoon.domain.instructions import Note
 from edutoon.domain.llm_usage import UsageReport
 from edutoon.domain.topic import (
     KEYWORD_ONLY_UNSUPPORTED,
@@ -80,6 +81,7 @@ from edutoon.repositories.jobs import JobRecord
 from edutoon.repositories.project_topics import NewProjectTopic, ProjectTopicRecord
 from edutoon.repositories.projects import ProjectRecord
 from edutoon.services import audit_logs as audit_logs_service
+from edutoon.services import instructions as instructions_service
 from edutoon.services import projects as projects_service
 from edutoon.services import spend_guard
 from edutoon.services.job_errors import describe_job_failure
@@ -206,7 +208,7 @@ async def enqueue_topic_extraction(
         )
     except NoTopicInputError as exc:
         raise ValidationError(str(exc)) from exc
-    if mode == MODE_KEYWORDS and not get_settings().KEYWORD_ONLY_PROJECTS_ENABLED:
+    if mode == MODE_KEYWORDS:
         raise ValidationError(KEYWORD_ONLY_UNSUPPORTED)
 
     await _check_replace_rules(session, project_id, topics=topics, replace=replace)
@@ -329,9 +331,7 @@ async def _refuse_if_scripts_reference_topics(session: AsyncSession, project_id:
 # --- run (background job) ----------------------------------------------------------------
 
 
-async def run_extract_topics_job(
-    session: AsyncSession, llm: LLM, *, job_id: UUID
-) -> JobRecord:
+async def run_extract_topics_job(session: AsyncSession, llm: LLM, *, job_id: UUID) -> JobRecord:
     """Process one queued ``extract_topics`` job end to end.
 
     Marks it running, extracts and persists (see the module docstring), then
@@ -391,7 +391,13 @@ async def _extract_and_persist(
     topics = await project_topics_repo.list_all_by_project(session, project_id)
     await _check_replace_rules(session, project_id, topics=topics, replace=replace)
 
-    chunks = await source_chunks_repo.list_by_project_in_order(session, project_id)
+    all_chunks = await source_chunks_repo.list_by_project_in_order(session, project_id)
+    # The owner's instructions may narrow what is read (a page range, a chapter, the pages that
+    # mention a focus term); ``scoped.notes`` says what they did and is kept on the job's result.
+    scoped = instructions_service.scope_chunks(
+        project, all_chunks, budget_chars=settings.TOPIC_INPUT_BUDGET_CHARS
+    )
+    chunks = scoped.chunks
     seed_records = _seed_topics(topics)
     seeds = [
         TopicSeed(ref=str(topic.id), title=topic.title, position=topic.position)
@@ -401,7 +407,7 @@ async def _extract_and_persist(
         mode = resolve_input_mode(has_passages=bool(chunks), has_seeds=bool(seeds))
     except NoTopicInputError as exc:
         raise ValidationError(str(exc)) from exc
-    if mode == MODE_KEYWORDS and not settings.KEYWORD_ONLY_PROJECTS_ENABLED:
+    if mode == MODE_KEYWORDS:
         # Defence in depth: enqueue refused this, but the project can change while a job waits.
         raise ValidationError(KEYWORD_ONLY_UNSUPPORTED)
 
@@ -451,7 +457,14 @@ async def _extract_and_persist(
         seed_records={topic.id: topic for topic in seed_records},
     )
 
-    return _result(tree=tree, selection=selection, replace=replace, report=report, model=llm.model)
+    return _result(
+        tree=tree,
+        selection=selection,
+        replace=replace,
+        report=report,
+        model=llm.model,
+        instruction_notes=scoped.notes,
+    )
 
 
 def _clip(text: str, max_chars: int) -> str:
@@ -468,6 +481,7 @@ def _brief_for(project: ProjectRecord) -> TopicBrief:
         subject=_clip(project.title, _BRIEF_SUBJECT_MAX_CHARS),
         description=description or None,
         language=project.language,
+        instructions=instructions_service.prompt_block(project),
     )
 
 
@@ -599,18 +613,21 @@ def _result(
     replace: bool,
     report: UsageReport,
     model: str,
+    instruction_notes: Sequence[Note] = (),
 ) -> dict[str, object]:
     """The structured job result. ``truncated`` says the model saw only part of
     the material (``chunks_used`` of ``chunks_total``), so a caller can report
-    coverage honestly.
+    coverage honestly. ``instructions`` is what the owner's instructions did, note by note.
     """
     return {
+        "instructions": [{"kind": note.kind, "text": note.text} for note in instruction_notes],
         "mode": tree.mode,
         "topic_count": len(tree.nodes),
         "chunks_total": selection.chunks_total,
         "chunks_used": selection.chunks_used,
         "truncated": selection.truncated,
         "dropped_uncited": tree.dropped_uncited,
+        "dropped_over_limit": tree.dropped_over_limit,
         "replaced": replace,
         "input_tokens": report.total.input_tokens or 0,
         "output_tokens": report.total.output_tokens or 0,

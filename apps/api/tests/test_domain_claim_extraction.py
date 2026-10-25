@@ -121,8 +121,6 @@ def test_the_result_is_capped_at_max_claims_per_topic_keeping_model_order() -> N
 
 
 def test_dropped_candidates_do_not_count_against_the_cap() -> None:
-    result = validate_candidates(
-        _draft("", "One.", "one.", "Two.", "Three."), limits=LIMITS
-    )
+    result = validate_candidates(_draft("", "One.", "one.", "Two.", "Three."), limits=LIMITS)
 
     assert result == ["One.", "Two.", "Three."]

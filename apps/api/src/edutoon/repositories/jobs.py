@@ -229,9 +229,7 @@ async def claim_next(session: AsyncSession) -> JobRecord | None:
     return _from_row(row) if row is not None else None
 
 
-async def record_progress(
-    session: AsyncSession, *, job_id: UUID, payload: dict[str, Any]
-) -> bool:
+async def record_progress(session: AsyncSession, *, job_id: UUID, payload: dict[str, Any]) -> bool:
     """Write a running job's progress (its ``payload``, which carries ``progress.updated_at``)
     - but only while the job is still ``running``. ``False`` means it is not: recovery failed it
     (it had gone silent) and the caller has been replaced, so it must stop
@@ -377,4 +375,3 @@ async def fail_stale_running(
         # These jobs just ended (as failures), so the project may no longer be ``processing``.
         await projects_repo.refresh_status(session, project_id=project_id)
     return sorted((_from_row(row) for row in rows), key=lambda job: (job.created_at, str(job.id)))
-

@@ -2,7 +2,12 @@ import { clerkMiddleware, createRouteMatcher } from '@clerk/nextjs/server';
 
 // Everything inside the product needs a signed-in user. The landing page and the Clerk
 // sign-in / sign-up pages stay public.
-const isProtectedRoute = createRouteMatcher(['/dashboard(.*)', '/projects(.*)']);
+const isProtectedRoute = createRouteMatcher([
+  '/dashboard(.*)',
+  '/projects(.*)',
+  '/learn(.*)',
+  '/admin(.*)',
+]);
 
 export default clerkMiddleware(async (auth, request) => {
   if (isProtectedRoute(request)) {

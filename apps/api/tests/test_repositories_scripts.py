@@ -10,7 +10,6 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import delete
-from sqlalchemy.exc import IntegrityError
 
 from edutoon.core.errors import ConflictError
 from edutoon.db.tables import claim_verifications, project_topics
@@ -26,6 +25,7 @@ from edutoon.repositories import users as users_repo
 from edutoon.repositories.claim_verifications import NewClaimCitation
 from edutoon.repositories.scripts import NewScriptSegment
 from edutoon.repositories.source_chunks import NewSourceChunk
+from tests.storage_isolation import UPLOADS_BUCKET
 
 MODEL = "claude-sonnet-5"
 
@@ -45,7 +45,7 @@ async def _make_verified_claim(db_session, project):
         db_session,
         project_id=project.id,
         original_filename="notes.pdf",
-        storage_bucket="edutoon-uploads",
+        storage_bucket=UPLOADS_BUCKET,
         storage_key=f"{project.id}/{uuid4()}.pdf",
         byte_size=1024,
         checksum_sha256=uuid4().hex + uuid4().hex[:32],
@@ -409,7 +409,9 @@ async def test_a_segment_cannot_cite_the_same_claim_twice(db_session):
             script_id=script.id,
             segments=[
                 NewScriptSegment(
-                    0, "Cited twice.", 1_000,
+                    0,
+                    "Cited twice.",
+                    1_000,
                     claim_verification_ids=(verification.id, verification.id),
                 )
             ],
@@ -430,7 +432,12 @@ async def test_a_segment_citing_a_missing_verification_conflicts(db_session):
         )
 
 
-async def test_deleting_a_cited_verification_is_restricted(db_session):
+async def test_deleting_a_cited_verification_removes_the_segment_link_not_the_segment(
+    db_session,
+):
+    """``script_segment_claims.claim_verification_id`` is ``ON DELETE CASCADE`` (migration
+    0018): a project's claims and scripts are deleted together with the project, so the link
+    cannot block its claim. The script and its segment stay - only the link goes."""
     project = await _make_project(db_session)
     verification = await _make_verified_claim(db_session, project)
     script = await scripts_repo.create(db_session, project_id=project.id, llm_model=MODEL)
@@ -442,10 +449,19 @@ async def test_deleting_a_cited_verification_is_restricted(db_session):
         ],
     )
 
-    with pytest.raises(IntegrityError):
-        await db_session.execute(
-            delete(claim_verifications).where(claim_verifications.c.id == verification.id)
+    await db_session.execute(
+        delete(claim_verifications).where(claim_verifications.c.id == verification.id)
+    )
+
+    [segment] = await scripts_repo.list_segments(
+        db_session, project_id=project.id, script_id=script.id
+    )
+    assert (
+        await scripts_repo.list_segment_claims(
+            db_session, project_id=project.id, script_segment_id=segment.id
         )
+        == []
+    )
 
 
 async def test_deleting_a_script_cascades_to_segments_and_claims(db_session):
@@ -464,9 +480,7 @@ async def test_deleting_a_script_cascades_to_segments_and_claims(db_session):
     await db_session.execute(delete(scripts_table).where(scripts_table.c.id == script.id))
 
     assert (
-        await scripts_repo.list_segments(
-            db_session, project_id=project.id, script_id=script.id
-        )
+        await scripts_repo.list_segments(db_session, project_id=project.id, script_id=script.id)
         == []
     )
     assert (
@@ -489,9 +503,7 @@ async def test_deleting_a_topic_nulls_the_segment_link(db_session):
         segments=[NewScriptSegment(0, "Has a topic.", 1_000, topic_id=topic.id)],
     )
 
-    await db_session.execute(
-        delete(project_topics).where(project_topics.c.id == topic.id)
-    )
+    await db_session.execute(delete(project_topics).where(project_topics.c.id == topic.id))
 
     [refetched] = await scripts_repo.list_segments(
         db_session, project_id=project.id, script_id=script.id
@@ -546,9 +558,12 @@ async def test_create_script_persists_the_validated_draft(db_session):
         db_session, project_id=project.id, script_id=script.id
     )
     assert [s.segment_index for s in segments] == [0, 1]
-    assert await scripts_repo.list_segment_claims(
-        db_session, project_id=project.id, script_segment_id=segments[0].id
-    ) == []
+    assert (
+        await scripts_repo.list_segment_claims(
+            db_session, project_id=project.id, script_segment_id=segments[0].id
+        )
+        == []
+    )
     linked = await scripts_repo.list_segment_claims(
         db_session, project_id=project.id, script_segment_id=segments[1].id
     )

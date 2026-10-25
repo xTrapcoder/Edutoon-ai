@@ -201,3 +201,24 @@ def test_max_provider_calls_is_an_upper_bound_on_a_real_allocation() -> None:
     )
     # 1 outline + total_calls (first pass) + total_calls (bounded correction pass)
     assert 1 + 2 * total_calls <= budget
+
+
+# --- decide_length_correction ---------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("estimated", "limited", "expected"),
+    [
+        (290_000, False, "within_tolerance"),
+        (290_000, True, "within_tolerance"),
+        (345_000, False, "within_tolerance"),
+        (150_000, False, "rescale"),
+        (150_000, True, "skip_evidence_limited"),
+        (400_000, False, "rescale"),
+        (400_000, True, "rescale"),  # too long never needs new facts, so it is always corrected
+    ],
+)
+def test_decide_length_correction(estimated, limited, expected):
+    from edutoon.domain.script_duration import decide_length_correction
+
+    assert decide_length_correction(estimated, 300_000, 0.15, evidence_limited=limited) == expected

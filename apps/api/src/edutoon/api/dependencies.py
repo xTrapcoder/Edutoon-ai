@@ -9,14 +9,14 @@ from typing import Annotated
 from fastapi import Depends, Header, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from edutoon.core.errors import UnauthorizedError
+from edutoon.core.errors import AccountInactiveError, UnauthorizedError
 from edutoon.db.session import get_session
 from edutoon.providers.cache import Redis
 from edutoon.providers.clerk import ClerkTokenError, verify_token
 from edutoon.providers.embeddings import Embeddings
 from edutoon.providers.llm import LLM
 from edutoon.providers.storage import Storage
-from edutoon.services.auth import get_or_provision_user
+from edutoon.services.auth import resolve_user
 from edutoon.services.users import UserRecord
 
 
@@ -78,16 +78,22 @@ async def get_current_user(
     session: Annotated[AsyncSession, Depends(get_session)],
     authorization: Annotated[str | None, Header()] = None,
 ) -> UserRecord:
-    """Resolve the caller's verified identity, provisioning on first login.
+    """Resolve the caller's verified identity to an *active* user.
 
-    Raises :class:`~edutoon.core.errors.UnauthorizedError` (401) for a
-    missing, malformed, or invalid/expired token - handled generically by
-    the ``AppError`` exception handler already registered in ``main.py``,
-    no bespoke wiring needed there.
+    Raises :class:`~edutoon.core.errors.UnauthorizedError` (401) for a missing, malformed, or
+    invalid/expired token, and a 403 (:class:`~edutoon.core.errors.ForbiddenError`) for a valid
+    identity that nobody invited (nothing is created for it) or whose account is suspended -
+    all handled by the ``AppError`` exception handler already registered in ``main.py``.
+
+    This is authentication only. What the user may *do* is the route's role policy
+    (``api.policies``), which every route must declare.
     """
     token = _extract_bearer_token(authorization)
     try:
         claims = verify_token(token)
     except ClerkTokenError as exc:
         raise UnauthorizedError("Invalid or expired authentication token.") from exc
-    return await get_or_provision_user(session, claims)
+    user = await resolve_user(session, claims)
+    if user.status != "active":
+        raise AccountInactiveError("This account is not active.")
+    return user

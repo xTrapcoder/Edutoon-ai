@@ -2,19 +2,11 @@ import { CheckCircle2, FolderOpen, Plus, Video } from 'lucide-react';
 import { ButtonLink } from '@/components/ui/button';
 import { Card, CardBody } from '@/components/ui/card';
 
-const UPCOMING = [
-  {
-    icon: Video,
-    title: 'Rendering',
-    body: 'Scenes and narration are put together into the finished video.',
-  },
-] as const;
-
 /**
- * Shown once a script is approved: what was done, and - without pretending anything else works
- * yet - what the next production stage will be. Narration (Phase 8) and the storyboard (Phase 9)
- * are both real, not upcoming, so neither is listed here - each is offered directly below, in
- * Script Studio's own narration and storyboard panels.
+ * Shown once a script is approved: what was done, and the real stages that follow. Narration
+ * (Phase 8), the storyboard (Phase 9) and the video (Phase 10) all exist; each is offered directly
+ * below, in Script Studio's own panels, and the video only once its real prerequisites are met.
+ * "Go to Video" links to the Video page (`/video`), it does not start a render.
  */
 export function ApprovedPanel({ projectId }: { projectId: string }) {
   return (
@@ -36,31 +28,21 @@ export function ApprovedPanel({ projectId }: { projectId: string }) {
         <CardBody className="space-y-5">
           <div>
             <h3 className="text-lg font-semibold text-ink-950">What&apos;s next?</h3>
+            <p className="mt-1 text-sm font-semibold text-ink-800">
+              Next: Narration → Storyboard → Video
+            </p>
             <p className="mt-1 max-w-2xl text-sm text-ink-500">
-              This production stage is still to come. It is not available yet, and nothing is
-              waiting for you to do.
+              Each stage is offered in Script Studio below, in that order. The video can be rendered
+              once the narration is complete and the storyboard is finished.
             </p>
           </div>
-          <ul className="grid grid-cols-1 gap-3 md:max-w-sm">
-            {UPCOMING.map((stage) => (
-              <li
-                key={stage.title}
-                className="rounded-lg border border-dashed border-line-strong bg-surface-sunken p-4"
-              >
-                <div className="flex items-center gap-2.5">
-                  <span className="flex size-8 items-center justify-center rounded-md bg-canvas text-ink-500">
-                    <stage.icon className="size-4" aria-hidden />
-                  </span>
-                  <p className="text-sm font-semibold text-ink-800">{stage.title}</p>
-                  <span className="ml-auto rounded-full bg-canvas px-2 py-0.5 text-[11px] font-semibold text-ink-500">
-                    Coming soon
-                  </span>
-                </div>
-                <p className="mt-2 text-[13px] leading-5 text-ink-500">{stage.body}</p>
-              </li>
-            ))}
-          </ul>
           <div className="flex flex-wrap gap-3 border-t border-line pt-5">
+            <ButtonLink
+              href={`/projects/${projectId}/video`}
+              leadingIcon={<Video className="size-4" aria-hidden />}
+            >
+              Go to Video
+            </ButtonLink>
             <ButtonLink
               href={`/projects/${projectId}`}
               variant="secondary"

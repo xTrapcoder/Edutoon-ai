@@ -80,6 +80,15 @@ export function SignUp() {
   return <Placeholder title="Create your account" />;
 }
 
+/** Which stand-in person UI QA mode acts as: the administrator, or (to see the learner screens)
+ * the employee. Kept in the browser; the real API decides what each may do. */
+export const QA_PERSONA_KEY = 'edutoon-qa-persona';
+
 export async function getToken(): Promise<string | null> {
+  try {
+    if (window.localStorage.getItem(QA_PERSONA_KEY) === 'employee') return 'ui-qa-employee-token';
+  } catch {
+    // No storage: the administrator, as before.
+  }
   return 'ui-qa-token';
 }

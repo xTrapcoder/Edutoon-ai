@@ -17,8 +17,26 @@ a ``status_code`` - so the two are handled together.
 
 from __future__ import annotations
 
+from typing import Literal
+
 import anthropic
 import openai
+
+LocalFailure = Literal[
+    "unreachable", "timeout", "model_missing", "rejected", "unavailable", "dimension", "unexpected"
+]
+
+
+class LocalModelError(Exception):
+    """The local model server (Ollama, ``providers.ollama``) could not answer. Carries only the
+    *kind* of failure and an HTTP status - never the server's response text, which can echo the
+    request and so the user's own material."""
+
+    def __init__(self, kind: LocalFailure, *, status_code: int | None = None) -> None:
+        super().__init__(kind if status_code is None else f"{kind} (HTTP {status_code})")
+        self.kind: LocalFailure = kind
+        self.status_code = status_code
+
 
 _TIMEOUT = (anthropic.APITimeoutError, openai.APITimeoutError)
 _CONNECTION = (anthropic.APIConnectionError, openai.APIConnectionError)
@@ -48,10 +66,38 @@ QUOTA_EXHAUSTED = (
 )
 
 
+LOCAL_MESSAGES: dict[LocalFailure, str] = {
+    "unreachable": (
+        "The local AI model server (Ollama) could not be reached. "
+        "Check that it is running, then try again."
+    ),
+    "timeout": (
+        "The local AI model took too long to respond. A smaller model, or fewer topics, may help."
+    ),
+    "model_missing": (
+        "The local AI model this service is configured to use has not been downloaded. "
+        "Pull it in Ollama, then try again."
+    ),
+    "rejected": "The local AI model server could not process this request.",
+    "unavailable": (
+        "The local AI model server failed while answering. Check its log, then try again."
+    ),
+    "dimension": (
+        "The local embedding model produces wider vectors than the database stores. "
+        "Choose a model with at most 1536 dimensions."
+    ),
+    "unexpected": "The local AI model server returned an unexpected answer.",
+}
+
+_LOCAL_TRANSIENT: frozenset[LocalFailure] = frozenset({"unreachable", "timeout", "unavailable"})
+
+
 def describe_provider_error(exc: BaseException) -> str | None:
     """A message safe to show the job's owner for a provider SDK error, or
     ``None`` if ``exc`` is not one (the caller then decides what to say).
     """
+    if isinstance(exc, LocalModelError):
+        return LOCAL_MESSAGES[exc.kind]
     if isinstance(exc, _TIMEOUT):
         return TIMED_OUT
     if isinstance(exc, _CONNECTION):
@@ -93,7 +139,12 @@ def is_transient_provider_error(exc: BaseException) -> bool:
     dropped connection, a rate limit, a conflict the provider asks you to retry, or a 5xx
     (Anthropic's 529 "overloaded" included). A bad request, a rejected key, a missing model, a
     payload that is too large and - deliberately - an *exhausted quota* are not: they fail the same
-    way every time, and retrying a paid call that cannot succeed only wastes time and money."""
+    way every time, and retrying a paid call that cannot succeed only wastes time and money.
+
+    A local model server that is unreachable, timed out or failed mid-answer is worth repeating (it
+    may be loading a model); a missing model, a rejected request or too-wide vectors are not."""
+    if isinstance(exc, LocalModelError):
+        return exc.kind in _LOCAL_TRANSIENT
     if isinstance(exc, _TIMEOUT + _CONNECTION):
         return True
     if isinstance(exc, _STATUS):

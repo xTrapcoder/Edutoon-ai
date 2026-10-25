@@ -67,9 +67,7 @@ def _citation_from_row(row: RowMapping) -> ClaimCitationRecord:
     )
 
 
-async def count_manual_within(
-    session: AsyncSession, *, project_id: UUID, within: timedelta
-) -> int:
+async def count_manual_within(session: AsyncSession, *, project_id: UUID, within: timedelta) -> int:
     """How many claims typed in by hand (no topic) were verified for ``project_id`` in the last
     ``within``, by the database's clock. Claims a job extracted carry a topic and are counted by
     the job that made them."""
@@ -158,9 +156,7 @@ async def add_citations(
     return [_citation_from_row(row) for row in result.mappings().all()]
 
 
-async def get_by_id(
-    session: AsyncSession, verification_id: UUID
-) -> ClaimVerificationRecord | None:
+async def get_by_id(session: AsyncSession, verification_id: UUID) -> ClaimVerificationRecord | None:
     stmt = select(claim_verifications).where(claim_verifications.c.id == verification_id)
     row = (await session.execute(stmt)).mappings().one_or_none()
     return _verification_from_row(row) if row is not None else None
@@ -200,6 +196,23 @@ async def list_by_project(
         session, stmt, table=claim_verifications, limit=limit, cursor=cursor
     )
     return Page(items=[_verification_from_row(row) for row in rows], next_cursor=next_cursor)
+
+
+async def count_by_topic(session: AsyncSession, *, project_id: UUID) -> dict[UUID, tuple[int, int]]:
+    """For every topic of ``project_id`` that has extracted claims, ``(supported, total)``: how many
+    of its claims a cited passage backs, and how many were drafted. A topic with no claims is
+    absent. Hand-typed claims (no topic) are not counted."""
+    supported = func.count().filter(claim_verifications.c.status == "supported")
+    stmt = (
+        select(claim_verifications.c.topic_id, supported, func.count())
+        .where(
+            claim_verifications.c.project_id == project_id,
+            claim_verifications.c.topic_id.is_not(None),
+        )
+        .group_by(claim_verifications.c.topic_id)
+    )
+    rows = (await session.execute(stmt)).all()
+    return {topic_id: (int(ok), int(total)) for topic_id, ok, total in rows}
 
 
 async def list_claim_texts_by_topic(session: AsyncSession, topic_id: UUID) -> list[str]:
@@ -258,7 +271,10 @@ async def list_supported_by_project(
 
 
 async def list_supported_by_topic(
-    session: AsyncSession, *, project_id: UUID, topic_id: UUID
+    session: AsyncSession,
+    *,
+    project_id: UUID,
+    topic_id: UUID,
 ) -> list[ClaimVerificationRecord]:
     """Every ``status='supported'`` verification extracted for ``topic_id``,
     oldest first - the pool one Phase 7 section is allowed to cite. Project-

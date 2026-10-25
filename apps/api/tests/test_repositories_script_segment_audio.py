@@ -17,9 +17,10 @@ from edutoon.repositories import script_segment_audio as audio_repo
 from edutoon.repositories import scripts as scripts_repo
 from edutoon.repositories import users as users_repo
 from edutoon.repositories.scripts import NewScriptSegment
+from tests.storage_isolation import SEGMENTS_BUCKET
 
 MODEL = "claude-sonnet-5"
-BUCKET = "edutoon-segments"
+BUCKET = SEGMENTS_BUCKET
 
 
 async def _make_script_with_segments(db_session, *, segment_count: int = 2):

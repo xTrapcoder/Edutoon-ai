@@ -1,6 +1,6 @@
 'use client';
 
-import { ChevronRight, FileText, ListChecks } from 'lucide-react';
+import { ChevronRight, ClipboardPaste, FileText, ListChecks, Presentation } from 'lucide-react';
 import Link from 'next/link';
 import type { Project } from '@edutoon/contracts';
 import { Skeleton } from '@/components/ui/feedback';
@@ -11,12 +11,28 @@ import { StageBadge } from './stage-badge';
 
 export const SOURCE_LABEL: Record<Project['source_type'], string> = {
   pdf: 'PDF document',
-  topic: 'Keywords',
+  pptx: 'PowerPoint deck',
+  text: 'Pasted text',
+  topic: 'Topic only',
 };
+
+const SOURCE_SHORT: Record<Project['source_type'], string> = {
+  pdf: 'PDF',
+  pptx: 'PowerPoint',
+  text: 'Pasted text',
+  topic: 'Topic only',
+};
+
+const SOURCE_ICON = {
+  pdf: FileText,
+  pptx: Presentation,
+  text: ClipboardPaste,
+  topic: ListChecks,
+} as const;
 
 export function ProjectRow({ project }: { project: Project }) {
   const workflow = useProjectStage(project);
-  const Icon = project.source_type === 'pdf' ? FileText : ListChecks;
+  const Icon = SOURCE_ICON[project.source_type];
 
   return (
     <li>
@@ -32,9 +48,8 @@ export function ProjectRow({ project }: { project: Project }) {
             {project.title}
           </span>
           <span className="mt-0.5 block truncate text-[13px] text-ink-500">
-            {project.source_type === 'pdf' ? 'PDF' : 'Keywords'} ·{' '}
-            {orientationLabel(project.orientation)} · {formatDuration(project.target_duration_ms)} ·{' '}
-            {languageLabel(project.language)}
+            {SOURCE_SHORT[project.source_type]} · {orientationLabel(project.orientation)} ·{' '}
+            {formatDuration(project.target_duration_ms)} · {languageLabel(project.language)}
           </span>
         </span>
         <span className="flex items-center justify-between gap-4 sm:justify-end">

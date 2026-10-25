@@ -70,9 +70,7 @@ async def test_embed_reorders_by_response_index_not_list_position(monkeypatch):
             Embedding(object="embedding", index=0, embedding=[1.0, 0.0]),
         ],
     )
-    monkeypatch.setattr(
-        client.embeddings, "create", AsyncMock(return_value=shuffled_response)
-    )
+    monkeypatch.setattr(client.embeddings, "create", AsyncMock(return_value=shuffled_response))
     embeddings = Embeddings(client, model=MODEL)
 
     result = await embeddings.embed(["first", "second"])

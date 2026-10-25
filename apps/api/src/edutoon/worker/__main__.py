@@ -18,8 +18,10 @@ from edutoon.core.config import get_settings
 from edutoon.core.logging import configure_logging
 from edutoon.db.database import dispose_engine, get_engine
 from edutoon.db.session import get_sessionmaker
+from edutoon.providers.cache import get_redis_client
 from edutoon.services.render import sweep_abandoned_work_dirs
 from edutoon.worker.dispatch import build_worker_providers
+from edutoon.worker.heartbeat import beat_until_stopped, heartbeat_key
 from edutoon.worker.runner import run_forever
 
 log = structlog.get_logger()
@@ -45,9 +47,17 @@ async def main() -> None:
         with contextlib.suppress(NotImplementedError):
             loop.add_signal_handler(sig, shutdown_event.set)
 
+    redis_client = get_redis_client(settings.REDIS_URL)
+    heartbeat = asyncio.create_task(
+        beat_until_stopped(redis_client, heartbeat_key(settings.DATABASE_URL), shutdown_event)
+    )
     try:
         await run_forever(sessionmaker, providers, shutdown_event=shutdown_event)
     finally:
+        # Also covers Ctrl-C on Windows, which never sets the event: stop the beat explicitly.
+        shutdown_event.set()
+        await heartbeat
+        await redis_client.aclose()
         await dispose_engine()
 
 

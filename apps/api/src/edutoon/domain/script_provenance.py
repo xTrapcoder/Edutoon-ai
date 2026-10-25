@@ -39,8 +39,14 @@ from dataclasses import dataclass
 from typing import Final
 from uuid import UUID
 
+from edutoon.domain.narration_support import is_signpost_only
 from edutoon.domain.script import ScriptDraft
-from edutoon.domain.storyboard_provenance import unsupported_tokens
+from edutoon.domain.storyboard_provenance import content_words, unsupported_tokens
+
+WEAK_CITATION_COVERAGE: Final = 0.2
+"""A cited segment whose cited claims account for less than this fraction of its content words is
+flagged for the reviewer (:func:`weak_citation_coverage`). A flag, never a rejection: an analogy or
+an example legitimately adds words the claim does not have."""
 
 MAX_CONNECTIVE_WORDS: Final = 80
 """The longest a segment can be and still be accepted as purely connective (an introduction, a
@@ -142,12 +148,47 @@ def _segment_duration_ms(narration_text: str, words_per_minute: int) -> int:
     return round(word_count / words_per_minute * 60_000)
 
 
+def relevant_claim_ids(
+    narration_text: str, cited: Sequence[UUID], claim_texts: Mapping[UUID, str]
+) -> tuple[UUID, ...]:
+    """The cited claims that share at least one content word with ``narration_text``.
+
+    A claim that shares none cannot be what the sentence states, however the writer labelled it, so
+    it is not kept as a citation. This only ever *removes* a citation. It is a floor, not a proof
+    of support: a claim on the same subject passes (:func:`weak_citation_coverage` flags the weaker
+    cases for a reviewer). A claim whose text is not in ``claim_texts`` cannot be judged and is
+    kept, so the check never rejects on missing data.
+    """
+    narration_words = content_words(narration_text)
+    return tuple(
+        claim_id
+        for claim_id in cited
+        if claim_id not in claim_texts or narration_words & content_words(claim_texts[claim_id])
+    )
+
+
+def weak_citation_coverage(
+    narration_text: str, cited: Sequence[UUID], claim_texts: Mapping[UUID, str]
+) -> float | None:
+    """The fraction of ``narration_text``'s content words found in the cited claims, or ``None``
+    when there is nothing to measure (no citations, no known claim text or no content words).
+    Below :data:`WEAK_CITATION_COVERAGE` the citation is worth a reviewer's second look."""
+    narration_words = content_words(narration_text)
+    cited_words: set[str] = set()
+    for claim_id in cited:
+        cited_words |= content_words(claim_texts.get(claim_id, ""))
+    if not narration_words or not cited_words:
+        return None
+    return len(narration_words & cited_words) / len(narration_words)
+
+
 def filter_and_validate(
     draft: ScriptDraft,
     supported_claim_ids: set[UUID],
     words_per_minute: int,
     *,
     grounding: GroundingReference | None = None,
+    claim_texts: Mapping[UUID, str] | None = None,
 ) -> ValidatedScriptDraft:
     """Narrow ``draft``'s citations to ``supported_claim_ids`` and prove
     every fact-bearing segment keeps at least one. Raises
@@ -155,7 +196,9 @@ def filter_and_validate(
     non-positive ``words_per_minute``.
 
     A segment marked ``connective`` is exempt from citing only while it is short
-    (:data:`MAX_CONNECTIVE_WORDS`). With ``grounding``, every segment's figures and names are
+    (:data:`MAX_CONNECTIVE_WORDS`). With ``claim_texts``, a cited claim that shares no content word
+    with its segment is dropped from that segment's citations (:func:`relevant_claim_ids`), which
+    can leave the segment uncited. With ``grounding``, every segment's figures and names are
     also checked against what its topic's claims contain (module docstring), raising
     :class:`UngroundedSegmentError`. Without it only the citation rules apply.
     """
@@ -171,8 +214,16 @@ def filter_and_validate(
                 kept.append(claim_id)
 
         claim_verification_ids = tuple(dict.fromkeys(kept))
+        if claim_texts is not None:
+            claim_verification_ids = relevant_claim_ids(
+                segment.narration_text, claim_verification_ids, claim_texts
+            )
         word_count = len(segment.narration_text.split())
-        connective = segment.connective and word_count <= MAX_CONNECTIVE_WORDS
+        # A passage the writer did not flag connective still needs no citation when every sentence
+        # of it only moves the lesson along (a closing, a recap, a question): it asserts nothing.
+        connective = (
+            segment.connective or is_signpost_only(segment.narration_text)
+        ) and word_count <= MAX_CONNECTIVE_WORDS
         if not claim_verification_ids and not connective:
             raise UnsourcedSegmentError(index)
         if grounding is not None:

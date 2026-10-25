@@ -28,9 +28,9 @@ describe('the target duration control', () => {
   it('says what is supported, including that longer videos are not', () => {
     render(<Harness />);
 
-    expect(screen.getByText(/any length from 1:00 to 10:00, to the second/i)).toBeInTheDocument();
+    expect(screen.getByText(/any length from 1:00 to 30:00, to the second/i)).toBeInTheDocument();
     expect(
-      screen.getByText('Videos longer than 10:00 are not supported yet.', { exact: false }),
+      screen.getByText('Videos longer than 30:00 are not supported yet.', { exact: false }),
     ).toBeInTheDocument();
     expect(screen.getByText('5 minutes')).toBeInTheDocument();
   });
@@ -40,7 +40,7 @@ describe('the target duration control', () => {
 
     const slider = screen.getByLabelText('Target duration');
     expect(slider).toHaveAttribute('min', '60000');
-    expect(slider).toHaveAttribute('max', '600000');
+    expect(slider).toHaveAttribute('max', '1800000');
     expect(slider).toHaveAttribute('step', '1000');
     expect(slider).toHaveValue('300000');
   });
@@ -69,16 +69,16 @@ describe('the target duration control', () => {
     render(<Harness />);
 
     await userEvent.clear(box());
-    await userEvent.type(box(), '12:00');
+    await userEvent.type(box(), '32:00');
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
-      'Videos longer than 10:00 are not supported yet. Enter a length from 1:00 to 10:00.',
+      'Videos longer than 30:00 are not supported yet. Enter a length from 1:00 to 30:00.',
     );
     expect(box()).toHaveAttribute('aria-invalid', 'true');
-    expect(chosen()).not.toBe('720000');
+    expect(chosen()).not.toBe('1920000');
 
-    await userEvent.tab(); // leaving the box puts the last good value back
-    expect(box()).toHaveValue('1:00');
+    await userEvent.tab(); // leaving the box puts the last good value back: the 3 typed first
+    expect(box()).toHaveValue('3:00');
   });
 
   it('refuses a length that is not one, in words', async () => {
@@ -88,14 +88,14 @@ describe('the target duration control', () => {
     await userEvent.type(box(), 'five');
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
-      'Enter a length from 1:00 to 10:00, such as 5 or 7:30.',
+      'Enter a length from 1:00 to 30:00, such as 5 or 7:30.',
     );
   });
 
   it('flags a saved target that is already longer than can be made, so it can be shortened', () => {
-    render(<Harness initial={1_800_000} />);
+    render(<Harness initial={2_400_000} />);
 
-    expect(screen.getByRole('alert')).toHaveTextContent(/longer than 10:00 are not supported yet/);
+    expect(screen.getByRole('alert')).toHaveTextContent(/longer than 30:00 are not supported yet/);
   });
 
   it('has no fixed-length shortcut buttons', () => {

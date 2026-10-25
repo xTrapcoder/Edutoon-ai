@@ -194,6 +194,8 @@ function project(over: Partial<Row>): Row {
     language: 'en-IN',
     orientation: 'horizontal',
     target_duration_ms: 5 * MIN,
+    instructions: null,
+    instructions_notes: [],
     created_at: ago(2 * 86_400_000),
     updated_at: ago(2 * 86_400_000),
     ...over,
@@ -214,6 +216,8 @@ function source(projectId: string, name: string, pages: number, over: Partial<Ro
     checksum_sha256: randomUUID().replaceAll('-', ''),
     page_count: pages,
     status: 'parsed',
+    extraction_method: 'text',
+    ocr_page_count: null,
     created_at: ago(2 * 86_400_000),
     updated_at: ago(2 * 86_400_000),
     ...over,
@@ -663,8 +667,11 @@ function finishClaimExtraction(job_: Row) {
       }
     }
     processed += 1;
+    // A claim the source backs cites the passages its topic was drawn from, best match first.
+    const evidence = (t.evidence ?? []) as { source_chunk_id: string }[];
     for (const [template, status, rationale] of CLAIM_TEMPLATES) {
       candidatesGenerated += 1;
+      const backed = status === 'supported' || status === 'partially_supported';
       claims.push({
         id: uuid(),
         project_id: projectId,
@@ -675,7 +682,14 @@ function finishClaimExtraction(job_: Row) {
         llm_model: 'mock',
         topic_id: t.id,
         created_at: now(),
-        citations: [],
+        citations: backed
+          ? evidence.map((passage, i) => ({
+              id: uuid(),
+              source_chunk_id: passage.source_chunk_id,
+              similarity: Math.max(0.5, 0.91 - i * 0.07),
+              created_at: now(),
+            }))
+          : [],
       });
       claimsVerified += 1;
       byStatus[status] = (byStatus[status] ?? 0) + 1;
@@ -1323,18 +1337,10 @@ async function route(req: IncomingMessage, res: ServerResponse) {
       return send(res, 422, {
         error: { code: 'VALIDATION_ERROR', message: 'Request validation failed.' },
       });
-    // Mirrors the API: a keyword-only project cannot be created (the seeded one below stands
-    // for a project made before that was switched off).
-    if (body.source_type === 'topic')
-      return fail(
-        res,
-        400,
-        'validation_error',
-        'Keyword-only projects are not supported yet. Every claim in a video must be checked against your own source material, and keywords alone give nothing to check against. Upload a PDF - you can add keywords to guide it.',
-      );
     const p = project({
       title: body.title,
       source_type: body.source_type as string,
+      instructions: (body.instructions as string | undefined) ?? null,
       language: body.language ?? 'en-IN',
       orientation: body.orientation ?? 'horizontal',
       target_duration_ms: (body.target_duration_ms as number) ?? 5 * MIN,

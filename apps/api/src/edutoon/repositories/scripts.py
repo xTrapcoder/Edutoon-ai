@@ -12,8 +12,10 @@ Persistence shape and the invariants the DB enforces:
   like ``claim_citations``: this module never issues UPDATE or DELETE on
   them. A regenerated script is a new ``scripts`` row.
 - Every ``script_segment_claims`` row points at a real
-  ``claim_verifications`` row (FK ``ON DELETE RESTRICT``), so a script's
-  traceability back to the Evidence Engine cannot silently disappear.
+  ``claim_verifications`` row, so a script's traceability back to the
+  Evidence Engine is a database guarantee. The FK is ``ON DELETE CASCADE``
+  since migration 0018: no code path deletes a single claim, and deleting a
+  whole project must be able to remove its claims and the links to them.
 
 **Phase 7 atomicity (migration 0013).** ``uq_scripts_project_id_active`` used
 to cover ``pending`` / ``draft`` / ``approved``, so queuing a new generation
@@ -327,9 +329,7 @@ async def get_by_id_for_project(
     """Ownership-scoped fetch (rule 9): a script that exists but belongs to
     a different project looks identical to one that doesn't exist.
     """
-    stmt = select(scripts).where(
-        scripts.c.id == script_id, scripts.c.project_id == project_id
-    )
+    stmt = select(scripts).where(scripts.c.id == script_id, scripts.c.project_id == project_id)
     row = (await session.execute(stmt)).mappings().one_or_none()
     return _script_from_row(row) if row is not None else None
 

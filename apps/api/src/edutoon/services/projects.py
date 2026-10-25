@@ -18,7 +18,11 @@ from edutoon.domain.generation_settings import (
     Orientation,
 )
 from edutoon.domain.source_storage import belongs_to_project
-from edutoon.domain.topic import KEYWORD_ONLY_UNSUPPORTED
+from edutoon.domain.topic import (
+    INSTRUCTIONS_UNSUPPORTED,
+    KEYWORD_ONLY_UNSUPPORTED,
+    PPTX_UNSUPPORTED,
+)
 from edutoon.providers.storage import Storage
 from edutoon.repositories import projects as projects_repo
 from edutoon.repositories import render as render_repo
@@ -40,9 +44,15 @@ async def create_project(
     language: Language = DEFAULT_LANGUAGE,
     orientation: Orientation = DEFAULT_ORIENTATION,
     target_duration_ms: int = DEFAULT_TARGET_DURATION_MS,
+    instructions: str | None = None,
 ) -> ProjectRecord:
-    if source_type == "topic" and not get_settings().KEYWORD_ONLY_PROJECTS_ENABLED:
+    settings = get_settings()
+    if source_type == "topic":
         raise ValidationError(KEYWORD_ONLY_UNSUPPORTED)
+    if source_type == "pptx" and not settings.PPTX_PROJECTS_ENABLED:
+        raise ValidationError(PPTX_UNSUPPORTED)
+    if instructions and instructions.strip() and not settings.INSTRUCTIONS_ENABLED:
+        raise ValidationError(INSTRUCTIONS_UNSUPPORTED)
     return await projects_repo.create(
         session,
         owner_id=owner_id,
@@ -52,6 +62,7 @@ async def create_project(
         language=language,
         orientation=orientation,
         target_duration_ms=target_duration_ms,
+        instructions=instructions,
     )
 
 
@@ -87,6 +98,13 @@ async def list_projects(
 async def update_project(
     session: AsyncSession, *, project_id: UUID, owner_id: UUID, **fields: Any
 ) -> ProjectRecord:
+    new_instructions = fields.get("instructions")
+    if (
+        isinstance(new_instructions, str)
+        and new_instructions.strip()
+        and not get_settings().INSTRUCTIONS_ENABLED
+    ):
+        raise ValidationError(INSTRUCTIONS_UNSUPPORTED)
     project = await projects_repo.update(
         session, project_id=project_id, owner_id=owner_id, **fields
     )

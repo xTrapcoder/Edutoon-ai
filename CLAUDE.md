@@ -97,7 +97,9 @@ unsupported claims ever reach the script or the screen.
   only once the object is uploaded), `render_outputs` (the finished MP4 for one
   `(script, orientation, quality)`) and `render_output_scenes` (which chunk each
   scene used in that output) - no video bytes in the database (`apps/api/README.md`,
-  "Video rendering").
+  "Video rendering"). Migration 0018 (2026-10-07) makes `claim_citations.source_chunk_id` and
+  `script_segment_claims.claim_verification_id` `ON DELETE CASCADE` (they were `RESTRICT`, which made
+  deleting any project with claims fail); nothing else about deletion changed.
 - `projects.status` is derived, never set by a client: `edutoon.domain.project_status` is the
   rule and `projects.refresh_status` applies it whenever a job is queued or ends or a PDF fails
   to parse (`apps/api/README.md`, "Project status"). Deleting a project removes its uploaded PDFs
@@ -169,12 +171,40 @@ the provenance reviewer flag as a warning). Real Clerk sign-in is
 **unverified** - the Clerk keys are placeholders - as are the real
 LLM/embeddings providers.
 
+**PowerPoint decks (2026-10-07) - a deterministic deck-to-video path, no model and no key.** A project
+can be built from a `.pptx` (`source_type: pptx`, migration **0017**: `source_chunks.structure` and the `pptx`
+kind). The deck is parsed into slide _structure_ (title, bullets and their level, numbered steps, tables, speaker
+notes; `providers/pptx.py`, `domain/deck.py`) beside each chunk's flat text, and the worker routes a deck
+project's existing job kinds to `services/deck_lesson.py` instead of the model-backed services: topics from the
+deck's sections, every slide statement a claim _quoted_ from its slide (`llm_model = deck-engine/1`, no
+embeddings), a script fitted to the target length by leaving out the lowest-ranked statements - never padded -
+and written as one continuous lesson (`domain/deck_plan.py`: welcome, linked topic introductions, fragments
+spoken as sentences, steps in order, closing summary), and a storyboard composed from what the narration says
+(`domain/deck_scenes.py`). It passes the same provenance rules as a model-written script. Narration, rendering
+and every review page are the existing ones. **PDF projects never reach this code and are unchanged.** Full
+detail, limits and what is not done: `apps/api/README.md`, "PowerPoint decks".
+
+**Output specification (same day): at most 720p at 30 fps, 1 to 30 minutes.** `high` is 1280x720 / 720x1280,
+`low` 640x360, constant 30 fps, H.264 High level 3.1 / 3.0 (derived), `RENDERER_VERSION` `pillow-ffmpeg/5`;
+`MAX_RENDER_DURATION_MS` is 30 minutes and `MAX_SCENES_PER_SCRIPT` 1200. Verified on this machine through the real
+stack: a 2-minute deck (browser, end to end), a 25.2-minute and a 28.8-minute deck (render 99 s and 105 s). A deck
+planned for the ceiling is planned 5% under it (`CEILING_HEADROOM_PERCENT`), because a plan sized from an
+estimated pace came out 1% over once narrated. **Not verified:** how any narration sounds (nobody has
+listened), a real customer deck, a render at exactly 30:00.
+
+**Dev QA without Clerk** (development only; since 2026-10-18 on its own ports and database - API :8001, web :3001,
+database `edutoon_qa`, worker `scripts/dev_qa_worker.py`; the normal app keeps :8000/:3000 and the normal database):
+`uv run python scripts/dev_qa_api.py` starts the real API accepting
+only the web UI-QA stand-in token as one local user; `pnpm --filter @edutoon/web dev:qa:real` runs the web app
+against it (`.claude/launch.json`: `api-qa`, `web-qa-real`). A worker started before a code change keeps the old
+code - **restart `make worker`/`make dev` after pulling** or a deck job can be picked up by a stale worker.
+
 **Phase 10 - professional video rendering: built, and verified end to end on this
 machine (see `apps/api/README.md`, "Video rendering").** An approved script with fully
 measured narration and a complete storyboard renders to a real MP4: H.264 High +
-AAC-LC mono 22.05 kHz, **60 fps** (H.264 level 4.2 for `high`, 3.2 for `low` - the lowest
-valid levels at that rate, derived not trusted; the pre-API pass below), 1920x1080 or
-1080x1920 (`high`) or half-size (`low`, a review render), with `+faststart`. The engine is a
+AAC-LC mono 22.05 kHz, **30 fps** (H.264 level 3.1 for `high`, 3.0 for `low` - the lowest
+valid levels at that rate, derived not trusted; it was 1080p at 60 fps until 2026-10-07), 1280x720 or
+720x1280 (`high`) or half-size (`low`, a review render), with `+faststart`. The engine is a
 **Pillow scene compositor feeding FFmpeg** behind a `Renderer` interface (`providers/renderer`); Remotion was rejected on
 licensing (a paid company licence above three people) and is not used. All six
 storyboard templates render from text alone; since Phase 11 an illustrated scene's diagram
@@ -196,7 +226,7 @@ The finished video is verified with `ffprobe` before it is published.
 
 `render_video` jobs (`services.render`) follow the storyboard job's conventions:
 enqueue behind a prerequisite gate (approved script, ready and current narration, complete
-storyboard, valid timings, `MAX_RENDER_DURATION_MS` = 10 minutes, free disk space), one
+storyboard, valid timings, `MAX_RENDER_DURATION_MS` = 30 minutes, free disk space), one
 active render per project (409), an `Idempotency-Key`, independent progress commits, stale
 recovery, sanitised errors. Each chunk is uploaded and recorded in its own transaction the
 moment it finishes, so a crash or a failed chunk loses nothing already made and a retry
@@ -205,12 +235,12 @@ renders only what is left. `GET .../render/video` streams with HTTP `Range` supp
 The front end adds a Video card to Script Studio (shape and quality, estimate, real
 progress, failure and retry, a player and download) and a per-scene render-state badge
 (ready / needs render / stale / failed) on the storyboard's scene cards. The current
-maximum is 10 minutes; nothing in the chunked design depends on that number.
+maximum is 30 minutes; nothing in the chunked design depends on that number.
 
 **Not decided / not verified (Phase 10):** H.264 and AAC patent licensing, and shipping an
 FFmpeg build with libx264 (GPL), are business/legal decisions that choosing an encoder does
 not settle; the front end plays the video from a `blob:` URL (the whole file is fetched before
-it plays - fine at 10 minutes, worth a proxy route for much longer videos); real Clerk
+it plays - fine at 30 minutes (a 71 MB file), worth a proxy route for much longer videos); real Clerk
 sign-in is still unverified.
 
 **Phase 11 - educational visuals (Phase 11B): built and verified locally; not pushed (see
@@ -221,7 +251,7 @@ its `illustration` - five kinds only (`process_flow`, `cycle`, `hierarchy`, `com
 generated from the same constants (`domain/visual_schema.py`), laid out purely with integer
 geometry and an injected text measurer (`domain/visual_layout.py` - a genuinely different design
 per orientation) and painted by `providers/renderer/visual_*.py`. No image generation, no
-chart / map / photo kinds, no new table, bucket, dependency or migration (head is still 0016).
+chart / map / photo kinds, no new table, bucket, dependency or migration (head was still 0016; it is 0018 now).
 A structurally invalid visual is **dropped, not fatal**: the scene stays, is drawn by its
 template's deterministic fallback, and is counted in `dropped_visual_count` (shown in the
 workspace); a provenance violation - including nested text and numeric leaves - is still a hard
@@ -242,7 +272,8 @@ the fingerprint (a documented gap - bump `RENDERER_VERSION` when upgrading them)
 still **0016**; no phase was started; nothing was run against a real provider (see
 `apps/api/README.md`, "Reliability and safety before the first real-provider run", which
 separates implemented / verified locally / unverified / future work). In short: production video
-is **60 fps** with a valid H.264 level and `RENDERER_VERSION` `pillow-ffmpeg/4`; embeddings are
+was **60 fps** with a valid H.264 level and `RENDERER_VERSION` `pillow-ffmpeg/4` (now 720p/30,
+`pillow-ffmpeg/5`, above); embeddings are
 batched to the provider's limits (never truncating) and transient provider failures are retried by
 one policy; every language-model response is checked for refusal, truncation and malformed tool
 calls before it is read, thinking is explicitly disabled, and the model is unchanged
@@ -252,11 +283,165 @@ guard spend (the provider consoles' spend limits must still be set); a target th
 cannot honestly fill is refused before any paid call (`domain/evidence_sufficiency.py`), a script's
 figures and names must come from its claims, and a storyboard illustration that fails provenance falls
 back instead of failing the segment; oversized uploads are refused before parsing, pages are counted
-before extraction and a PDF with no text is a clear failure; **keyword-only projects are switched off**
-(`KEYWORD_ONLY_PROJECTS_ENABLED`); the UI offers any length to the second from 1:00 to **10:00** (`MAX_RENDER_DURATION_MS`; the longest
-render verified at 60 fps was 9.7 minutes) while the model keeps 1-60 minutes; a live
+before extraction and a PDF with no text is a clear failure; **keyword-only projects were switched off**
+(`KEYWORD_ONLY_PROJECTS_ENABLED`; reinstated 2026-10-17 as the labelled "topic only" mode, on by default); the UI offers any length to the second from 1:00 to **30:00** (`MAX_RENDER_DURATION_MS`; it was 10:00
+until 2026-10-07) while the model keeps 1-60 minutes; a live
 job is never reclaimed as stale and a reclaimed worker stops. Not settled: H.264/AAC/x264/Piper licensing,
-long-video (over ten minutes) work, cleanup of superseded scripts' audio and videos.
+long-video (over thirty minutes) work, cleanup of superseded scripts' audio and videos.
+
+**Training platform, Step 1 - roles and sign-in (2026-10-12; design in `docs/training-platform-design.md`).**
+Migration **0019**: `users.role` (`admin` | `employee`, NOT NULL, no default - the database is the only
+authority, never a token claim) and `invitations`. Nobody becomes a user by signing in: a new identity
+needs a verified email plus a pending invitation (or to be the first administrator named in
+`ADMIN_BOOTSTRAP_EMAILS` while none exists), otherwise 403 `not_invited` and no row is written; a
+suspended user is 403 `account_inactive` on every request. Every route declares exactly one role policy
+(`api/policies.py`; all existing project routes are administrator-only: an employee gets 404 on any route
+naming a project, identical whether or not it exists, and 403 on `GET`/`POST /v1/projects` and `/v1/admin`)
+and `tests/test_route_policies.py` fails for any route that does not. The backfill made existing users employees except explicitly named
+addresses (`scripts/grant_admin.py` promotes later). Tests written before roles use a conftest shim
+(`real_auth` marker opts out). **Unverified:** real Clerk sign-in, real Clerk invitation emails and the
+`email_verified` claim (placeholder keys). Steps 2+ (courses, modules, assessments) have not started.
+
+**Training platform, Step 2 - courses, modules and enrolments (in progress, 2026-10-13).** Piece 1 (migration
+**0020**, local only until applied): `training_courses`, `training_modules`, `course_enrolments`; the domain
+(`domain/training.py`, `training_access.py`, `training_storage.py`) and the fail-closed seam
+`services/training_access.passed_module_ids`. A module belongs to exactly one course (NOT NULL, cascade), owns
+its video under `training/modules/{module_id}/...` (a CHECK ties the key to the module id, so it is never in a
+project's prefix) and snapshots its size, duration and resolution; `source_render_output_id` is provenance only
+(`ON DELETE SET NULL`). One access rule decides everything: "not found", "not enrolled", "withdrawn", "course or
+module not published" are a **single** outcome (so one identical 404); an enrolled employee is "locked" until every
+earlier published module is passed, and until Step 3 nobody has passed anything, so only module 1 opens. **Step 3
+must make a course with learner history undeletable** (its assessment tables reference modules with RESTRICT) -
+**archive it instead**. Clerk `email_verified` and invitation-email delivery are still **unverified**.
+
+**Step 2, Piece 2 (2026-10-14) - administrator course and module routes, publish by snapshot.** `/v1/admin/training`
+(`api/routers/admin_training.py`, `services/training.py`, `repositories/training.py`): courses (create, list, read,
+edit, publish, archive, delete) and modules (publish a render, republish, unpublish, delete, reorder, list, read, and
+an admin-only `Range` preview of the module's **own** copy). Publishing copies the MP4 with the new
+`Storage.copy_object` to `training/modules/{module_id}/{fresh uuid}.mp4` and records the snapshot; nothing serves
+the render row or the render's key. Files are removed only **after** the commit that stops needing them
+(`storage_effects`); a removal failure is logged, never fatal. Reorder is one `UPDATE` on the deferrable unique
+constraint. New 404 policies `require_admin_for_course` / `_module` (fixed messages, byte-identical to the admin's
+own 404). `passed_module_ids` is still the empty fail-closed seam. Migration head 0020 (applied to the dev DB
+2026-10-14). **Not built:** employee routes, enrolment endpoints (Piece 3), assessments. **Not enforced:** that a
+published render is current. **Still pending a human:** watching the sample MP4 and listening to the four voice
+samples before any employee rollout.
+
+**Step 2, Piece 3 (2026-10-14) - enrolments and employee access (no migration; head stays 0020).** Four
+administrator routes (`POST`/`GET /v1/admin/training/courses/{course_id}/enrolments`, `POST
+.../enrolments/{user_id}/withdraw`, `GET /v1/admin/training/enrolments?user_id=`; re-enrolling a withdrawn
+user is the same enrol `POST` and reactivates the **same row**, 200 not 201, never a second row) and two
+employee routes (`GET /v1/training/courses` with per-module `locked` + `lock`, `GET
+/v1/training/modules/{module_id}/video`). Only role `employee` can be enrolled (service check, 422);
+enrolment is `INSERT ... ON CONFLICT DO NOTHING` so the database decides races. **Five causes give one
+byte-identical 404** (no module / not enrolled / withdrawn / course not published / module not published)
+while an enrolled employee's later module is **403 `module_locked`** (blocking module named) - because
+`services.training_access.passed_module_ids` still returns the empty set; do not change it before Step 3.
+Preview and employee stream both end in `api/video_response.serve_module_video`. Review fixes: nested
+`.../modules` listing is a course-404 route (policy test looks for `{course_id}` anywhere in the path),
+the course-delete 409 says to archive, `close_position_gap` checks its precondition, and **tests that
+really commit now run on a scratch database** (`conftest.committed_database_url`) - the append-only
+`audit_logs` had grown 301 -> 1,336 on the dev database. **Step 3, Piece 0 (2026-10-14): every test
+session also uses scratch MinIO buckets** (`tests/storage_isolation.py`; the four dev buckets are
+never addressed - a guard on every `Storage` refuses any other bucket), the uploads bucket holds ~724
+unreferenced objects of unproven (test-like) origin pending a reviewed one-time cleanup, and the
+upload order (object first, then row) is a deliberate decision - see the design doc's "Storage
+decisions". **Step 3's tables that reference
+`training_modules` must use `ON DELETE RESTRICT`** (precedent: migration 0018). Mutation runner:
+`scripts/mutation_check_training.py`. Not built: assessments, progress, the pass gate; render-currency
+check on publish (deferred); the human review of the sample MP4 and the four voice samples is still
+pending and blocks any employee rollout.
+
+**Training platform, Step 3 (2026-10-15) - assessments, the pass gate and progression (migration 0021;
+local, verified on scratch databases; design in `docs/training-platform-design.md` "Step 3", behaviour in
+`apps/api/README.md` "Training assessments").** One optional single-correct assessment per module; the
+threshold is stored on the assessment and every attempt records the exact question set, key and
+threshold it was graded with (no FK into the authoring tables). An attempt is inserted already graded
+and never changed (`reject_mutation` triggers, `passed` CHECKed against the integers, no UPDATE/DELETE
+in `src` - an architecture test); grading is integer-only (`correct * 100 >= threshold * total`);
+employee types structurally carry no answer. `passed_module_ids` now reads real attempts (sticky pass);
+a module with no assessment blocks nothing. Module delete and reorder are 409 once attempts exist; the
+history foreign keys are `ON DELETE RESTRICT`. Assessment routes share one 404 (seven causes,
+byte-identical); submission uses `Idempotency-Key` plus a unique `(user_id, idempotency_key)`. **The
+development database is still at 0020 until the owner runs `make migrate`.** The flaky
+`test_recovery_with_nothing_to_recover` was a module-level `NOW` read at import, not a global assertion;
+`tests/test_isolation_of_test_assertions.py` guards that class. The mutation runner's scratch-bucket
+sweeper must not run alongside any other test session (see the design doc). Not built: a front end for
+assessments, reporting, certificates, multi-select, a watched-video gate.
+
+**Local AI backend (2026-10-15) - the free path for PDF projects.** `AI_BACKEND=local` sends every
+language-model and embedding call to an Ollama server instead of Anthropic/OpenAI (`providers/ollama.py`
+behind the two existing factories; schema-constrained `format` instead of a forced tool call; embeddings
+zero-padded to `vector(1536)`, no migration; `LocalModelError` with fixed messages). `cloud` stays the
+default and is unchanged. Detail: `apps/api/README.md`, "Local AI backend". **Built and unit-tested with
+the HTTP call stubbed; no Ollama model has been run through it yet** - `scripts/check_local_ai.py` is the
+proof still to be run (judge reliability, schema acceptance, speed). The two API keys remain required
+settings; a local backend never uses them.
+
+**MVP completion pass (2026-10-17, migration 0024; details in `apps/api/README.md`, "Input modes, OCR,
+instructions and the sentence-level check", and the root `README.md`).** Added on top of everything above:
+scanned/image-only PDFs are read by local OCR (`providers/ocr.py`, RapidOCR + pypdfium2, offline;
+`uploaded_sources.extraction_method` / `ocr_page_count` / `failure_code`); `projects.instructions` (free text,
+2,000 chars) understood by `domain/instructions.py` and applied by `services/instructions.py` to topic
+selection, script audience/tone and scene style, with `instructions_notes` saying what was applied, guidance
+only, or impossible; `GET .../topics/coverage` (`domain/keyword_coverage.py`) reports which typed keywords the
+document does and does not back; a sentence-level support check (`domain/narration_support.py`,
+`services/narration_support.py`, `LLM.judge_sentence_support`) judges every script sentence against the
+section's claims - an unsupported one is rewritten once, then removed, and a section nothing can be supported
+for reads its own verified claims out (`SCRIPT_FALLBACK_TO_CLAIMS`); topic-only lessons (`general_knowledge`
+claims, a fixed spoken notice, `services/general_knowledge.py`); `Earth`/`Sun`/`Moon` are not invented names;
+an invented claim citation is dropped, not fatal. Web: Topic-only mode, instructions, coverage and notices,
+and the training UI - `/learn` (employee: locked/open modules, video, single-answer assessment, 70% default
+pass mark, answers lock on submit) and `/admin/training` (courses, modules from a rendered video, assessments,
+enrolments). Migration head is **0024**. **Still true:** the claim judge and the sentence judge are a 7B local
+model - not proof; no human has listened to the narration; real Clerk sign-in is unverified.
+
+**Why videos came out short, and what changed (2026-10-18; investigation in
+`docs/script-length-investigation.md`, summary in `apps/api/README.md`, "Why a video can be shorter than its
+target").** The sentence judge was mostly right; the causes were upstream: `MAX_CLAIMS_PER_TOPIC=4` in the
+development `.env` and the README capped the evidence (default now 10; the owner's `.env` was **not** edited -
+the worker is started with the override), the length-correction pass asked for *more* words after the checks
+trimmed unsupported text (`domain.script_duration.decide_length_correction`), the writer prompt invited the
+flourish the judge removes, closings were removed (a fixed closing is now added, `domain.script_closing`,
+`SCRIPT_FIXED_CLOSING`), neighbouring topics repeated the same claims (`domain.claim_dedupe`), more than 12
+passages in a section failed the job (`domain.script.merge_to_limit`), and removing a sentence could leave a
+"For example:" hanging. A claim that names something no retrieved passage contains is only partly supported
+(`domain.claim_grounding`). The job result gains `shortfall_reason` (`evidence_limited` / `writer_short`),
+`claims_deduplicated` and `closing_added`; the script page says in words why a script is short, and refusals
+to write a script carry `details.reason` / `details.topics` (the client discards a sentence over 280
+characters, so never rely on message text). **Operational rule:** stale-job recovery runs only on the API's
+enqueue path (one hour by default), so killing the worker mid-job leaves a `running` row - set it back to
+`queued` by hand and restart the worker, and restart at the start of a job, never in the middle of one.
+**Still unverified:** that anyone has listened to the narration or judged a lesson's teaching quality
+(`docs/human-review-checklist.md`), real Clerk sign-in, invitation email delivery (the API has no
+`CLERK_SECRET_KEY`; `docs/licensing-and-credentials.md`), and the licensing of Piper, FFmpeg's GPL build and
+H.264/AAC for distribution.
+
+**Offered scope: exactly five modes (owner's decision, 2026-10-18, supersedes the earlier three).** PDF,
+pasted text, PDF + keywords, PDF + instructions (`INSTRUCTIONS_ENABLED`, default `true`) and scanned PDF (local
+OCR). **Topic-only was removed outright** - no setting; `source_type: topic` and keyword-only topic extraction are
+refused (`domain/topic.KEYWORD_ONLY_UNSUPPORTED`), and `services/general_knowledge` plus its branches in claims,
+scripts and the LLM brief were deleted (existing `general_knowledge` rows stay readable; the web still renders
+them for old projects). *PowerPoint decks* stay dormant (`PPTX_PROJECTS_ENABLED=false`, not offered). The wizard
+(`apps/web/lib/scope.ts`, `components/wizard`) has five cards: `pdf`, `text`, `both`, `instructions` (instructions
+box required) and `scan`; the last three are PDF projects (`source_type: pdf`). `tests/test_offered_scope.py`,
+`tests/test_topic_only_removed.py` and `components/wizard/scope.test.tsx` hold the defaults. Fresh-input
+verification: `docs/final-verification-2026-10-18.md`.
+
+**2026-10-18 verification pass (full record: `docs/verification-report-2026-10-18.md`).** Found by reading real
+runs against their sources, each fixed with a regression test from that run's own data: facts placed under the
+wrong topic (`domain/claim_dedupe`: IDF-weighted fit to title, keywords and summary); a keyword the document never
+mentions reported "covered" (`domain/keyword_coverage.missing_terms`); claims "supported" on a citation that does
+not hold them (`domain/claim_grounding.claim_coverage`, `services/claim_backing`); a rejected sentence that was a
+wording of one claim now reads out that claim (`restating_claim_index`); signpost-only sections fall back to
+claims; repeated "Today, we will learn" removed (`domain/script_openers`); invented ", like tigers," examples
+trimmed; slide text the narration never says removed (`without_unnamed_scene_text`) with a better narration-only
+fallback slide; a duplicate citation no longer fails a topic; the Clerk invitation request now sends a
+`User-Agent` (Clerk answered Python's default with 403 even for a valid key). `MAX_CLAIMS_PER_TOPIC` is **8**
+(owner's `.env`, backed up outside the repository; measured in the report). Scenes are cleared and rebuilt only
+by the product's own whole-set replace. **Still true:** nobody has listened to or watched these videos as a person;
+real Clerk sign-in and an invitation email have not been done; the 7B claim and sentence judges still let some
+embellishment through (examples in the report).
 
 **Phase 12 has not started and needs the owner's explicit approval.**
 
@@ -286,9 +471,9 @@ its dev-only UI QA mode (mock API and Clerk stub, never enabled in a build).
 apps/
   web/        Next.js 15 front end (README.md explains it)
   api/        FastAPI service (uv, src/edutoon)
-    src/edutoon/          api/ (routers, schemas) · services/ · domain/ (pure) ·
+    src/edutoon/          api/ (routers, schemas) · services/ · domain/ (pure; deck*.py = the deck engine) ·
                           repositories/ · providers/ · worker/ · db/ · core/
-    alembic/              migration environment + versions/0001..0016
+    alembic/              migration environment + versions/0001..0024
   parser/     PDF/topic parser — not yet initialised
   render/     placeholder - the renderer lives in apps/api/src/edutoon/providers/renderer
 packages/

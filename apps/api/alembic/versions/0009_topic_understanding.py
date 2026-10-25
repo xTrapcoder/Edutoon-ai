@@ -57,9 +57,7 @@ def upgrade() -> None:
         """
     )
 
-    op.execute(
-        "ALTER TABLE project_topics ADD COLUMN keywords text[] NOT NULL DEFAULT '{}';"
-    )
+    op.execute("ALTER TABLE project_topics ADD COLUMN keywords text[] NOT NULL DEFAULT '{}';")
     op.execute(
         """
         ALTER TABLE project_topics

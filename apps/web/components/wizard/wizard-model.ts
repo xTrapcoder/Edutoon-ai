@@ -1,5 +1,6 @@
 import type { Language, Orientation, ProjectSourceType } from '@edutoon/contracts';
 import { durationProblem } from '@/lib/generation-settings';
+import { INSTRUCTIONS_OFFERED, OFFERED_MODES } from '@/lib/scope';
 
 /**
  * The create-project form: what is asked for, and the checks made before anything is sent.
@@ -12,49 +13,83 @@ export const MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024;
 export const MAX_KEYWORDS = 30;
 export const MAX_KEYWORD_CHARS = 120;
 export const MAX_TITLE_CHARS = 200;
+/** Mirrors `domain.pasted_text` in the API: the least and most pasted text it accepts. */
+export const MIN_TEXT_CHARS = 300;
+export const MAX_TEXT_CHARS = 200_000;
+/** Mirrors `domain.instructions` in the API: the most instruction text it accepts. */
+export const MAX_INSTRUCTIONS_CHARS = 2_000;
 
-export type SourceMode = 'pdf' | 'keywords' | 'both';
+export type SourceMode = 'pdf' | 'pptx' | 'text' | 'both' | 'instructions' | 'scan';
 
-/**
- * Whether a project can be built from keywords alone. It cannot yet: every claim in a video is
- * checked against the person's own material, and keywords alone give nothing to check against, so
- * the API refuses to create one. The choice stays visible (people ask for it) but cannot be picked.
- * PDF + keywords, where the keywords guide a PDF, is supported.
- */
-export const KEYWORD_ONLY_SUPPORTED = false;
+/** What a person is told when a mode is not offered. */
+export const MODE_UNAVAILABLE_MESSAGE =
+  'That way of making a video is not offered. Upload a PDF or paste your own text instead.';
 
-export const KEYWORD_ONLY_UNSUPPORTED_MESSAGE =
-  'Keyword-only projects are not supported yet. Every claim in a video must be checked against your own source material, and keywords alone give nothing to check against. Upload a PDF - you can add keywords to guide it.';
-
-export const isModeAvailable = (mode: SourceMode): boolean =>
-  mode !== 'keywords' || KEYWORD_ONLY_SUPPORTED;
+/** Whether the wizard offers a mode at all (`lib/scope.ts`): the five offered modes only. */
+export const isModeAvailable = (mode: SourceMode): boolean => OFFERED_MODES.includes(mode);
 
 export interface WizardValues {
   title: string;
   mode: SourceMode;
   file: File | null;
   keywords: string[];
+  /** The pasted material, for the 'text' mode. */
+  text: string;
+  /** What the person asks of the lesson in their own words; blank means none. */
+  instructions: string;
   orientation: Orientation;
   /** The target length in milliseconds - any whole number of seconds in range. */
   durationMs: number;
   language: Language;
 }
 
-export const usesPdf = (mode: SourceMode): boolean => mode === 'pdf' || mode === 'both';
-export const usesKeywords = (mode: SourceMode): boolean => mode === 'keywords' || mode === 'both';
+export const usesPdf = (mode: SourceMode): boolean =>
+  mode === 'pdf' || mode === 'both' || mode === 'instructions' || mode === 'scan';
+export const usesDeck = (mode: SourceMode): boolean => mode === 'pptx';
+/** Whether the project is made from an uploaded file (a PDF or a PowerPoint deck). */
+export const usesFile = (mode: SourceMode): boolean => usesPdf(mode) || usesDeck(mode);
+export const usesKeywords = (mode: SourceMode): boolean => mode === 'both';
+export const usesText = (mode: SourceMode): boolean => mode === 'text';
+/** Whether the mode asks for instructions: "PDF + instructions" does, and needs them. */
+export const usesInstructions = (mode: SourceMode): boolean =>
+  INSTRUCTIONS_OFFERED && mode === 'instructions';
 
-/** The API has two source types; "PDF + keywords" is a PDF project that also has keywords. */
+/** Whether the mode is the scanned-PDF one, whose pages are read by local OCR. */
+export const usesOcr = (mode: SourceMode): boolean => mode === 'scan';
+
+/**
+ * The API has three source types the product uses; "PDF + keywords", "PDF + instructions" and
+ * "scanned PDF" are PDF projects (with keywords, with instructions, or read by OCR).
+ */
 export function projectSourceType(mode: SourceMode): ProjectSourceType {
-  return mode === 'keywords' ? 'topic' : 'pdf';
+  if (mode === 'pptx') return 'pptx';
+  if (mode === 'text') return 'text';
+  return 'pdf';
 }
 
+export type FileKind = 'pdf' | 'pptx';
+
+export const PPTX_MIME =
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+
+/** The kind of file a mode asks for. */
+export const fileKindOf = (mode: SourceMode): FileKind => (usesDeck(mode) ? 'pptx' : 'pdf');
+
 /** A readable problem with a chosen file, or null if it is fine. */
-export function fileProblem(file: File): string | null {
-  const looksLikePdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
-  if (!looksLikePdf) return 'That is not a PDF. Choose a file that ends in .pdf.';
-  if (file.size === 0) return 'That file is empty. Choose a different PDF.';
+export function fileProblem(file: File, kind: FileKind = 'pdf'): string | null {
+  const word = kind === 'pptx' ? 'PowerPoint deck' : 'PDF';
+  if (kind === 'pptx') {
+    if (/\.ppt$/i.test(file.name) || file.type === 'application/vnd.ms-powerpoint')
+      return 'Older .ppt files are not supported. Open it in PowerPoint and save it as .pptx.';
+    if (file.type !== PPTX_MIME && !/\.pptx$/i.test(file.name))
+      return 'That is not a PowerPoint deck. Choose a file that ends in .pptx.';
+  } else {
+    const looksLikePdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
+    if (!looksLikePdf) return 'That is not a PDF. Choose a file that ends in .pdf.';
+  }
+  if (file.size === 0) return `That file is empty. Choose a different ${word}.`;
   if (file.size > MAX_UPLOAD_BYTES)
-    return `That file is over ${MAX_UPLOAD_MB} MB. Choose a smaller PDF.`;
+    return `That file is over ${MAX_UPLOAD_MB} MB. Choose a smaller ${word}.`;
   return null;
 }
 
@@ -99,18 +134,39 @@ export function mergeKeywords(current: readonly string[], raw: string): KeywordM
 /** "data_structures-notes.pdf" becomes "Data structures notes". */
 export function suggestTitle(fileName: string): string {
   const stem = fileName
-    .replace(/\.pdf$/i, '')
+    .replace(/\.(pdf|pptx)$/i, '')
     .replace(/[_-]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
   return stem.length === 0 ? '' : stem.charAt(0).toUpperCase() + stem.slice(1);
 }
 
+/** A readable problem with pasted text, or null if it is fine. The API cleans the text first. */
+export function textProblem(text: string): string | null {
+  const length = text.trim().length;
+  if (length === 0) return 'Paste the material you want explained.';
+  if (length < MIN_TEXT_CHARS)
+    return `Paste at least ${MIN_TEXT_CHARS} characters so there is enough to check a video against - you have ${length}.`;
+  if (length > MAX_TEXT_CHARS)
+    return `That is ${length.toLocaleString('en-GB')} characters; the limit is ${MAX_TEXT_CHARS.toLocaleString('en-GB')}. Paste the parts you need.`;
+  return null;
+}
+
 export interface SourceErrors {
   title?: string;
   mode?: string;
   file?: string;
+  text?: string;
   keywords?: string;
+  instructions?: string;
+}
+
+/** A readable problem with instruction text, or null if it is fine (blank is checked separately). */
+export function instructionsProblem(text: string): string | null {
+  const length = text.replace(/\s+/g, ' ').trim().length;
+  return length > MAX_INSTRUCTIONS_CHARS
+    ? `Keep the instructions under ${MAX_INSTRUCTIONS_CHARS.toLocaleString('en-GB')} characters - you have ${length.toLocaleString('en-GB')}.`
+    : null;
 }
 
 export function sourceErrors(values: WizardValues): SourceErrors {
@@ -120,17 +176,30 @@ export function sourceErrors(values: WizardValues): SourceErrors {
   else if (title.length > MAX_TITLE_CHARS)
     errors.title = `Keep the name under ${MAX_TITLE_CHARS} characters.`;
 
-  if (!isModeAvailable(values.mode)) errors.mode = KEYWORD_ONLY_UNSUPPORTED_MESSAGE;
+  if (!isModeAvailable(values.mode)) errors.mode = MODE_UNAVAILABLE_MESSAGE;
 
-  if (usesPdf(values.mode)) {
-    if (!values.file) errors.file = 'Choose a PDF to upload.';
+  if (usesFile(values.mode)) {
+    const kind = fileKindOf(values.mode);
+    if (!values.file)
+      errors.file =
+        kind === 'pptx' ? 'Choose a PowerPoint deck to upload.' : 'Choose a PDF to upload.';
     else {
-      const problem = fileProblem(values.file);
+      const problem = fileProblem(values.file, kind);
       if (problem) errors.file = problem;
     }
   }
+  if (usesText(values.mode)) {
+    const problem = textProblem(values.text);
+    if (problem) errors.text = problem;
+  }
   if (usesKeywords(values.mode) && values.keywords.length === 0) {
     errors.keywords = 'Add at least one keyword.';
+  }
+  if (usesInstructions(values.mode)) {
+    const problem = instructionsProblem(values.instructions);
+    if (problem) errors.instructions = problem;
+    else if (values.instructions.trim() === '')
+      errors.instructions = 'Say how you want the lesson, in your own words.';
   }
   return errors;
 }

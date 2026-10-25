@@ -32,6 +32,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from edutoon.core.config import get_settings
 from edutoon.core.errors import ConflictError, JobAbandonedError, NotFoundError
 from edutoon.core.pagination import DEFAULT_PAGE_SIZE, Page
+from edutoon.domain.claim_grounding import (
+    CITATION_COVERAGE_FLOOR,
+    best_covering_passage,
+    claim_coverage,
+    downgrade_rationale,
+    thin_citation_rationale,
+    ungrounded_entities,
+)
 from edutoon.domain.embedding_batches import EMBEDDING_DIMENSIONS, estimate_tokens, plan_batches
 from edutoon.domain.llm_usage import UsageReport
 from edutoon.providers.embeddings import Embeddings
@@ -381,12 +389,44 @@ async def verify_claim(
     cited = [candidates_by_id[pid] for pid in verdict.cited_passage_ids if pid in candidates_by_id]
 
     status = verdict.status
+    rationale = verdict.rationale
     if status == "supported" and not cited:
         status = "unsupported"
+    if status == "supported":
+        # The judge also names the passages it relied on, and can name ones that do not hold the
+        # claim: a true claim cited to the wrong page, or a claim dressed in words the source never
+        # uses. A supported claim's wording has to be in what it cites; if it is in another
+        # retrieved passage the citation is corrected to that one, otherwise the claim is only
+        # partly supported.
+        coverage = claim_coverage(claim_text, [chunk.content for chunk, _ in cited])
+        if coverage < CITATION_COVERAGE_FLOOR:
+            better = best_covering_passage(claim_text, [chunk.content for chunk, _ in candidates])
+            if better is not None:
+                cited = [candidates[better]]
+                rationale = (
+                    f"{(rationale or '').strip()} The citation was corrected to the retrieved "
+                    "passage that states the claim."
+                ).strip()
+            else:
+                status = "partially_supported"
+                rationale = thin_citation_rationale(rationale, coverage)
+    if status == "supported":
+        # The judge is a model and can approve a claim on its familiar part: a name, date or figure
+        # that no retrieved passage contains keeps the claim from being treated as established.
+        invented = ungrounded_entities(claim_text, [chunk.content for chunk, _ in candidates])
+        if invented:
+            status = "partially_supported"
+            rationale = downgrade_rationale(rationale, invented)
 
+    # A passage can be cited once per verification (a uniqueness rule in the database); a judge that
+    # names the same passage twice, or a corrected citation that lands on one it already cited,
+    # must not fail the whole topic's claim extraction.
+    distinct: dict[Any, tuple[Any, float]] = {}
+    for chunk, similarity in cited:
+        distinct.setdefault(chunk.id, (chunk, similarity))
     citations = [
         NewClaimCitation(source_chunk_id=chunk.id, similarity=similarity)
-        for chunk, similarity in cited
+        for chunk, similarity in distinct.values()
     ]
 
     return await claim_verifications_repo.create(
@@ -396,7 +436,7 @@ async def verify_claim(
         status=status,
         embedding_model=embeddings.model,
         llm_model=llm.model,
-        rationale=verdict.rationale,
+        rationale=rationale,
         topic_id=topic_id,
         citations=citations,
     )

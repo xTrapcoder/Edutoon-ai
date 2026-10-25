@@ -48,14 +48,44 @@ class Settings(BaseSettings):
     API_BASE_URL: str = "http://localhost:8000"
     MAX_UPLOAD_BYTES: int = 104_857_600
 
-    # Keyword-only projects (``source_type: topic``, or a topic extraction with keywords and no
-    # parsed material) are switched off: with nothing to verify against, the evidence pipeline
-    # cannot produce a verified script from keywords alone, and the product's promise is that
-    # every video is. Off by default; the switch exists so the mode can be re-enabled deliberately
-    # (and, if it returns, as a separate mode that says its output is unverified) rather than by
-    # deleting code. PDF projects with keywords are unaffected.
-    KEYWORD_ONLY_PROJECTS_ENABLED: bool = False
+    # Roles and invitations (migration 0019). Nobody becomes a user by signing in: an identity
+    # needs a pending invitation, or to be the first administrator below.
+    #
+    # ADMIN_BOOTSTRAP_EMAILS is a comma-separated allow-list that does exactly two things: the
+    # migration promotes the *existing* users with these addresses to administrator (everyone else
+    # becomes an employee), and, while the organisation has no active administrator at all, a
+    # verified sign-in with one of these addresses is provisioned as the first one. It is never
+    # consulted once an administrator exists. Leave it empty after the first administrator is in.
+    ADMIN_BOOTSTRAP_EMAILS: str = ""
+    # Used only to ask Clerk to email an invitation. Optional: without it an invitation is still
+    # recorded and the administrator passes on the sign-up link themselves. Never logged.
+    CLERK_SECRET_KEY: str = ""
+    CLERK_API_BASE_URL: str = "https://api.clerk.com"
+    # Where Clerk sends an invited person to sign up; empty means APP_BASE_URL + "/sign-up".
+    CLERK_INVITATION_REDIRECT_URL: str = ""
+    INVITATION_TTL_DAYS: int = Field(default=7, ge=1, le=60)
+
+    # The product offers exactly five ways to make a video: a PDF, pasted text, a PDF with keywords,
+    # a PDF with natural-language instructions, and a scanned PDF (read by local OCR). A topic with
+    # no document ("topic only") is not offered and cannot be switched on: it is refused outright.
+    # A PowerPoint deck project (``source_type: pptx``, the deterministic deck engine) is dormant:
+    # off by default, refused with a 422 that says so; existing deck projects keep working.
+    PPTX_PROJECTS_ENABLED: bool = False
+    # Free-text instructions on a project (``domain.instructions``): on, because "PDF +
+    # instructions" is one of the five modes. Set false to refuse them.
+    INSTRUCTIONS_ENABLED: bool = True
     MAX_PDF_PAGES: int = 300
+    # Local text recognition (OCR) for scanned or image-only PDF pages (``providers.ocr``): nothing
+    # leaves this machine. A page whose own text layer has next to nothing is read by OCR, but only
+    # when the PDF has at most OCR_MAX_PAGES such pages - recognition costs seconds a page, and
+    # reading part of a scan silently would be worse than saying it is too long. OCR_RENDER_SCALE
+    # is how large a page is drawn for recognition (1.0 = 72 dpi); lower is faster, less accurate.
+    OCR_ENABLED: bool = True
+    OCR_MAX_PAGES: int = Field(default=30, ge=1, le=200)
+    OCR_RENDER_SCALE: float = Field(default=2.0, ge=1.0, le=4.0)
+    # The most slides one uploaded PowerPoint deck may have (hidden ones included; they are counted
+    # before any text is read). A lesson covers at most MAX_SCRIPT_SECTIONS topics of a few slides.
+    MAX_DECK_SLIDES: int = Field(default=100, ge=1)
     EMBEDDING_MODEL: str = "text-embedding-3-small"
     LLM_MODEL: str = "claude-sonnet-5"
 
@@ -79,6 +109,26 @@ class Settings(BaseSettings):
     LLM_THINKING: Literal["disabled", "omit"] = "disabled"
     LLM_TIMEOUT_SECONDS: float = Field(default=300.0, ge=10)
     #
+    # Which backend answers the language-model and embedding calls. ``cloud`` (the default, and what
+    # every deployment before this setting used) is Anthropic and OpenAI. ``local`` is an Ollama
+    # server on this machine or network: free to run, no key, nothing leaves the machine
+    # (``providers.ollama``). OPENAI_API_KEY and ANTHROPIC_API_KEY stay required settings but a
+    # local backend never sends them anywhere - leave the placeholders. LLM_MODEL,
+    # SCRIPT_LLM_MODEL and EMBEDDING_MODEL then name Ollama models (``ollama pull <name>``); use the
+    # same model for the first two so Ollama does not swap models in memory between jobs.
+    # OLLAMA_NUM_CTX is the context window requested for every call: Ollama's own default is small
+    # and silently cuts a long prompt, so a call whose prompt fills it is refused, never trusted.
+    # OLLAMA_DISABLE_THINKING sends ``think: false`` for a model that thinks by default (it is
+    # rejected by a model that does not think, so it is off by default). EMBEDDING_MAX_INPUT_TOKENS
+    # is the largest single embedding input (a byte-length bound, see ``domain.embedding_batches``);
+    # lower it to fit a local embedding model with a smaller context.
+    AI_BACKEND: Literal["cloud", "local"] = "cloud"
+    OLLAMA_BASE_URL: str = "http://localhost:11434"
+    OLLAMA_NUM_CTX: int = Field(default=16384, ge=2048, le=131_072)
+    OLLAMA_TIMEOUT_SECONDS: float = Field(default=900.0, ge=10)
+    OLLAMA_DISABLE_THINKING: bool = False
+    EMBEDDING_MAX_INPUT_TOKENS: int = Field(default=8192, ge=4, le=8192)
+    #
     # The in-process spend guard (``services.spend_guard``; the application has no billing, so
     # the provider consoles' own spend limits are the real ceiling - set them before any real
     # testing). MAX_PROVIDER_CALLS_PER_JOB is a tripwire against a runaway loop, not a budget: no
@@ -89,7 +139,7 @@ class Settings(BaseSettings):
     # project may start in an hour, and MAX_MANUAL_CLAIM_VERIFICATIONS_PER_PROJECT_PER_HOUR how
     # many claims typed in by hand (each one an embedding and a model call) - both refuse with a
     # 429 before anything is started.
-    MAX_PROVIDER_CALLS_PER_JOB: int = Field(default=500, ge=1)
+    MAX_PROVIDER_CALLS_PER_JOB: int = Field(default=2000, ge=1)
     MAX_PROVIDER_JOBS_PER_PROJECT_PER_HOUR: int = Field(default=30, ge=1)
     MAX_MANUAL_CLAIM_VERIFICATIONS_PER_PROJECT_PER_HOUR: int = Field(default=120, ge=1)
     PROVIDER_RETRY_ATTEMPTS: int = Field(default=3, ge=1, le=8)
@@ -107,8 +157,34 @@ class Settings(BaseSettings):
     # into an estimated spoken duration.
     SCRIPT_LLM_MODEL: str = "claude-sonnet-5"
     MAX_SCRIPT_SEGMENTS: int = 12
+    # Sentence-level support check of every script segment against the verified claims it may rest
+    # on (``domain.narration_support``): a sentence no claim supports is rewritten once, then taken
+    # out. One small model call per sentence (two when it carries a cause or requirement cue), so a
+    # long script spends minutes on it - the price of not reading unsupported sentences aloud. Off
+    # only to measure, or for a model too weak to judge.
+    SCRIPT_SUPPORT_CHECK_ENABLED: bool = True
+    # When the writer cannot produce wording a topic's claims support (even after rewrites and
+    # removals), read the topic's verified claims out as they stand instead of failing the whole
+    # script. Off to get the old behaviour: the generation fails.
+    SCRIPT_FALLBACK_TO_CLAIMS: bool = True
+    # When the model keeps writing scene text the narration does not contain (even after its
+    # rewrites), give the segment one bullet scene made only of the narration's own words
+    # instead of leaving it without scenes. Off to get the old behaviour: the segment fails.
+    STORYBOARD_FALLBACK_TO_TEXT: bool = True
+    # A script that does not already end in a closing is given a fixed one that names the
+    # topics it covered (domain.script_closing). The writer's own summary is often removed by
+    # the support check, which left lessons ending abruptly. Off to leave the script as the
+    # writer and the checks produced it.
+    SCRIPT_FIXED_CLOSING: bool = True
     MAX_CLAIMS_PER_GENERATION: int = 40
     SCRIPT_WORDS_PER_MINUTE: int = 150
+    # How many words a minute a *PowerPoint deck* lesson is planned at (``domain.deck_plan``). A
+    # deck's length comes from the words it is given, so the pace has to be the real pace of the
+    # narrator. Piper's ``en_GB-cori-medium`` at its defaults was measured at 163 words a minute
+    # on a real deck lesson (145 to 180 by section) and 132 on a longer-worded sample, so the pace
+    # depends on the words: 160 here, an estimate that the measured narration then replaces. The
+    # model-written scripts above keep their own, older estimate.
+    DECK_SPEECH_WORDS_PER_MINUTE: int = Field(default=160, ge=60, le=240)
 
     # Topic extraction (Phase 5). Every one is optional: an ``.env`` written
     # before Phase 5 boots unchanged. ``TOPIC_INPUT_BUDGET_CHARS`` bounds how
@@ -146,7 +222,7 @@ class Settings(BaseSettings):
     # since it is per topic, not per document. They are the single home of the
     # numbers ``domain.claim_extraction.ClaimCandidateLimits`` is built from.
     CLAIM_INPUT_BUDGET_CHARS: int = Field(default=12_000, ge=1)
-    MAX_CLAIMS_PER_TOPIC: int = Field(default=6, ge=1)
+    MAX_CLAIMS_PER_TOPIC: int = Field(default=10, ge=1)
     MAX_CLAIM_TEXT_CHARS: int = Field(default=300, ge=1)
 
     # Mirrors ``TOPIC_EXTRACTION_STALE_AFTER_SECONDS``: how long an
@@ -241,6 +317,17 @@ class Settings(BaseSettings):
     PIPER_VOICE_EN_IN: str = "en_GB-cori-medium"
     PIPER_EN_IN_IS_TEMPORARY_SUBSTITUTE: bool = True
 
+    # How Piper speaks. The defaults are exactly how ``en_GB-cori-medium`` was trained, which
+    # pauses naturally between sentences and speaks 130 to 165 words a minute depending on the words
+    # (measured; see apps/api/README.md, "Text-to-speech"). PIPER_LENGTH_SCALE stretches speech
+    # (1.1 is about 10% slower, 0.9 faster); PIPER_NOISE_SCALE and PIPER_NOISE_W_SCALE are how much
+    # the pitch and the rhythm of each sentence may vary (higher is livelier, too high is unsteady).
+    # Anything other than the trained values is part of the narration's fingerprint, so changing
+    # one re-narrates rather than mixing two ways of speaking in one video.
+    PIPER_LENGTH_SCALE: float = Field(default=1.0, gt=0.5, le=2.0)
+    PIPER_NOISE_SCALE: float = Field(default=0.667, ge=0, le=1.5)
+    PIPER_NOISE_W_SCALE: float = Field(default=0.8, ge=0, le=1.5)
+
     # Safety caps on one synthesis job, all generous defaults - never required, never
     # meant to bind in ordinary use. MAX_TTS_CHARS_PER_CALL bounds one internal Piper
     # invocation (domain.script_audio splits a segment's text into chunks at sentence
@@ -289,10 +376,12 @@ class Settings(BaseSettings):
     # scene count; MAX_STORYBOARD_SEGMENTS bounds how many segments (and so provider
     # calls - exactly one per segment, never one per scene) one storyboard generation
     # may cover.
-    # (300 scenes is a scene-count ceiling, not a time limit: at the default scene lengths it
-    # bounds a script to roughly an hour of video, and at ten minutes it is far from binding. It is
-    # enforced with a clear message, never by dropping scenes, and is a long-video item to revisit.)
-    MAX_SCENES_PER_SCRIPT: int = Field(default=300, ge=1)
+    # (1200 scenes is a scene-count ceiling, not a time limit: it is exactly the worst case of the
+    # two limits below it, 200 segments of at most 6 scenes, so it never binds on its own. The check
+    # counts the most a script *could* need - every segment at its maximum - not what a writer will
+    # propose: a 25-minute, 72-section deck lesson counted 432, which the earlier 300 refused. It is
+    # enforced with a clear message, never by dropping scenes.)
+    MAX_SCENES_PER_SCRIPT: int = Field(default=1200, ge=1)
     MAX_STORYBOARD_SEGMENTS: int = Field(default=200, ge=1)
 
     # Mirrors the other STALE_AFTER_SECONDS settings: how long a generate_storyboard job
@@ -309,7 +398,7 @@ class Settings(BaseSettings):
     # AAC patent licensing, which is a separate business/legal decision
     # (apps/api/README.md, "Video rendering").
     #
-    # MAX_RENDER_DURATION_MS is the longest video one render may produce (10 minutes today;
+    # MAX_RENDER_DURATION_MS is the longest video one render may produce (30 minutes today;
     # the chunked design itself does not depend on it). It is the single source of truth for
     # "the longest video this product can make end to end", so it is also the longest *target* a
     # script will be written for (``services.scripts``) - writing, narrating and storyboarding a
@@ -326,7 +415,7 @@ class Settings(BaseSettings):
     FFMPEG_BINARY: str = "ffmpeg"
     FFPROBE_BINARY: str = "ffprobe"
     RENDER_VIDEO_ENCODER: Literal["libx264", "h264_nvenc"] = "libx264"
-    MAX_RENDER_DURATION_MS: int = Field(default=600_000, ge=1_000)
+    MAX_RENDER_DURATION_MS: int = Field(default=1_800_000, ge=1_000)
     RENDER_WORK_DIR: str = ""
     RENDER_MIN_FREE_DISK_MB: int = Field(default=1024, ge=0)
     RENDER_CONCURRENCY: int = Field(default=2, ge=1, le=16)

@@ -1,5 +1,6 @@
 import type { Job, Project, Script, Source, Topic } from '@edutoon/contracts';
 import { isActiveJob, latestJobOfKind } from '@/lib/jobs';
+import { isFileProject, sourceWords } from '@/lib/source-kind';
 
 /**
  * Where a project is in its journey, worked out from what the API actually returns.
@@ -14,7 +15,6 @@ import { isActiveJob, latestJobOfKind } from '@/lib/jobs';
 export type StageId =
   | 'unknown'
   | 'needs_source'
-  | 'keywords_unsupported'
   | 'source_failed'
   | 'reading_source'
   | 'ready_for_topics'
@@ -38,7 +38,6 @@ export interface StageMeta {
 export const STAGES: Record<StageId, StageMeta> = {
   unknown: { label: 'Draft', tone: 'neutral', busy: false },
   needs_source: { label: 'Needs source', tone: 'warning', busy: false },
-  keywords_unsupported: { label: 'Keywords not supported yet', tone: 'warning', busy: false },
   source_failed: { label: 'Source problem', tone: 'danger', busy: false },
   reading_source: { label: 'Reading source', tone: 'info', busy: true },
   ready_for_topics: { label: 'Ready for topics', tone: 'neutral', busy: false },
@@ -77,7 +76,7 @@ export interface Workflow {
   next: NextAction | null;
   /** The script a person is working with, if any (the newest that has not been superseded). */
   script: Script | undefined;
-  /** The PDF the project is built from, if any. */
+  /** The PDF or deck the project is built from, if any. */
   source: Source | undefined;
   /** Topics that have not been rejected. */
   usableTopicCount: number;
@@ -96,7 +95,6 @@ export interface WorkflowInput {
 const STAGE_STEP: Record<StageId, number> = {
   unknown: 0,
   needs_source: 0,
-  keywords_unsupported: 0,
   source_failed: 0,
   reading_source: 0,
   ready_for_topics: 1,
@@ -151,10 +149,6 @@ export function deriveStage(input: WorkflowInput): StageId {
         return 'script_failed';
     }
   }
-  // A keyword-only project (made before the mode was switched off) has nothing to verify claims
-  // against and cannot go further: say so, plainly, rather than leading the person on.
-  if (project.source_type === 'topic') return 'keywords_unsupported';
-
   // Without the script list we cannot tell whether a script exists, so say no more than "draft".
   if (scripts === undefined && jobs === undefined) return 'unknown';
 
@@ -165,7 +159,7 @@ export function deriveStage(input: WorkflowInput): StageId {
   if (extraction?.status === 'failed' && !hasDerivedTopics) return 'topics_failed';
   if (hasDerivedTopics || extraction?.status === 'succeeded') return 'topics_ready';
 
-  if (project.source_type === 'pdf') {
+  if (isFileProject(project)) {
     const source = sources?.[0];
     if (sources === undefined) return 'unknown';
     if (!source) return 'needs_source';
@@ -174,7 +168,7 @@ export function deriveStage(input: WorkflowInput): StageId {
     return 'ready_for_topics';
   }
 
-  // A keywords project starts from the person's own topics.
+  // A topic-only project starts from the person's own topics.
   if (topics === undefined) return 'unknown';
   return topics.length > 0 ? 'ready_for_topics' : 'needs_source';
 }
@@ -184,10 +178,8 @@ function nextActionFor(stage: StageId, projectId: string): NextAction | null {
   switch (stage) {
     case 'needs_source':
       return { label: 'Add source material', href: base };
-    case 'keywords_unsupported':
-      return { label: 'Start a PDF project', href: '/projects/new' };
     case 'source_failed':
-      return { label: 'Upload a different PDF', href: base };
+      return { label: 'Upload a different file', href: base };
     case 'reading_source':
       return { label: 'View progress', href: `${base}/topics` };
     case 'ready_for_topics':
@@ -211,11 +203,11 @@ function nextActionFor(stage: StageId, projectId: string): NextAction | null {
   }
 }
 
-function pdfDetail(source: Source | undefined): string | null {
+function fileDetail(source: Source | undefined, unit: string): string | null {
   if (!source) return null;
   const pages = source.page_count;
   return pages
-    ? `${source.original_filename} · ${pages} ${pages === 1 ? 'page' : 'pages'}`
+    ? `${source.original_filename} · ${pages} ${pages === 1 ? unit : `${unit}s`}`
     : source.original_filename;
 }
 
@@ -240,12 +232,11 @@ export function deriveWorkflow(input: WorkflowInput): Workflow {
   };
 
   const details: Record<StepId, string | null> = {
-    source:
-      project.source_type === 'pdf'
-        ? pdfDetail(source)
-        : topics && topics.length > 0
-          ? `${topics.length} ${topics.length === 1 ? 'keyword' : 'keywords'}`
-          : null,
+    source: isFileProject(project)
+      ? fileDetail(source, sourceWords(project).unit)
+      : topics && topics.length > 0
+        ? `${topics.length} ${topics.length === 1 ? 'keyword' : 'keywords'}`
+        : null,
     topics:
       topicsSettled && topics
         ? `${usableTopicCount} ${usableTopicCount === 1 ? 'topic' : 'topics'}`

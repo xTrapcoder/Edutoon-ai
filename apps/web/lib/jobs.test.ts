@@ -5,6 +5,7 @@ import {
   jobFailureMessage,
   readClaimExtractionSummary,
   readExtractionSummary,
+  readScriptChecks,
 } from './jobs';
 
 const at = (iso: string) => Date.parse(iso);
@@ -23,6 +24,14 @@ describe('assessWait', () => {
     const wait = assessWait(queued, at('2026-09-26T10:03:00Z'));
     expect(wait.level).toBe('slow');
     expect(wait.message).toMatch(/nothing is lost/i);
+  });
+
+  it('explains a long-running job after a minute and a half, instead of a bare spinner', () => {
+    const running = job({ status: 'running', started_at: '2026-09-26T10:00:00Z' });
+    const wait = assessWait(running, at('2026-09-26T10:02:00Z'));
+    expect(wait.level).toBe('slow');
+    expect(wait.message).toMatch(/5 to 10 minutes/);
+    expect(wait.message).toMatch(/unless this page says the step failed/);
   });
 
   it('escalates a job that has run far too long', () => {
@@ -125,5 +134,86 @@ describe('jobFailureMessage', () => {
         job({ status: 'failed', error: 'Traceback (most recent call last): boom' }),
       ),
     ).toBe("This step didn't finish. You can try again.");
+  });
+});
+
+describe('readScriptChecks', () => {
+  const scriptJob = (result: Record<string, unknown>) =>
+    job({ kind: 'generate_script', status: 'succeeded', result: { script_id: 's1', ...result } });
+
+  it('reads what the sentence check removed, how many it judged and which topics fell back', () => {
+    const checks = readScriptChecks(
+      [
+        scriptJob({
+          general_knowledge: false,
+          support_check: {
+            enabled: true,
+            judged_sentences: 45,
+            unchecked_sentences: 2,
+            removed_sentences: [
+              {
+                sentence: 'Plants need water to open their stomata.',
+                reason: 'reversed',
+                topic: 'Water',
+              },
+              { nonsense: true },
+            ],
+            fallback_sections: [{ topic: 'Hotspots' }, 7],
+          },
+        }),
+      ],
+      's1',
+    );
+    expect(checks).toEqual({
+      generalKnowledge: false,
+      support: {
+        enabled: true,
+        judgedSentences: 45,
+        uncheckedSentences: 2,
+        removed: [
+          {
+            sentence: 'Plants need water to open their stomata.',
+            reason: 'reversed',
+            topic: 'Water',
+            segmentDropped: false,
+          },
+        ],
+        fallbackTopics: ['Hotspots'],
+      },
+      shortfall: null,
+    });
+  });
+
+  it('says a script is short because of the evidence only when the server says so', () => {
+    const short = {
+      estimated_duration_ms: 143_000,
+      target_duration_ms: 300_000,
+      shortfall_reason: 'evidence_limited',
+    };
+    expect(readScriptChecks([scriptJob(short)], 's1')?.shortfall).toEqual({
+      estimatedMs: 143_000,
+      targetMs: 300_000,
+      reason: 'evidence_limited',
+    });
+    expect(
+      readScriptChecks([scriptJob({ ...short, shortfall_reason: 'writer_short' })], 's1')?.shortfall
+        ?.reason,
+    ).toBe('writer_short');
+    expect(
+      readScriptChecks([scriptJob({ ...short, shortfall_reason: null })], 's1')?.shortfall,
+    ).toBeNull();
+    expect(
+      readScriptChecks([scriptJob({ shortfall_reason: 'evidence_limited' })], 's1')?.shortfall,
+    ).toBeNull();
+  });
+
+  it('knows a general-knowledge lesson, and never confuses "no check ran" with "nothing found"', () => {
+    expect(readScriptChecks([scriptJob({ general_knowledge: true })], 's1')).toEqual({
+      generalKnowledge: true,
+      support: null,
+      shortfall: null,
+    });
+    expect(readScriptChecks([scriptJob({})], 'other-script')).toBeNull();
+    expect(readScriptChecks(undefined, 's1')).toBeNull();
   });
 });

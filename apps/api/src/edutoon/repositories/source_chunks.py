@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import func, select
@@ -24,6 +25,8 @@ class NewSourceChunk:
     page_from: int | None = None
     page_to: int | None = None
     token_count: int | None = None
+    structure: dict[str, Any] | None = None
+    """A deck slide's structure (``domain.deck``); ``None`` for a PDF page."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +42,7 @@ class SourceChunkRecord:
     embedding_model: str | None
     created_at: datetime
     updated_at: datetime
+    structure: dict[str, Any] | None = None
 
 
 def _from_row(row: RowMapping) -> SourceChunkRecord:
@@ -54,6 +58,7 @@ def _from_row(row: RowMapping) -> SourceChunkRecord:
         embedding_model=row["embedding_model"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
+        structure=row["structure"],
     )
 
 
@@ -79,6 +84,7 @@ async def create_many(
                     "page_from": chunk.page_from,
                     "page_to": chunk.page_to,
                     "token_count": chunk.token_count,
+                    "structure": chunk.structure,
                 }
                 for chunk in chunks
             ]
@@ -262,7 +268,9 @@ async def count_by_project(session: AsyncSession, project_id: UUID) -> int:
     """How many chunks a project has - a cheap "is there any parsed text to
     work from?" check that does not load any content.
     """
-    stmt = select(func.count()).select_from(source_chunks).where(
-        source_chunks.c.project_id == project_id
+    stmt = (
+        select(func.count())
+        .select_from(source_chunks)
+        .where(source_chunks.c.project_id == project_id)
     )
     return int((await session.execute(stmt)).scalar_one())

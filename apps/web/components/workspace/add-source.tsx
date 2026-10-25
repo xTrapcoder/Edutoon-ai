@@ -1,25 +1,35 @@
 'use client';
 
-import { FileUp, Plus } from 'lucide-react';
+import { ClipboardPaste, FileUp, Plus } from 'lucide-react';
 import { useState } from 'react';
 import { toast } from 'sonner';
 import { FileDropzone } from '@/components/wizard/file-dropzone';
 import { KeywordInput } from '@/components/wizard/keyword-input';
-import { fileProblem, mergeKeywords } from '@/components/wizard/wizard-model';
+import {
+  fileProblem,
+  mergeKeywords,
+  textProblem,
+  type FileKind,
+} from '@/components/wizard/wizard-model';
 import { Button } from '@/components/ui/button';
 import { Alert } from '@/components/ui/feedback';
+import { Field, Textarea } from '@/components/ui/field';
 import { describeError } from '@/lib/api/errors';
-import { useAddKeywords, useUploadSource } from '@/lib/api/queries';
+import { useAddKeywords, usePasteText, useUploadSource } from '@/lib/api/queries';
 
-/** Upload a PDF to an existing project - for one that has none yet, or whose upload failed. */
-export function AddPdfForm({ projectId }: { projectId: string }) {
+/**
+ * Upload a PDF or a PowerPoint deck to an existing project - for one that has none yet, or
+ * whose upload failed.
+ */
+export function AddSourceForm({ projectId, kind = 'pdf' }: { projectId: string; kind?: FileKind }) {
+  const word = kind === 'pptx' ? 'deck' : 'PDF';
   const [file, setFile] = useState<File | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const upload = useUploadSource(projectId);
 
   const choose = (next: File | null) => {
     setFile(next);
-    setProblem(next ? fileProblem(next) : null);
+    setProblem(next ? fileProblem(next, kind) : null);
     upload.reset();
   };
 
@@ -29,19 +39,27 @@ export function AddPdfForm({ projectId }: { projectId: string }) {
       onSuccess: (source) => {
         setFile(null);
         if (source.status === 'failed') {
-          toast.error("We couldn't read that PDF");
+          toast.error(`We couldn't read that ${word}`);
         } else {
-          toast.success('PDF added');
+          toast.success(kind === 'pptx' ? 'Deck added' : 'PDF added');
         }
       },
     });
   };
 
-  const copy = upload.isError ? describeError(upload.error, { action: 'upload that PDF' }) : null;
+  const copy = upload.isError
+    ? describeError(upload.error, { action: `upload that ${word}` })
+    : null;
 
   return (
     <div className="space-y-4">
-      <FileDropzone file={file} onChange={choose} error={problem} disabled={upload.isPending} />
+      <FileDropzone
+        kind={kind}
+        file={file}
+        onChange={choose}
+        error={problem}
+        disabled={upload.isPending}
+      />
       {copy ? (
         <Alert tone="danger" title={copy.title}>
           {copy.message}
@@ -49,7 +67,7 @@ export function AddPdfForm({ projectId }: { projectId: string }) {
       ) : null}
       {upload.isPending ? (
         <p role="status" className="text-sm text-ink-600">
-          Uploading and reading your PDF. A long document can take a minute.
+          Uploading and reading your {word}. A long document can take a minute.
         </p>
       ) : null}
       <Button
@@ -58,7 +76,71 @@ export function AddPdfForm({ projectId }: { projectId: string }) {
         disabled={!file || problem !== null}
         leadingIcon={<FileUp className="size-4" aria-hidden />}
       >
-        Upload PDF
+        Upload {word}
+      </Button>
+    </div>
+  );
+}
+
+/** Paste the material for a project made from pasted text that has none yet. */
+export function PasteTextForm({ projectId, title }: { projectId: string; title: string }) {
+  const [text, setText] = useState('');
+  const [showProblem, setShowProblem] = useState(false);
+  const paste = usePasteText(projectId);
+  const problem = textProblem(text);
+
+  const submit = () => {
+    if (problem) {
+      setShowProblem(true);
+      return;
+    }
+    paste.mutate(
+      { title, text },
+      {
+        onSuccess: () => {
+          setText('');
+          setShowProblem(false);
+          toast.success('Text added');
+        },
+      },
+    );
+  };
+
+  const copy = paste.isError ? describeError(paste.error, { action: 'add that text' }) : null;
+
+  return (
+    <div className="space-y-4">
+      <Field
+        label="Your text"
+        required
+        error={showProblem ? problem : null}
+        hint="Every claim in the video is checked against all of this text, and nothing is added from outside it. Finding the topics reads about 40,000 characters, sampled evenly from start to end when the text is longer."
+      >
+        {(control) => (
+          <Textarea
+            {...control}
+            rows={10}
+            value={text}
+            disabled={paste.isPending}
+            placeholder="Paste or type the material here"
+            onChange={(event) => {
+              setText(event.target.value);
+              paste.reset();
+            }}
+          />
+        )}
+      </Field>
+      {copy ? (
+        <Alert tone="danger" title={copy.title}>
+          {copy.message}
+        </Alert>
+      ) : null}
+      <Button
+        onClick={submit}
+        loading={paste.isPending}
+        leadingIcon={<ClipboardPaste className="size-4" aria-hidden />}
+      >
+        Add text
       </Button>
     </div>
   );

@@ -42,16 +42,28 @@ async def test_list_page_paginates_newest_first(db_session):
         await users_repo.create(db_session, email=f"{uuid4()}@example.com") for _ in range(3)
     ]
 
+    # The table may already hold other, legitimate users (a development database does), so this
+    # only reasons about the rows it created: it walks every page and checks the paging itself.
     first_page = await users_repo.list_page(db_session, limit=2)
 
+    # Three rows of ours exist, so a page of two is always full and always has a successor.
     assert len(first_page.items) == 2
     assert first_page.next_cursor is not None
-    # UUIDv7 ids are time-ordered, so DESC by (created_at, id) matches insertion order.
-    assert [item.id for item in first_page.items] == [created[2].id, created[1].id]
 
-    second_page = await users_repo.list_page(
-        db_session, limit=2, cursor=first_page.next_cursor
-    )
+    pages = [first_page]
+    while pages[-1].next_cursor is not None:
+        pages.append(await users_repo.list_page(db_session, limit=2, cursor=pages[-1].next_cursor))
 
-    assert [item.id for item in second_page.items] == [created[0].id]
-    assert second_page.next_cursor is None
+    assert all(len(page.items) <= 2 for page in pages)
+    assert all(page.next_cursor is not None for page in pages[:-1])
+    listed = [item.id for page in pages for item in page.items]
+    assert len(listed) == len(set(listed)), "a user was listed on two pages"
+
+    # UUIDv7 ids are time-ordered, so DESC by (created_at, id) matches insertion order: ours
+    # come back newest first, wherever other users fall around them.
+    ours = {user.id for user in created}
+    assert [user_id for user_id in listed if user_id in ours] == [
+        created[2].id,
+        created[1].id,
+        created[0].id,
+    ]

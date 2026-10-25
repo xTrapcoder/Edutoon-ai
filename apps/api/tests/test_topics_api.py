@@ -47,6 +47,7 @@ from edutoon.repositories.source_chunks import NewSourceChunk
 from edutoon.services import audit_logs as audit_logs_service
 from edutoon.services import topic_extraction as topic_extraction_service
 from tests.leaky_errors import assert_clean, leaky_anthropic
+from tests.storage_isolation import UPLOADS_BUCKET
 
 # Stands in for an external provider (OpenAI / Anthropic): these tests prove how our code
 # handles a response, never how a real provider behaves. See "Provider-mocked tests"
@@ -121,14 +122,32 @@ def _headers(base: dict[str, str], key: str | None = None) -> dict[str, str]:
 # --- builders ---------------------------------------------------------------------------
 
 
-async def _create_project(client: httpx.AsyncClient, headers: dict[str, str]) -> str:
+_SESSION: list[Any] = []
+
+
+@pytest.fixture(autouse=True)
+def _remember_session(db_session):
+    """The session the API under test shares, so a project can be given source material."""
+    _SESSION[:] = [db_session]
+    yield
+    _SESSION.clear()
+
+
+async def _create_project(
+    client: httpx.AsyncClient, headers: dict[str, str], *, with_material: bool = True
+) -> str:
+    """A PDF project that already holds one parsed page: topic extraction needs material (a topic
+    with no document is not offered, so keywords alone are never enough)."""
     response = await client.post(
         "/v1/projects",
         json={"title": "How photosynthesis works", "source_type": "pdf"},
         headers=_headers(headers),
     )
     assert response.status_code == 201
-    return response.json()["id"]  # type: ignore[no-any-return]
+    project_id: str = response.json()["id"]
+    if with_material:
+        await _add_chunks(_SESSION[0], project_id, ["Plants make food from light."])
+    return project_id
 
 
 async def _add_keywords(
@@ -150,7 +169,7 @@ async def _add_chunks(db_session, project_id: str, texts: list[str]):
         db_session,
         project_id=pid,
         original_filename="notes.pdf",
-        storage_bucket="edutoon-uploads",
+        storage_bucket=UPLOADS_BUCKET,
         storage_key=f"{pid}/{uuid4()}.pdf",
         byte_size=1024,
         checksum_sha256=uuid4().hex + uuid4().hex[:32],
@@ -531,9 +550,7 @@ async def test_enqueue_extraction_makes_the_project_processing(client_factory, a
         project_id = await _create_project(client, headers)
         await _add_keywords(client, headers, project_id, ["Photosynthesis"])
         before = await client.get(f"/v1/projects/{project_id}", headers=headers)
-        await client.post(
-            f"/v1/projects/{project_id}/topics/extraction", headers=_headers(headers)
-        )
+        await client.post(f"/v1/projects/{project_id}/topics/extraction", headers=_headers(headers))
         after = await client.get(f"/v1/projects/{project_id}", headers=headers)
 
     # Adding the person's own keywords is not pipeline work; queueing the extraction is.
@@ -588,7 +605,7 @@ async def test_enqueue_extraction_requires_an_idempotency_key(client_factory, au
 async def test_enqueue_extraction_with_nothing_to_extract_from_is_400(client_factory, auth_headers):
     headers = auth_headers()
     async with client_factory() as client:
-        project_id = await _create_project(client, headers)
+        project_id = await _create_project(client, headers, with_material=False)
         response = await client.post(
             f"/v1/projects/{project_id}/topics/extraction", headers=_headers(headers)
         )
@@ -656,6 +673,9 @@ async def test_a_completed_extraction_needs_replace_to_run_again(
     async with client_factory() as client:
         project_id = await _create_project(client, headers)
         await _add_keywords(client, headers, project_id, ["Photosynthesis"])
+        from edutoon.repositories import source_chunks as source_chunks_repo
+
+        [chunk] = await source_chunks_repo.list_by_project_in_order(db_session, UUID(project_id))
         await client.post(f"/v1/projects/{project_id}/topics/extraction", headers=_headers(headers))
         job = await _run_pending_extraction(
             db_session,
@@ -668,7 +688,7 @@ async def test_a_completed_extraction_needs_replace_to_run_again(
                         "title": "Photosynthesis",
                         "summary": "",
                         "keywords": [],
-                        "evidence_chunk_ids": [],
+                        "evidence_chunk_ids": [str(chunk.id)],
                     },
                     {
                         "ref": "b",
@@ -676,7 +696,7 @@ async def test_a_completed_extraction_needs_replace_to_run_again(
                         "parent_ref": "a",
                         "summary": "",
                         "keywords": [],
-                        "evidence_chunk_ids": [],
+                        "evidence_chunk_ids": [str(chunk.id)],
                     },
                 ],
             ),
@@ -1130,63 +1150,6 @@ async def test_patch_wording_is_refused_while_an_extraction_is_in_flight_but_sta
 # =========================================================================================
 
 
-async def test_keywords_only_flow_end_to_end(client_factory, auth_headers, db_session, monkeypatch):
-    """Add keywords, enqueue, let the job run with a mocked model, then read the
-    outline and the job result back through the API.
-    """
-    headers = auth_headers()
-    async with client_factory() as client:
-        project_id = await _create_project(client, headers)
-        [seed] = await _add_keywords(client, headers, project_id, ["Photosynthesis"])
-        enqueue = await client.post(
-            f"/v1/projects/{project_id}/topics/extraction", headers=_headers(headers)
-        )
-        job_id = enqueue.json()["id"]
-
-        llm = _fake_llm(
-            monkeypatch,
-            [
-                {
-                    "ref": "a",
-                    "title": "Photosynthesis",
-                    "seed_ref": seed["id"],
-                    "summary": "How plants turn light into sugar.",
-                    "keywords": ["light", "sugar"],
-                    "evidence_chunk_ids": [],
-                },
-                {
-                    "ref": "b",
-                    "title": "Light reactions",
-                    "parent_ref": "a",
-                    "summary": "",
-                    "keywords": [],
-                    "evidence_chunk_ids": [],
-                },
-            ],
-        )
-        job = await _run_pending_extraction(db_session, project_id, llm)
-        assert str(job.id) == job_id and job.status == "succeeded"
-
-        items = await _topics(client, headers, project_id)
-        jobs = await client.get(f"/v1/projects/{project_id}/jobs", headers=headers)
-
-    assert [(i["title"], i["origin"], i["depth"]) for i in items] == [
-        ("Photosynthesis", "user", 0),
-        ("Light reactions", "suggested", 1),
-    ]
-    assert items[0]["id"] == seed["id"]  # the user's own topic kept its identity
-    assert items[0]["summary"] == "How plants turn light into sugar."
-    assert items[0]["keywords"] == ["light", "sugar"]
-    assert items[1]["parent_id"] == seed["id"]
-    assert items[1]["evidence"] == []  # suggested: nothing in the material backs it
-
-    [job_body] = jobs.json()["items"]
-    assert job_body["status"] == "succeeded"
-    assert job_body["result"]["mode"] == "keywords"
-    assert job_body["result"]["topic_count"] == 2
-    assert job_body["result"]["truncated"] is False
-
-
 async def test_pdf_flow_end_to_end_cites_the_pages_it_used(
     client_factory, auth_headers, db_session, monkeypatch
 ):
@@ -1541,3 +1504,140 @@ async def test_an_idempotency_key_of_the_maximum_length_is_accepted(client_facto
         )
 
     assert response.status_code == 201, response.text
+
+
+# --- keyword coverage: is each keyword backed by the document? --------------------------------
+
+
+async def _add_claims(db_session, project_id: str, topic_id: str, statuses: list[str]) -> None:
+    from edutoon.repositories import claim_verifications as claim_verifications_repo
+    from edutoon.repositories.claim_verifications import NewClaimCitation
+
+    pid = UUID(project_id)
+    _source, [chunk] = await _add_chunks(
+        db_session,
+        project_id,
+        ["Some evidence text on the Calvin cycle, the light-dependent reactions and glycolysis."],
+    )
+    for number, status in enumerate(statuses):
+        await claim_verifications_repo.create(
+            db_session,
+            project_id=pid,
+            claim_text=f"Statement {number} about {topic_id}",
+            status=status,
+            embedding_model="m",
+            llm_model="m",
+            topic_id=UUID(topic_id),
+            citations=(
+                [NewClaimCitation(source_chunk_id=chunk.id, similarity=0.9)]
+                if status == "supported"
+                else []
+            ),
+        )
+
+
+async def test_coverage_says_which_keywords_the_document_backs_and_which_it_does_not(
+    client_factory, auth_headers, db_session
+) -> None:
+    headers = auth_headers()
+    async with client_factory() as client:
+        project_id = await _create_project(client, headers)
+        calvin, light, quantum, pending = await _add_keywords(
+            client,
+            headers,
+            project_id,
+            ["Calvin cycle", "Light-dependent reactions", "Quantum computing", "Glycolysis"],
+        )
+        await _add_claims(db_session, project_id, calvin["id"], ["supported", "supported"])
+        await _add_claims(db_session, project_id, light["id"], ["supported", "unsupported"])
+        await _add_claims(db_session, project_id, quantum["id"], ["unsupported"] * 4)
+        response = await client.get(f"/v1/projects/{project_id}/topics/coverage", headers=headers)
+
+    assert response.status_code == 200
+    body = response.json()
+    by_title = {item["title"]: item for item in body["keywords"]}
+    assert by_title["Calvin cycle"]["state"] == "covered"
+    assert by_title["Calvin cycle"]["supported_claims"] == 2
+    assert by_title["Light-dependent reactions"]["state"] == "covered"
+    assert by_title["Light-dependent reactions"]["total_claims"] == 2
+    assert by_title["Quantum computing"]["state"] == "not_in_document"
+    assert "never mentions 'Quantum', 'computing'" in by_title["Quantum computing"]["message"]
+    assert by_title["Glycolysis"]["state"] == "not_checked"
+    assert body["complete"] is False
+    assert "not in your document: 'Quantum computing'" in body["summary"]
+    assert all(item["in_script"] is None for item in body["keywords"])  # no script yet
+
+
+async def test_a_keyword_the_owner_left_out_does_not_count_against_completeness(
+    client_factory, auth_headers, db_session
+) -> None:
+    headers = auth_headers()
+    async with client_factory() as client:
+        project_id = await _create_project(client, headers)
+        calvin, quantum = await _add_keywords(
+            client, headers, project_id, ["Calvin cycle", "Quantum computing"]
+        )
+        await _add_claims(db_session, project_id, calvin["id"], ["supported"])
+        await _add_claims(db_session, project_id, quantum["id"], ["unsupported"] * 3)
+        rejected = await client.patch(
+            f"/v1/projects/{project_id}/topics/{quantum['id']}",
+            json={"status": "rejected"},
+            headers=_headers(headers),
+        )
+        response = await client.get(f"/v1/projects/{project_id}/topics/coverage", headers=headers)
+
+    assert rejected.status_code == 200
+    body = response.json()
+    assert {item["title"]: item["state"] for item in body["keywords"]} == {
+        "Calvin cycle": "covered",
+        "Quantum computing": "left_out",
+    }
+    assert body["complete"] is True
+
+
+async def test_a_project_with_no_typed_keywords_has_an_empty_complete_report(
+    client_factory, auth_headers
+) -> None:
+    headers = auth_headers()
+    async with client_factory() as client:
+        project_id = await _create_project(client, headers)
+        response = await client.get(f"/v1/projects/{project_id}/topics/coverage", headers=headers)
+
+    assert response.json() == {"keywords": [], "complete": True, "summary": None}
+
+
+async def test_coverage_of_another_users_project_is_a_404(client_factory, auth_headers) -> None:
+    owner, other = auth_headers(), auth_headers()
+    async with client_factory() as client:
+        project_id = await _create_project(client, owner)
+        response = await client.get(f"/v1/projects/{project_id}/topics/coverage", headers=other)
+
+    assert response.status_code == 404
+
+
+async def test_a_keyword_the_document_never_mentions_is_not_covered_even_with_supported_statements(
+    client_factory, auth_headers, db_session
+) -> None:
+    """Regression (a real run): the keyword "coral bleaching" over a chapter on ecosystems that
+    never mentions bleaching. Statements about the nearest passages (invasive species, keystone
+    species) were judged supported and the keyword was reported "covered by 4 statements"; one of
+    them was even worded as a link to coral bleaching that no passage makes."""
+    headers = auth_headers()
+    async with client_factory() as client:
+        project_id = await _create_project(client, headers)
+        calvin, bleaching = await _add_keywords(
+            client, headers, project_id, ["Calvin cycle", "Coral bleaching"]
+        )
+        await _add_claims(db_session, project_id, calvin["id"], ["supported"])
+        await _add_claims(
+            db_session, project_id, bleaching["id"], ["supported"] * 3 + ["unsupported"]
+        )
+        response = await client.get(f"/v1/projects/{project_id}/topics/coverage", headers=headers)
+
+    body = response.json()
+    by_title = {item["title"]: item for item in body["keywords"]}
+    assert by_title["Calvin cycle"]["state"] == "covered"
+    assert by_title["Coral bleaching"]["state"] == "not_in_document"
+    assert "never mentions 'Coral', 'bleaching'" in by_title["Coral bleaching"]["message"]
+    assert body["complete"] is False
+    assert "not in your document: 'Coral bleaching'" in body["summary"]

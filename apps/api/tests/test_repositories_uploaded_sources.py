@@ -5,13 +5,12 @@ from uuid import uuid4
 from edutoon.repositories import projects as projects_repo
 from edutoon.repositories import uploaded_sources as uploaded_sources_repo
 from edutoon.repositories import users as users_repo
+from tests.storage_isolation import UPLOADS_BUCKET
 
 
 async def _make_project(db_session):
     owner = await users_repo.create(db_session, email=f"{uuid4()}@example.com")
-    return await projects_repo.create(
-        db_session, owner_id=owner.id, title="P", source_type="pdf"
-    )
+    return await projects_repo.create(db_session, owner_id=owner.id, title="P", source_type="pdf")
 
 
 def _sha256_hex() -> str:
@@ -26,7 +25,7 @@ async def test_create_and_get_by_id(db_session):
         db_session,
         project_id=project.id,
         original_filename="notes.pdf",
-        storage_bucket="edutoon-uploads",
+        storage_bucket=UPLOADS_BUCKET,
         storage_key=f"{project.id}/notes.pdf",
         byte_size=1024,
         checksum_sha256=checksum,
@@ -44,7 +43,7 @@ async def test_get_by_checksum(db_session):
         db_session,
         project_id=project.id,
         original_filename="notes.pdf",
-        storage_bucket="edutoon-uploads",
+        storage_bucket=UPLOADS_BUCKET,
         storage_key=f"{project.id}/notes.pdf",
         byte_size=1024,
         checksum_sha256=checksum,
@@ -62,7 +61,7 @@ async def _source(db_session, project, name: str):
         db_session,
         project_id=project.id,
         original_filename=name,
-        storage_bucket="edutoon-uploads",
+        storage_bucket=UPLOADS_BUCKET,
         storage_key=f"{project.id}/{name}",
         byte_size=1024,
         checksum_sha256=_sha256_hex(),
@@ -87,6 +86,7 @@ async def test_list_by_ids_is_project_scoped(db_session):
 async def test_list_by_ids_with_no_ids_returns_empty(db_session):
     project = await _make_project(db_session)
 
-    assert await uploaded_sources_repo.list_by_ids(
-        db_session, project_id=project.id, source_ids=[]
-    ) == []
+    assert (
+        await uploaded_sources_repo.list_by_ids(db_session, project_id=project.id, source_ids=[])
+        == []
+    )

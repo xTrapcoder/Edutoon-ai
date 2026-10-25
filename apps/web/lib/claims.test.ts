@@ -17,6 +17,16 @@ describe('summariseClaimStatuses', () => {
       partiallySupported: 1,
       unsupported: 1,
       contradicted: 1,
+      generalKnowledge: 0,
+    });
+  });
+
+  it('counts general-knowledge claims apart from supported ones', () => {
+    const claims = [claim({ status: 'general_knowledge' }), claim({ status: 'supported' })];
+    expect(summariseClaimStatuses(claims)).toMatchObject({
+      total: 2,
+      supported: 1,
+      generalKnowledge: 1,
     });
   });
 
@@ -27,6 +37,7 @@ describe('summariseClaimStatuses', () => {
       partiallySupported: 0,
       unsupported: 0,
       contradicted: 0,
+      generalKnowledge: 0,
     });
   });
 });

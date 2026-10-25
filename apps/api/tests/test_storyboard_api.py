@@ -41,6 +41,7 @@ from edutoon.repositories.scripts import NewScriptSegment
 from edutoon.services import script_audio as script_audio_service
 from edutoon.services import storyboard as storyboard_service
 from tests.idempotency_helpers import INVALID_KEYS
+from tests.storage_isolation import SEGMENTS_BUCKET
 
 # Stands in for an external provider (OpenAI / Anthropic): these tests prove how our code
 # handles a response, never how a real provider behaves. See "Provider-mocked tests"
@@ -49,7 +50,7 @@ pytestmark = pytest.mark.provider_mocked
 
 MODEL = "claude-sonnet-5"
 TEST_ISSUER = "https://test.clerk.accounts.dev"
-BUCKET = "edutoon-segments"
+BUCKET = SEGMENTS_BUCKET
 
 
 # --- auth + app plumbing (mirrors test_script_audio_api.py) ----------------------------------
@@ -136,7 +137,7 @@ def _storyboard_llm(scenes: list[dict]) -> LLM:
 
 
 async def _create_project(client: httpx.AsyncClient, headers: dict[str, str]) -> str:
-    body = {"title": "How photosynthesis works", "source_type": "topic"}
+    body = {"title": "How photosynthesis works", "source_type": "pdf"}
     response = await client.post("/v1/projects", json=body, headers=_headers(headers))
     assert response.status_code == 201, response.text
     return response.json()["id"]  # type: ignore[no-any-return]

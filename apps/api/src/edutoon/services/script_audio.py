@@ -207,9 +207,7 @@ async def enqueue_synthesis(
         )
 
     settings = get_settings()
-    segments = await scripts_repo.list_segments(
-        session, project_id=project_id, script_id=script_id
-    )
+    segments = await scripts_repo.list_segments(session, project_id=project_id, script_id=script_id)
     if not segments:
         raise ValidationError("This script has no segments to synthesise.")
 
@@ -375,9 +373,7 @@ async def _synthesise_script(
         # principle have moved on by the time the worker gets to it.
         raise JobError(f"Script {script_id} is no longer approved; cannot synthesise it.")
 
-    segments = await scripts_repo.list_segments(
-        session, project_id=project_id, script_id=script_id
-    )
+    segments = await scripts_repo.list_segments(session, project_id=project_id, script_id=script_id)
     if not segments:
         raise JobError("This script has no segments to synthesise.")
 
@@ -465,9 +461,7 @@ async def _synthesise_script(
                 shown_to_owner=error,
             )
 
-    await _report_progress(
-        sessionmaker, job_id=job_id, base_payload=payload, stage="finalising"
-    )
+    await _report_progress(sessionmaker, job_id=job_id, base_payload=payload, stage="finalising")
 
     measured_total_ms: int | None = None
     if ready_count == len(segments):
@@ -510,9 +504,7 @@ async def _synthesise_one_segment(
     sessionmaker: async_sessionmaker[AsyncSession] | None,
     session: AsyncSession,
 ) -> ScriptSegmentAudioRecord:
-    chunks = chunk_narration_for_tts(
-        segment.narration_text, max_chars_per_call=max_chars_per_call
-    )
+    chunks = chunk_narration_for_tts(segment.narration_text, max_chars_per_call=max_chars_per_call)
     if not chunks:
         raise JobError(f"Segment {segment.id} has no narration text to synthesise.")
 
@@ -639,9 +631,7 @@ async def get_synthesis_status(
     if script is None:
         raise NotFoundError(f"Script {script_id} not found.")
 
-    segments = await scripts_repo.list_segments(
-        session, project_id=project_id, script_id=script_id
-    )
+    segments = await scripts_repo.list_segments(session, project_id=project_id, script_id=script_id)
     audio_by_segment = {
         audio.script_segment_id: audio
         for audio in await script_segment_audio_repo.list_by_script(

@@ -182,9 +182,7 @@ async def list_by_project(
     return Page(items=[_from_row(row) for row in rows], next_cursor=next_cursor)
 
 
-async def list_all_by_project(
-    session: AsyncSession, project_id: UUID
-) -> list[ProjectTopicRecord]:
+async def list_all_by_project(session: AsyncSession, project_id: UUID) -> list[ProjectTopicRecord]:
     """Every topic of a project, shallowest first, then by ``position``.
 
     Unlike :func:`list_by_project` this is deliberately not keyset-paginated
@@ -208,9 +206,7 @@ async def list_all_by_project(
     return [_from_row(row) for row in rows]
 
 
-async def next_position(
-    session: AsyncSession, *, project_id: UUID, parent_id: UUID | None
-) -> int:
+async def next_position(session: AsyncSession, *, project_id: UUID, parent_id: UUID | None) -> int:
     """The first free ``position`` among ``parent_id``'s children (``0`` when
     it has none). ``parent_id=None`` means the project's root topics.
     """
@@ -278,9 +274,7 @@ async def is_referenced_by_scripts(session: AsyncSession, project_id: UUID) -> b
     stmt = (
         select(script_segments.c.id)
         .select_from(
-            script_segments.join(
-                project_topics, script_segments.c.topic_id == project_topics.c.id
-            )
+            script_segments.join(project_topics, script_segments.c.topic_id == project_topics.c.id)
         )
         .where(project_topics.c.project_id == project_id)
         .limit(1)

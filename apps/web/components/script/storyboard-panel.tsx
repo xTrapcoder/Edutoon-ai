@@ -7,6 +7,7 @@ import {
   CircleDashed,
   Clapperboard,
   Flag,
+  Video,
   XCircle,
   type LucideIcon,
 } from 'lucide-react';
@@ -19,7 +20,7 @@ import type {
   SegmentStoryboard,
 } from '@edutoon/contracts';
 import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
+import { Button, ButtonLink } from '@/components/ui/button';
 import { Card, CardBody, CardHeader } from '@/components/ui/card';
 import { Alert, Progress } from '@/components/ui/feedback';
 import { describeError } from '@/lib/api/errors';
@@ -39,6 +40,7 @@ import {
 } from '@/lib/jobs';
 
 import { sceneStateView, type RenderSelection } from '@/lib/render';
+import { isDeckProject } from '@/lib/source-kind';
 import { IllustrationSummary } from './visual-summary';
 
 interface StoryboardPanelProps {
@@ -238,7 +240,7 @@ function SegmentTimeline({
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between gap-2">
-        <h4 className="text-sm font-semibold text-ink-950">Section {index + 1}</h4>
+        <h3 className="text-sm font-semibold text-ink-950">Section {index + 1}</h3>
         {segment.is_stale ? (
           <Badge tone="warning" dot>
             Stale — needs another attempt
@@ -409,7 +411,12 @@ export function StoryboardPanel({ project, script, renderSelection }: Storyboard
           </Alert>
         ) : null}
 
-        {!active && status ? (
+        {!active && status && isDeckProject(project) ? (
+          <p className="text-[13px] text-ink-500">
+            No AI is used for a PowerPoint deck: each scene is composed from what its section says.
+          </p>
+        ) : null}
+        {!active && status && !isDeckProject(project) ? (
           <p className="text-[13px] text-ink-500">
             Estimated AI calls:{' '}
             <span className="font-medium text-ink-700">{status.estimated_provider_calls}</span>
@@ -426,19 +433,39 @@ export function StoryboardPanel({ project, script, renderSelection }: Storyboard
         ) : null}
 
         {!active ? (
-          <Button
-            className="w-full"
-            variant={complete ? 'secondary' : 'primary'}
-            onClick={() => enqueue.mutate()}
-            loading={enqueue.isPending}
-            leadingIcon={<Clapperboard className="size-4" aria-hidden />}
-          >
-            {complete
-              ? 'Regenerate storyboard'
-              : readyCount > 0
-                ? 'Retry failed sections'
-                : 'Generate storyboard'}
-          </Button>
+          // Once the storyboard is complete, the primary action is to move on to Video; regenerate
+          // stays available as a secondary action. Before completion only the enqueue action is
+          // shown — the Video page refuses a render without a complete storyboard anyway.
+          complete ? (
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <ButtonLink
+                href={`/projects/${project.id}/video`}
+                className="sm:flex-1"
+                leadingIcon={<Video className="size-4" aria-hidden />}
+              >
+                Continue to Video
+              </ButtonLink>
+              <Button
+                className="sm:flex-1"
+                variant="secondary"
+                onClick={() => enqueue.mutate()}
+                loading={enqueue.isPending}
+                leadingIcon={<Clapperboard className="size-4" aria-hidden />}
+              >
+                Regenerate storyboard
+              </Button>
+            </div>
+          ) : (
+            <Button
+              className="w-full"
+              variant="primary"
+              onClick={() => enqueue.mutate()}
+              loading={enqueue.isPending}
+              leadingIcon={<Clapperboard className="size-4" aria-hidden />}
+            >
+              {readyCount > 0 ? 'Retry failed sections' : 'Generate storyboard'}
+            </Button>
+          )
         ) : null}
 
         {total > 0 ? (

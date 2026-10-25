@@ -40,6 +40,7 @@ class ProjectRecord:
     target_duration_ms: int
     created_at: datetime
     updated_at: datetime
+    instructions: str | None = None
 
 
 def _from_row(row: RowMapping) -> ProjectRecord:
@@ -55,6 +56,7 @@ def _from_row(row: RowMapping) -> ProjectRecord:
         target_duration_ms=row["target_duration_ms"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
+        instructions=row["instructions"],
     )
 
 
@@ -68,6 +70,7 @@ async def create(
     language: Language = DEFAULT_LANGUAGE,
     orientation: Orientation = DEFAULT_ORIENTATION,
     target_duration_ms: int = DEFAULT_TARGET_DURATION_MS,
+    instructions: str | None = None,
 ) -> ProjectRecord:
     stmt = (
         projects.insert()
@@ -79,6 +82,7 @@ async def create(
             language=language,
             orientation=orientation,
             target_duration_ms=target_duration_ms,
+            instructions=instructions,
         )
         .returning(*projects.c)
     )

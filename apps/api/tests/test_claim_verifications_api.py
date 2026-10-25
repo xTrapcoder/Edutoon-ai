@@ -39,6 +39,7 @@ from edutoon.repositories import source_chunks as source_chunks_repo
 from edutoon.repositories import uploaded_sources as uploaded_sources_repo
 from edutoon.repositories.source_chunks import NewSourceChunk
 from tests.idempotency_helpers import INVALID_KEYS, idempotency_status
+from tests.storage_isolation import UPLOADS_BUCKET
 
 # Stands in for an external provider (OpenAI / Anthropic): these tests prove how our code
 # handles a response, never how a real provider behaves. See "Provider-mocked tests"
@@ -94,9 +95,7 @@ class _StubLLM:
     async def judge_claim(self, claim: str, passages: list[Passage]) -> Verdict:
         self.calls.append(claim)
         cited = [p.id for p in passages] if self._cite == "all" else []
-        return Verdict(
-            status=self._status, rationale=self._rationale, cited_passage_ids=cited
-        )
+        return Verdict(status=self._status, rationale=self._rationale, cited_passage_ids=cited)
 
     async def extract_claims(
         self, topic: ClaimTopicBrief, passages: list, *, limits
@@ -209,7 +208,7 @@ async def _seed_indexed_chunk(
         db_session,
         project_id=project_id,
         original_filename="notes.pdf",
-        storage_bucket="edutoon-uploads",
+        storage_bucket=UPLOADS_BUCKET,
         storage_key=f"{project_id}/{uuid4()}.pdf",
         byte_size=1024,
         checksum_sha256=uuid4().hex + uuid4().hex[:32],
@@ -444,9 +443,7 @@ async def test_verification_from_another_project_returns_404(
         cross = await client.get(
             f"/v1/projects/{project_b}/claim-verifications/{verification_id}", headers=headers
         )
-        b_list = await client.get(
-            f"/v1/projects/{project_b}/claim-verifications", headers=headers
-        )
+        b_list = await client.get(f"/v1/projects/{project_b}/claim-verifications", headers=headers)
 
     assert cross.status_code == 404
     assert b_list.json()["items"] == []
@@ -915,3 +912,38 @@ async def test_list_filters_by_topic_id(client_factory, auth_headers, db_session
     [item] = response.json()["items"]
     assert item["id"] == str(for_a.id)
     assert item["topic_id"] == str(topic_a.id)
+
+
+async def test_a_general_knowledge_claim_is_listed_with_its_own_status_never_as_supported(
+    client_factory, auth_headers, db_session
+) -> None:
+    """Regression: the list route answered 500 for a topic-only project, because its claims carry
+    the status ``general_knowledge`` and the response type did not allow it."""
+    from uuid import UUID
+
+    from edutoon.repositories import claim_verifications as claim_verifications_repo
+
+    headers = auth_headers()
+    async with client_factory() as client:
+        created = await client.post(
+            "/v1/projects",
+            json={"title": "Machine learning", "source_type": "pdf"},
+            headers={**headers, "Idempotency-Key": "gk-list-1"},
+        )
+        project_id = created.json()["id"]
+        await claim_verifications_repo.create(
+            db_session,
+            project_id=UUID(project_id),
+            claim_text="Machine learning finds patterns in examples.",
+            status="general_knowledge",
+            embedding_model="none",
+            llm_model="m",
+            rationale="General knowledge from the language model.",
+        )
+        response = await client.get(
+            f"/v1/projects/{project_id}/claim-verifications", headers=headers
+        )
+
+    assert response.status_code == 200
+    [item] = response.json()["items"]
+    assert item["status"] == "general_knowledge" and item["citations"] == []

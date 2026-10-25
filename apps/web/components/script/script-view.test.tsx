@@ -39,7 +39,7 @@ describe('Script step', () => {
             error: {
               code: 'validation_error',
               message:
-                'This project has no supported claims yet - verify some source material before generating a script.',
+                "These accepted topics have no verified evidence yet: 'Plate boundaries'. Extract and verify claims for them, or reject them, before generating a script.",
             },
           },
           { status: 400 },
@@ -53,6 +53,137 @@ describe('Script step', () => {
     expect(
       await screen.findByRole('heading', { name: 'Verification required' }),
     ).toBeInTheDocument();
+  });
+
+  it('shows any other refusal in its own words, never as "no verified claims"', async () => {
+    serveProject({ ...ready, scripts: [], claims: [claim()] });
+    server.use(
+      http.post(`${base}/scripts`, () =>
+        HttpResponse.json(
+          {
+            error: {
+              code: 'validation_error',
+              message:
+                '9 accepted topics cannot each receive a section of at least 30 seconds within a 4:00 target. Accept fewer topics, or increase the target duration.',
+            },
+          },
+          { status: 400 },
+        ),
+      ),
+    );
+
+    renderProjectPage(<ScriptPage />, 'script');
+    await userEvent.click(await screen.findByRole('button', { name: /generate script/i }));
+
+    expect(
+      await screen.findByText(/9 accepted topics cannot each receive a section/),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('heading', { name: 'Verification required' }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /generate script/i })).toBeInTheDocument();
+  });
+
+  it('names the topics that have no verified claim, even when the sentence is too long to show', async () => {
+    // Regression: the API's sentence grew past the 280 characters the client shows, so the page lost
+    // the reason and said only "some of the details were not accepted". The refusal now carries the
+    // reason and the topic titles as data.
+    serveProject({ ...ready, scripts: [], claims: [claim()] });
+    const long = `These accepted topics have no verified evidence yet: 'Cryptocurrency mining'. ${'Extract and verify claims for them, or reject them. '.repeat(6)}`;
+    server.use(
+      http.post(`${base}/scripts`, () =>
+        HttpResponse.json(
+          {
+            error: {
+              code: 'validation_error',
+              message: long,
+              details: { reason: 'no_verified_evidence', topics: ['Cryptocurrency mining'] },
+            },
+          },
+          { status: 400 },
+        ),
+      ),
+    );
+
+    renderProjectPage(<ScriptPage />, 'script');
+    await userEvent.click(await screen.findByRole('button', { name: /generate script/i }));
+
+    expect(
+      await screen.findByRole('heading', { name: 'Verification required' }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/"Cryptocurrency mining"/)).toBeInTheDocument();
+    expect(screen.getByText(/Leave it out/)).toBeInTheDocument();
+    expect(screen.queryByText(/doesn.t have any verified claims yet/i)).not.toBeInTheDocument();
+  });
+
+  it('explains too little evidence for the length, with the figures and both real remedies', async () => {
+    // Regression: this sentence is ~380 characters, so the client dropped it and showed only
+    // "Some of the details were not accepted". The figures now travel as data.
+    serveProject({ ...ready, scripts: [], claims: [claim()] });
+    const long = `There is not enough verified evidence for a video of 10:00. ${'Add more source material. '.repeat(12)}`;
+    server.use(
+      http.post(`${base}/scripts`, () =>
+        HttpResponse.json(
+          {
+            error: {
+              code: 'validation_error',
+              message: long,
+              details: {
+                reason: 'insufficient_evidence',
+                target_duration_ms: 600_000,
+                defensible_duration_ms: 125_000,
+                supported_claims: 8,
+                topic_count: 1,
+              },
+            },
+          },
+          { status: 400 },
+        ),
+      ),
+    );
+
+    renderProjectPage(<ScriptPage />, 'script');
+    await userEvent.click(await screen.findByRole('button', { name: /generate script/i }));
+
+    expect(await screen.findByText(/does not yet support a 10 minutes video/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/8 claims checked against your source across 1 accepted topic/i),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/about 2 min 05 s of narration/i)).toBeInTheDocument();
+    expect(screen.getByText(/choose 2 min 05 s or shorter/i)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /review topics/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /change the length/i })).toBeInTheDocument();
+    expect(screen.queryByText(/some of the details were not accepted/i)).not.toBeInTheDocument();
+  });
+
+  it('offers no shorter length when even the shortest video is more than the evidence can carry', async () => {
+    serveProject({ ...ready, scripts: [], claims: [claim()] });
+    server.use(
+      http.post(`${base}/scripts`, () =>
+        HttpResponse.json(
+          {
+            error: {
+              code: 'validation_error',
+              message: 'x'.repeat(400),
+              details: {
+                reason: 'insufficient_evidence',
+                target_duration_ms: 300_000,
+                defensible_duration_ms: 55_000,
+                supported_claims: 1,
+                topic_count: 1,
+              },
+            },
+          },
+          { status: 400 },
+        ),
+      ),
+    );
+
+    renderProjectPage(<ScriptPage />, 'script');
+    await userEvent.click(await screen.findByRole('button', { name: /generate script/i }));
+
+    expect(await screen.findByText(/too little for even the shortest video/i)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /change the length/i })).not.toBeInTheDocument();
   });
 
   it('starts generation with an idempotency key and the signed-in token, then shows real progress', async () => {
@@ -127,14 +258,83 @@ describe('Script step', () => {
 
     expect(await screen.findByRole('heading', { name: 'Script approved' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: /what.s next/i })).toBeInTheDocument();
-    // Rendering is still described, never offered - only 1 "Coming soon" stage now that
-    // narration (Phase 8) and the storyboard (Phase 9) are both real.
-    expect(screen.getAllByText('Coming soon')).toHaveLength(1);
+    // Narration, the storyboard and the video are all real stages: none is described as coming soon,
+    // and "Go to Video" is only a link to the Video page - it starts nothing, and the Video card
+    // still offers no render button before its prerequisites are met.
+    expect(screen.queryByText(/coming soon|still to come/i)).not.toBeInTheDocument();
+    expect(screen.getByText('Next: Narration → Storyboard → Video')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Go to Video' })).toHaveAttribute(
+      'href',
+      `/projects/${PROJECT_ID}/video`,
+    );
     expect(screen.queryByRole('button', { name: /render|scene|video/i })).not.toBeInTheDocument();
     // Narration is real: Script Studio's own narration panel offers it directly.
     expect(await screen.findByRole('button', { name: 'Narrate this script' })).toBeInTheDocument();
     await waitFor(() =>
       expect(screen.queryByRole('button', { name: 'Approve script' })).not.toBeInTheDocument(),
     );
+  });
+
+  it('shows weak-citation passages as an advisory that does not stop approval', async () => {
+    const detail = scriptDetail();
+    serveProject({
+      ...ready,
+      jobs: [
+        job({
+          kind: 'generate_script',
+          result: {
+            script_id: detail.id,
+            weak_citation_segments: [{ segment_index: 0, coverage: 0.08 }, { segment_index: 9 }],
+          },
+        }),
+        ...ready.jobs,
+      ],
+    });
+    server.use(
+      http.get(`${base}/scripts`, () =>
+        HttpResponse.json({ items: [script({ status: 'draft' })], next_cursor: null }),
+      ),
+      http.get(`${base}/scripts/:id`, () => HttpResponse.json(detail)),
+    );
+
+    renderProjectPage(<ScriptPage />, 'script');
+
+    const notice = await screen.findByTestId('weak-citation-notice');
+    expect(within(notice).getByText(/before approving \(advisory\)/i)).toBeInTheDocument();
+    expect(within(notice).getByText(/not proof either way/i)).toBeInTheDocument();
+    expect(within(notice).getByText(/Passage 1/)).toBeInTheDocument();
+    expect(within(notice).getByText(/about 8% of its words/)).toBeInTheDocument();
+    expect(
+      within(notice).getByText(/A network connects computers so they can share/),
+    ).toBeInTheDocument();
+    expect(within(notice).getByText('A network connects computers.')).toBeInTheDocument();
+    // An entry for a passage that does not exist is ignored, and approval is still offered.
+    expect(within(notice).getAllByRole('listitem').length).toBeGreaterThan(0);
+    expect(screen.getByRole('button', { name: 'Approve script' })).toBeEnabled();
+  });
+
+  it('shows no weak-citation notice when none were flagged or the script predates the flag', async () => {
+    const detail = scriptDetail();
+    serveProject({
+      ...ready,
+      jobs: [
+        job({
+          kind: 'generate_script',
+          result: { script_id: detail.id, weak_citation_segments: [] },
+        }),
+        ...ready.jobs,
+      ],
+    });
+    server.use(
+      http.get(`${base}/scripts`, () =>
+        HttpResponse.json({ items: [script({ status: 'draft' })], next_cursor: null }),
+      ),
+      http.get(`${base}/scripts/:id`, () => HttpResponse.json(detail)),
+    );
+
+    renderProjectPage(<ScriptPage />, 'script');
+
+    expect(await screen.findByRole('navigation', { name: 'Script sections' })).toBeInTheDocument();
+    expect(screen.queryByTestId('weak-citation-notice')).not.toBeInTheDocument();
   });
 });

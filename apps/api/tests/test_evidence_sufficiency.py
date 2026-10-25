@@ -15,6 +15,7 @@ from edutoon.core.config import get_settings
 from edutoon.core.errors import ValidationError
 from edutoon.domain import evidence_sufficiency as es
 from edutoon.repositories import jobs as jobs_repo
+from edutoon.repositories import projects as projects_repo
 from edutoon.services import scripts as scripts_service
 from tests.test_services_scripts import (  # noqa: F401 - shared fixtures/helpers
     _no_duration_correction,
@@ -287,8 +288,12 @@ async def test_the_guard_does_not_change_the_no_evidence_message(db_session, rea
         db_session, project_id=project.id, title="Empty", status="accepted", position=0
     )
 
-    with pytest.raises(ValidationError, match="no verified evidence yet"):
+    with pytest.raises(ValidationError, match="no verified evidence yet") as refusal:
         await _enqueue(db_session, project, owner)
+
+    # Regression: the web client does not show a sentence over 280 characters, and this one grew
+    # past it, so the page lost the reason. The refusal now carries it as data.
+    assert refusal.value.details == {"reason": "no_verified_evidence", "topics": ["Empty"]}
 
 
 # --- the longest supported length ---------------------------------------------------------------
@@ -303,13 +308,13 @@ async def test_a_target_longer_than_the_longest_renderable_video_is_refused_befo
     owner, project, _topics, _claims = await _project_with_topics(
         db_session,
         [("A", [f"a{i}" for i in range(15)])] * 1,
-        target_duration_ms=11 * MINUTE,
+        target_duration_ms=31 * MINUTE,
     )
 
     with pytest.raises(ValidationError) as caught:
         await _enqueue(db_session, project, owner)
 
-    assert "target of 11:00 is longer than the longest video that can be made today (10:00)" in (
+    assert "target of 31:00 is longer than the longest video that can be made today (30:00)" in (
         caught.value.message
     )
     assert "Shorten the target" in caught.value.message
@@ -321,9 +326,9 @@ async def test_a_target_exactly_at_the_ceiling_is_not_refused_for_its_length(
 ):
     owner, project, _topics, _claims = await _project_with_topics(
         db_session,
-        [(f"T{t}", [f"t{t}c{i}" for i in range(15)]) for t in range(2)],
-        target_duration_ms=10 * MINUTE,
-    )  # 2 topics x 15 claims: 2 x (450 + 10) + 15 = 935 s, enough for 10:00
+        [(f"T{t}", [f"t{t}c{i}" for i in range(15)]) for t in range(4)],
+        target_duration_ms=30 * MINUTE,
+    )  # 4 topics x 15 claims: 4 x (450 + 10) + 15 = 1855 s, enough for 30:00
 
     result = await _enqueue(db_session, project, owner)
 
@@ -338,6 +343,8 @@ async def test_the_ceiling_is_the_render_limit_so_raising_it_lifts_it(
         [(f"T{t}", [f"t{t}c{i}" for i in range(15)]) for t in range(3)],
         target_duration_ms=20 * MINUTE,
     )  # 3 x (450 + 10) + 15 = 1395 s: enough evidence for 20:00
+    monkeypatch.setenv("MAX_RENDER_DURATION_MS", str(10 * MINUTE))
+    get_settings.cache_clear()
     with pytest.raises(ValidationError, match="longer than the longest video"):
         await _enqueue(db_session, project, owner, key="before")
 
@@ -346,3 +353,43 @@ async def test_the_ceiling_is_the_render_limit_so_raising_it_lifts_it(
     result = await _enqueue(db_session, project, owner, key="after")
 
     assert result.job.status == "queued"
+
+
+async def test_the_refusal_carries_its_figures_so_a_client_can_explain_the_remedy(
+    db_session, real_default
+):
+    """The sentence is long and a client may not show it; the figures are the contract."""
+    owner, project, _topics, _claims = await _project_with_topics(
+        db_session, [("Only topic", ["The single supported fact."])]
+    )
+
+    with pytest.raises(ValidationError) as caught:
+        await _enqueue(db_session, project, owner)
+
+    assert caught.value.details == {
+        "reason": "insufficient_evidence",
+        "target_duration_ms": project.target_duration_ms,
+        "defensible_duration_ms": 55_000,
+        "supported_claims": 1,
+        "topic_count": 1,
+    }
+
+
+async def test_the_suggested_shorter_target_is_then_accepted_without_inventing_anything(
+    db_session, real_default
+):
+    """Following the remedy works: at the length the evidence can carry, the refusal is gone."""
+    owner, project, _topics, _claims = await _project_with_topics(
+        db_session, [("Only topic", ["Fact one.", "Fact two.", "Fact three.", "Fact four."])]
+    )
+    with pytest.raises(ValidationError) as caught:
+        await _enqueue(db_session, project, owner)
+    defensible = caught.value.details["defensible_duration_ms"]
+    assert 60_000 <= defensible < project.target_duration_ms
+
+    await projects_repo.update(
+        db_session, project_id=project.id, owner_id=owner.id, target_duration_ms=defensible
+    )
+    enqueued = await _enqueue(db_session, project, owner, key="shorter")
+
+    assert enqueued.job.status == "queued"

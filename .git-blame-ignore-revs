@@ -1,0 +1,9 @@
+# Revisions that only reformatted code. `git blame` skips them when this file is configured:
+#
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+#
+# (GitHub's blame view reads this file automatically.) Add a revision here only if it changed
+# formatting and nothing else.
+
+# style: format the whole Python tree with ruff format (56 files, AST-identical)
+ba17f32c49314d1379316a328d0c5b6ba4bad672

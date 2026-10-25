@@ -8,9 +8,23 @@ import { describeError } from '@/lib/api/errors';
 import { formatBytes, formatTargetDuration } from '@/lib/format';
 import { languageLabel, orientationLabel } from '@/lib/generation-settings';
 import type { CreationStep } from './use-project-creation';
-import { usesKeywords, usesPdf, type WizardValues } from './wizard-model';
+import {
+  usesDeck,
+  usesFile,
+  usesInstructions,
+  usesKeywords,
+  usesText,
+  type WizardValues,
+} from './wizard-model';
 
-const MODE_LABEL = { pdf: 'PDF document', keywords: 'Keywords', both: 'PDF + Keywords' } as const;
+const MODE_LABEL = {
+  pdf: 'PDF document',
+  pptx: 'PowerPoint deck',
+  text: 'Pasted text',
+  both: 'PDF + Keywords',
+  instructions: 'PDF + Instructions',
+  scan: 'Scanned PDF (read by OCR)',
+} as const;
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -32,10 +46,16 @@ export function ReviewSummary({ values }: { values: WizardValues }) {
         <dl className="divide-y divide-line">
           <Row label="Title">{values.title.trim()}</Row>
           <Row label="Source">{MODE_LABEL[values.mode]}</Row>
-          {usesPdf(values.mode) && values.file ? (
-            <Row label="PDF">
+          {usesFile(values.mode) && values.file ? (
+            <Row label={usesDeck(values.mode) ? 'Deck' : 'PDF'}>
               {values.file.name}{' '}
               <span className="font-normal text-ink-500">({formatBytes(values.file.size)})</span>
+            </Row>
+          ) : null}
+          {usesText(values.mode) ? (
+            <Row label="Text">
+              {values.text.trim().length.toLocaleString('en-GB')} characters{' '}
+              <span className="font-normal text-ink-500">(every claim is checked against it)</span>
             </Row>
           ) : null}
           {usesKeywords(values.mode) ? (
@@ -50,6 +70,11 @@ export function ReviewSummary({ values }: { values: WizardValues }) {
                   </li>
                 ))}
               </ul>
+            </Row>
+          ) : null}
+          {usesInstructions(values.mode) && values.instructions.trim() !== '' ? (
+            <Row label="Instructions">
+              <span className="font-normal whitespace-pre-wrap">{values.instructions.trim()}</span>
             </Row>
           ) : null}
           <Row label="Orientation">{orientationLabel(values.orientation)}</Row>
@@ -112,7 +137,7 @@ export function CreationProgress({
         description={
           failure
             ? undefined
-            : 'This usually takes a few seconds. A large PDF can take a little longer.'
+            : 'This usually takes a few seconds. A large PDF or deck can take a little longer.'
         }
       />
       <CardBody className="space-y-5">

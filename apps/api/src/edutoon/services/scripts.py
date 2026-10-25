@@ -75,7 +75,7 @@ owner scoped, and a resource the caller doesn't own is a 404, never a 403.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Hashable, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -93,6 +93,7 @@ from edutoon.core.errors import (
     ValidationError,
 )
 from edutoon.core.pagination import DEFAULT_PAGE_SIZE, Page
+from edutoon.domain.claim_dedupe import ClaimRef, TopicClaims, dedupe_claims_across_topics
 from edutoon.domain.evidence_sufficiency import (
     EvidenceAssessment,
     assess_evidence,
@@ -100,13 +101,34 @@ from edutoon.domain.evidence_sufficiency import (
 )
 from edutoon.domain.generation_settings import MAX_TARGET_DURATION_MS
 from edutoon.domain.llm_usage import UsageReport
+from edutoon.domain.narration_support import (
+    UnsupportedSentence,
+    is_signpost_only,
+    restating_claim_index,
+    split_sentences,
+    without_sentences,
+    without_unnamed_examples,
+)
 from edutoon.domain.script import ScriptDraft, ScriptSegmentDraft
+from edutoon.domain.script_closing import closing_text, has_closing
 from edutoon.domain.script_duration import (
     allocate_topic_budgets,
+    decide_length_correction,
     max_provider_calls,
     split_topic_budget,
 )
-from edutoon.domain.script_provenance import GroundingReference, filter_and_validate
+from edutoon.domain.script_openers import drop_repeated_openers
+from edutoon.domain.script_provenance import (
+    GROUNDED_KINDS,
+    WEAK_CITATION_COVERAGE,
+    GroundingReference,
+    UngroundedSegmentError,
+    UnsourcedSegmentError,
+    filter_and_validate,
+    relevant_claim_ids,
+    weak_citation_coverage,
+)
+from edutoon.domain.storyboard_provenance import content_words, unsupported_tokens
 from edutoon.domain.topic_tree import accepted_topics
 from edutoon.providers.llm import (
     LLM,
@@ -126,10 +148,14 @@ from edutoon.repositories.jobs import JobRecord
 from edutoon.repositories.project_topics import ProjectTopicRecord
 from edutoon.repositories.scripts import ScriptRecord, ScriptSegmentRecord
 from edutoon.services import audit_logs as audit_logs_service
+from edutoon.services import claim_backing as claim_backing_service
+from edutoon.services import instructions as instructions_service
+from edutoon.services import keyword_coverage as keyword_coverage_service
 from edutoon.services import projects as projects_service
 from edutoon.services import spend_guard
 from edutoon.services.job_errors import describe_job_failure
 from edutoon.services.llm_usage import new_usage_report, record_call
+from edutoon.services.narration_support import SupportLog, unsupported_in
 
 log = structlog.get_logger()
 
@@ -244,17 +270,36 @@ async def enqueue_script_generation(
         )
     if len(eligible) * settings.MIN_SECTION_DURATION_MS > project.target_duration_ms:
         raise ValidationError(
-            f"{len(eligible)} accepted topics cannot each receive a section within "
-            f"a {project.target_duration_ms}ms target duration. Accept fewer "
-            "topics, or increase the target duration."
+            f"{len(eligible)} accepted topics cannot each receive a section of at least "
+            f"{settings.MIN_SECTION_DURATION_MS // 1000} seconds within a "
+            f"{format_clock(project.target_duration_ms)} target. Accept fewer topics, or "
+            "increase the target duration."
         )
 
     missing_evidence: list[str] = []
     supported_counts: list[int] = []
+    # A keyword the document never mentions can still have "supported" statements: they are judged
+    # against the nearest passages, so they describe neighbouring topics. That is not evidence for
+    # the keyword (see domain.keyword_coverage), so such a topic counts as having none.
+    uncovered_keywords = await keyword_coverage_service.uncovered_keyword_terms(
+        session, project_id=project_id, topics=eligible
+    )
     for topic in eligible:
         supported = await claim_verifications_repo.list_supported_by_topic(
-            session, project_id=project_id, topic_id=topic.id
+            session,
+            project_id=project_id,
+            topic_id=topic.id,
         )
+        if topic.id in uncovered_keywords:
+            supported = []
+        else:
+            # A claim whose cited passages do not hold its wording is not something the lesson may
+            # say (services.claim_backing).
+            supported = (
+                await claim_backing_service.keep_backed_claims(
+                    session, project_id=project_id, claims=supported
+                )
+            ).claims
         supported_counts.append(len(supported))
         if not supported:
             missing_evidence.append(topic.title)
@@ -262,7 +307,15 @@ async def enqueue_script_generation(
         names = ", ".join(f"'{title}'" for title in missing_evidence)
         raise ValidationError(
             f"These accepted topics have no verified evidence yet: {names}. Extract "
-            "and verify claims for them, or reject them, before generating a script."
+            "and verify claims for them, or reject them, before generating a script. A keyword "
+            "you typed that your document does not cover shows as 'not in your document' under "
+            "the keyword coverage: reject it to leave it out of the lesson.",
+            # Machine-readable, so a client can name the topics without reading the sentence (a
+            # long sentence is not shown by every client).
+            details={
+                "reason": NO_VERIFIED_EVIDENCE_REASON,
+                "topics": missing_evidence[:MAX_TOPICS_NAMED_IN_REFUSAL],
+            },
         )
 
     # Enough evidence for the length asked for? Refused here, from counts alone, before a job or
@@ -283,7 +336,16 @@ async def enqueue_script_generation(
             supported_claims=assessment.supported_claims,
             topics=assessment.topic_count,
         )
-        raise ValidationError(_insufficient_evidence_message(assessment, settings))
+        raise ValidationError(
+            _insufficient_evidence_message(assessment, settings),
+            details={
+                "reason": INSUFFICIENT_EVIDENCE_REASON,
+                "target_duration_ms": assessment.target_duration_ms,
+                "defensible_duration_ms": assessment.defensible_duration_ms,
+                "supported_claims": assessment.supported_claims,
+                "topic_count": assessment.topic_count,
+            },
+        )
 
     await spend_guard.ensure_can_start_provider_job(session, project_id=project_id)
 
@@ -311,6 +373,29 @@ async def enqueue_script_generation(
         context={"job_id": str(job.id), "accepted_topic_count": len(eligible)},
     )
     return ScriptGenerationEnqueued(script=script, job=job, replayed=False)
+
+
+def _shortfall_reason(*, short: bool, evidence_limited: bool) -> str | None:
+    """Why a script is shorter than its target (see the job result's ``shortfall_reason``)."""
+    if not short:
+        return None
+    return "evidence_limited" if evidence_limited else "writer_short"
+
+
+INSUFFICIENT_EVIDENCE_REASON = "insufficient_evidence"
+"""``error.details.reason`` of the refusal to write a script whose target the verified claims cannot
+fill (``details`` also carries the figures, so a client can explain the remedy without parsing the
+sentence - a long one is not shown by every client)."""
+
+NO_VERIFIED_EVIDENCE_REASON = "no_verified_evidence"
+"""``error.details.reason`` of the refusal to write a script while an accepted topic has no
+verified claim."""
+
+MAX_TOPICS_NAMED_IN_REFUSAL = 20
+
+EVIDENCE_COVERAGE_FLOOR = 0.7
+"""The share of a script's claims its narration must already cite before a short script is put down
+to the evidence rather than to a writer that covered too little."""
 
 
 def _insufficient_evidence_message(assessment: EvidenceAssessment, settings: Settings) -> str:
@@ -575,8 +660,417 @@ def _tail(text: str, max_chars: int) -> str:
     return stripped if len(stripped) <= max_chars else stripped[-max_chars:].lstrip()
 
 
-def _outside_tolerance(estimated_ms: int, target_ms: int, tolerance: float) -> bool:
-    return abs(estimated_ms - target_ms) > target_ms * tolerance
+class HollowSectionError(JobError):
+    """A section whose passages cite none of the topic's verified claims, even after rewrites."""
+
+
+MAX_SECTION_REWRITES = 2
+"""How many times one section may be rewritten after the script's checks reject it. Bounded: each
+rewrite is one more provider call, and a writer that cannot satisfy the checks fails the job."""
+
+
+def _invalid_segments(
+    segments: list[ScriptSegmentDraft],
+    unit: _SectionUnit,
+    *,
+    settings: Settings,
+    grounding: GroundingReference | None,
+) -> list[tuple[int, Exception]]:
+    """Every segment of one section that the script's own checks would reject, with why: the same
+    :func:`~edutoon.domain.script_provenance.filter_and_validate` the whole script must pass,
+    applied to each segment on its own so that *all* the problems are found, not just the first."""
+    supported = {UUID(claim.id) for claim in unit.claims}
+    texts = _claim_texts(unit.claims)
+    problems: list[tuple[int, Exception]] = []
+    for position, segment in enumerate(segments):
+        try:
+            filter_and_validate(
+                ScriptDraft(title="", segments=[segment]),
+                supported,
+                settings.SCRIPT_WORDS_PER_MINUTE,
+                grounding=grounding,
+                claim_texts=texts,
+            )
+        except (UnsourcedSegmentError, UngroundedSegmentError) as exc:
+            problems.append((position, exc))
+    return problems
+
+
+HOLLOW_SECTION_CORRECTION = (
+    "No passage of this section cites a claim, so the topic is not explained from its verified "
+    "claims at all. Explain the topic using its claims and list the claim ids each passage "
+    "draws on - only claims that passage actually states."
+)
+
+
+def _claim_texts(claims: Sequence[Claim]) -> dict[UUID, str]:
+    return {UUID(claim.id): claim.text for claim in claims}
+
+
+def _is_hollow(segments: list[ScriptSegmentDraft], claims: Sequence[Claim] = ()) -> bool:
+    """A section none of whose passages cites a claim it actually shares wording with. Every
+    accepted topic has verified claims, so a section made only of hand-offs says nothing the source
+    supports: the topic would be in the script by name and absent in substance. With ``claims``, a
+    citation that shares no content word with its passage does not count (it is dropped from the
+    script anyway)."""
+    texts = _claim_texts(claims)
+    for segment in segments:
+        cited = [UUID(claim_id) for claim_id in segment.claim_ids]
+        if texts:
+            cited = list(relevant_claim_ids(segment.narration_text, cited, texts))
+        if cited:
+            return False
+    return True
+
+
+def _closest_claims(narration_text: str, claims: Sequence[Claim], limit: int = 2) -> list[Claim]:
+    """The claims whose wording overlaps ``narration_text`` most, best first; a claim sharing
+    nothing is never offered."""
+    narration_words = content_words(narration_text)
+    scored = [(len(narration_words & content_words(claim.text)), claim) for claim in claims]
+    ranked = sorted((pair for pair in scored if pair[0] > 0), key=lambda pair: -pair[0])
+    return [claim for _, claim in ranked[:limit]]
+
+
+def _corrections_for(
+    segments: list[ScriptSegmentDraft],
+    problems: list[tuple[int, Exception]],
+    claims: Sequence[Claim] = (),
+) -> list[str]:
+    """What to tell the writer was wrong, one line per rejected passage, in plain words: which
+    passage (by position and opening words), which rule it broke and what would fix it. The fix is
+    never "cite something else to make it pass" - only cite the claims it truly draws on, or take
+    the wording out. For a passage without a usable citation the claims whose wording it most
+    resembles are named (computed, not guessed), or it is said that none is close."""
+    lines: list[str] = []
+    for position, exc in problems:
+        opening = " ".join(segments[position].narration_text.split()[:10])
+        if isinstance(exc, UngroundedSegmentError):
+            named = ", ".join(f"'{token}'" for _, token in exc.tokens[:5])
+            lines.append(
+                f'Passage {position + 1} ("{opening} ...") mentions {named}, which none of the '
+                "claims contain. Use only wording the claims support; leave those out."
+            )
+        else:
+            if segments[position].claim_ids:
+                why = "cites claims that do not say what it says, and is not marked connective"
+            else:
+                why = "lists no claim ids and is not marked connective"
+            closest = _closest_claims(segments[position].narration_text, claims)
+            if closest:
+                named = " | ".join(f'"{claim.text}"' for claim in closest)
+                hint = (
+                    f"The claims closest to it are: {named}. "
+                    "Cite one only if the passage states it. "
+                )
+            else:
+                hint = "None of the claims is close to it. "
+            lines.append(
+                f'Passage {position + 1} ("{opening} ...") {why}. {hint}'
+                "If it is only an introduction, a transition or an analogy, keep it short, mark it "
+                "connective and cite nothing - never cite a claim the passage does not state."
+            )
+    return lines
+
+
+def _closing_segment(
+    topics: Sequence[ProjectTopicRecord], settings: Settings
+) -> ScriptSegmentDraft:
+    """The fixed closing of a lesson that does not end in one (``domain.script_closing``)."""
+    titles = [topic.title for topic in topics]
+    narration = closing_text(titles)
+    # A fixed sentence must never fail a generation: it is held to the script's own rule (no
+    # figure or name outside the titles it may mention), and falls back to a closing with no
+    # titles at all.
+    if unsupported_tokens(narration, " ".join(titles), kinds=GROUNDED_KINDS):
+        narration = closing_text([])
+    words = len(narration.split())
+    return ScriptSegmentDraft(
+        segment_index=0,
+        narration_text=narration,
+        claim_ids=[],
+        estimated_duration_ms=round(words / settings.SCRIPT_WORDS_PER_MINUTE * 60_000),
+        connective=True,
+        topic_id=topics[-1].id,
+    )
+
+
+def _claims_as_section(unit: _SectionUnit, settings: Settings) -> list[ScriptSegmentDraft]:
+    """A section made of the topic's verified claims read out as they stand: one passage per claim
+    (at most :data:`FALLBACK_CLAIMS_PER_SECTION`), each citing exactly its own claim. Plain, short
+    and fully grounded - the fallback when the writer's own wording cannot be supported."""
+    segments = []
+    for claim in unit.claims[:FALLBACK_CLAIMS_PER_SECTION]:
+        words = len(claim.text.split())
+        segments.append(
+            ScriptSegmentDraft(
+                segment_index=0,
+                narration_text=claim.text,
+                claim_ids=[claim.id],
+                estimated_duration_ms=round(words / settings.SCRIPT_WORDS_PER_MINUTE * 60_000),
+                connective=False,
+                topic_id=unit.topic.id,
+            )
+        )
+    return segments
+
+
+FALLBACK_CLAIMS_PER_SECTION = 6
+"""The most verified claims a fallback section reads out for one topic."""
+
+
+def _sentence_violates(
+    sentence: str,
+    segment: ScriptSegmentDraft,
+    unit: _SectionUnit,
+    *,
+    settings: Settings,
+    grounding: GroundingReference | None,
+) -> str | None:
+    """Why ``sentence`` alone breaks the figures-and-names rule (the names it brings in), or
+    ``None``. It is checked as a passage of its own, exempt from the citation rule, with the same
+    reference every passage is held to."""
+    try:
+        filter_and_validate(
+            ScriptDraft(
+                title="", segments=[replace(segment, narration_text=sentence, connective=True)]
+            ),
+            {UUID(claim.id) for claim in unit.claims},
+            settings.SCRIPT_WORDS_PER_MINUTE,
+            grounding=grounding,
+            claim_texts=_claim_texts(unit.claims),
+        )
+    except UngroundedSegmentError as exc:
+        named = ", ".join(f"'{token}'" for _, token in exc.tokens[:3])
+        return f"mentions {named}, which none of the verified claims contain"
+    return None
+
+
+async def _without_rule_violations(
+    llm: LLM,
+    report: UsageReport,
+    segments: list[ScriptSegmentDraft],
+    problems: list[tuple[int, Exception]],
+    *,
+    unit: _SectionUnit,
+    settings: Settings,
+    grounding: GroundingReference | None,
+    support: SupportLog | None,
+) -> list[ScriptSegmentDraft]:
+    """``segments`` with every sentence that still breaks a script rule taken out, then the rest
+    judged against the claims like any other text. A passage with no citation goes whole; a passage
+    that adds a figure or a name loses only the sentences that add it. Raises the first problem's
+    own error if nothing usable is left, so a section with nothing valid in it still fails, saying
+    which rule it broke."""
+    removals: dict[int, list[UnsupportedSentence]] = {}
+    for position, exc in problems:
+        segment = segments[position]
+        sentences = split_sentences(segment.narration_text)
+        found: list[UnsupportedSentence] = []
+        if isinstance(exc, UngroundedSegmentError):
+            for index, sentence in enumerate(sentences):
+                why = _sentence_violates(
+                    sentence, segment, unit, settings=settings, grounding=grounding
+                )
+                if why is not None:
+                    found.append(UnsupportedSentence(position=index, text=sentence, reason=why))
+        if not found:
+            # An uncited passage, or a violation not traceable to one sentence: the passage goes.
+            found = [
+                UnsupportedSentence(
+                    position=index,
+                    text=sentence,
+                    reason=(
+                        "the passage cites no verified claim"
+                        if isinstance(exc, UnsourcedSegmentError)
+                        else "the passage adds something its claims do not contain"
+                    ),
+                )
+                for index, sentence in enumerate(sentences)
+            ]
+        removals[position] = found
+
+    cleaned = _without_unsupported(
+        segments,
+        removals,
+        words_per_minute=settings.SCRIPT_WORDS_PER_MINUTE,
+        topic=unit.topic.title,
+        support=support,
+    )
+    if not cleaned or _is_hollow(cleaned, unit.claims):
+        raise problems[0][1]
+    remaining = _invalid_segments(cleaned, unit, settings=settings, grounding=grounding)
+    if remaining:
+        raise remaining[0][1]
+    if support is not None and support.enabled:
+        judged = await _unsupported_by_segment(llm, report, cleaned, unit.claims, support)
+        if judged:
+            cleaned = _without_unsupported(
+                cleaned,
+                judged,
+                words_per_minute=settings.SCRIPT_WORDS_PER_MINUTE,
+                topic=unit.topic.title,
+                support=support,
+                restate_from=unit.claims,
+            )
+            if not cleaned or _is_hollow(cleaned, unit.claims):
+                raise problems[0][1]
+    return cleaned
+
+
+def _support_corrections(
+    segments: list[ScriptSegmentDraft], unsupported: dict[int, list[UnsupportedSentence]]
+) -> list[str]:
+    """What to tell the writer about sentences no claim supports, one line per sentence: which
+    passage, the sentence, and why the checker found no claim for it. The fix is never to cite a
+    claim the sentence does not state - only to say what a claim says, or to leave it out."""
+    lines: list[str] = []
+    for position in sorted(unsupported):
+        opening = " ".join(segments[position].narration_text.split()[:8])
+        for found in unsupported[position]:
+            lines.append(
+                f'Passage {position + 1} ("{opening} ...") says "{found.text}" - no verified claim '
+                f"supports it ({found.reason.strip().rstrip('.')}). Say only what a claim says, "
+                "in the direction it says it, or leave the sentence out."
+            )
+    return lines
+
+
+async def _unsupported_by_segment(
+    llm: LLM,
+    report: UsageReport,
+    segments: list[ScriptSegmentDraft],
+    claims: Sequence[Claim],
+    support: SupportLog,
+) -> dict[int, list[UnsupportedSentence]]:
+    """For each segment (by position), the sentences no claim of its section supports."""
+    found: dict[int, list[UnsupportedSentence]] = {}
+    for position, segment in enumerate(segments):
+        flagged = await unsupported_in(llm, report, segment.narration_text, claims, support)
+        if flagged:
+            found[position] = flagged
+    return found
+
+
+def _without_unsupported(
+    segments: list[ScriptSegmentDraft],
+    unsupported: dict[int, list[UnsupportedSentence]],
+    *,
+    words_per_minute: int,
+    topic: str,
+    support: SupportLog | None,
+    restate_from: Sequence[Claim] = (),
+) -> list[ScriptSegmentDraft]:
+    """``segments`` with the unsupported sentences taken out. A segment left too short to read out
+    is dropped. Each removal is recorded on the job's result with the judge's reason.
+
+    With ``restate_from`` (the section's verified claims), a rejected sentence that is mostly a
+    wording of one of them is not simply lost: the claim's own text is read out in its place and
+    cited (``domain.narration_support.restating_claim_index``). That is for sentences the judge
+    rejected for a flourish; a sentence removed for breaking a script rule is never replaced."""
+    flagged_positions = {
+        (position, found.position) for position, flagged in unsupported.items() for found in flagged
+    }
+    said = [
+        sentence
+        for position, segment in enumerate(segments)
+        for index, sentence in enumerate(split_sentences(segment.narration_text))
+        if (position, index) not in flagged_positions
+    ]
+    kept: list[ScriptSegmentDraft] = []
+    for position, segment in enumerate(segments):
+        flagged = unsupported.get(position)
+        if not flagged:
+            kept.append(segment)
+            continue
+        sentences = split_sentences(segment.narration_text)
+        removed_positions: list[int] = []
+        claim_ids = list(segment.claim_ids)
+        for found in flagged:
+            restated = (
+                restating_claim_index(found.text, [c.text for c in restate_from], said)
+                if restate_from
+                else None
+            )
+            note = found.reason
+            if restated is None:
+                removed_positions.append(found.position)
+            else:
+                claim = restate_from[restated]
+                text = claim.text.strip()
+                sentences[found.position] = text if text[-1:] in ".!?" else text + "."
+                said.append(text)
+                if claim.id not in claim_ids:
+                    claim_ids.append(claim.id)
+                note = (
+                    f"{found.reason.strip()} Read out as the verified statement it was "
+                    f'closest to: "{text}"'
+                )
+            if support is not None:
+                support.removed.append(
+                    {
+                        "topic": topic,
+                        "sentence": found.text,
+                        "reason": note,
+                        "segment_dropped": False,
+                        **({"restated": True} if restated is not None else {}),
+                    }
+                )
+        remaining = without_sentences(sentences, removed_positions)
+        if remaining is None:
+            if support is not None:
+                for entry in support.removed[-len(flagged) :]:
+                    entry["segment_dropped"] = True
+            continue
+        words = len(remaining.split())
+        kept.append(
+            replace(
+                segment,
+                narration_text=remaining,
+                claim_ids=claim_ids,
+                estimated_duration_ms=round(words / words_per_minute * 60_000),
+            )
+        )
+    return kept
+
+
+def _without_unnamed_examples(
+    segments: list[ScriptSegmentDraft],
+    claims: Sequence[Claim],
+    *,
+    words_per_minute: int,
+    topic: str,
+    support: SupportLog | None,
+) -> list[ScriptSegmentDraft]:
+    """``segments`` with each ", like ..., " example clause taken out whose words no claim of the
+    section uses (``domain.narration_support.without_unnamed_examples``); the rest of the sentence
+    stays. Each trim is recorded on the job's result."""
+    texts = [claim.text for claim in claims]
+    cleaned_segments: list[ScriptSegmentDraft] = []
+    for segment in segments:
+        rebuilt: list[str] = []
+        changed = False
+        for sentence in split_sentences(segment.narration_text):
+            cleaned, removed = without_unnamed_examples(sentence, texts)
+            if removed:
+                changed = True
+                if support is not None:
+                    support.trimmed_examples.append(
+                        {"topic": topic, "sentence": sentence, "removed": removed}
+                    )
+            rebuilt.append(cleaned)
+        if not changed:
+            cleaned_segments.append(segment)
+            continue
+        text = " ".join(rebuilt)
+        cleaned_segments.append(
+            replace(
+                segment,
+                narration_text=text,
+                estimated_duration_ms=round(len(text.split()) / words_per_minute * 60_000),
+            )
+        )
+    return cleaned_segments
 
 
 async def _generate_units(
@@ -592,6 +1086,9 @@ async def _generate_units(
     payload: dict[str, Any],
     report: UsageReport,
     kind: str,
+    grounding: GroundingReference | None = None,
+    retries: list[dict[str, object]] | None = None,
+    support: SupportLog | None = None,
 ) -> list[ScriptSegmentDraft]:
     """Generate every unit's section in order, stamping each returned segment
     with its unit's ``topic_id`` (never taken from the model) and carrying
@@ -637,24 +1134,158 @@ async def _generate_units(
             next_topic_title=_next_topic_title(units, index),
         )
 
-        segments = await record_call(
-            report,
-            kind,
-            llm.compose_script_section(
-                brief,
-                topic_brief,
-                list(unit.claims),
-                continuity,
-                duration_ms=unit.duration_ms,
-                unit_index=unit.unit_index,
-                unit_count=unit.unit_count,
-                max_segments=settings.MAX_SCRIPT_SEGMENTS,
-                max_claims=settings.MAX_CLAIMS_PER_SECTION,
-                words_per_minute=settings.SCRIPT_WORDS_PER_MINUTE,
-            ),
-        )
+        async def _write(
+            corrections: Sequence[str] = (),
+            *,
+            unit: _SectionUnit = unit,
+            topic_brief: SectionTopicBrief = topic_brief,
+            continuity: SectionContinuity = continuity,
+        ) -> list[ScriptSegmentDraft]:
+            drafted = await record_call(
+                report,
+                kind,
+                llm.compose_script_section(
+                    brief,
+                    topic_brief,
+                    list(unit.claims),
+                    continuity,
+                    duration_ms=unit.duration_ms,
+                    unit_index=unit.unit_index,
+                    unit_count=unit.unit_count,
+                    max_segments=settings.MAX_SCRIPT_SEGMENTS,
+                    max_claims=settings.MAX_CLAIMS_PER_SECTION,
+                    words_per_minute=settings.SCRIPT_WORDS_PER_MINUTE,
+                    **({"corrections": corrections} if corrections else {}),
+                ),
+            )
+            return [replace(segment, topic_id=unit.topic.id) for segment in drafted]
 
-        stamped = [replace(segment, topic_id=unit.topic.id) for segment in segments]
+        async def _assess(
+            drafted: list[ScriptSegmentDraft],
+            *,
+            unit: _SectionUnit = unit,
+        ) -> tuple[list[tuple[int, Exception]], bool, dict[int, list[UnsupportedSentence]]]:
+            """What is wrong with ``drafted``: the script's own rule violations, a hollow section,
+            and - only once those are clean, so no model call is spent on text that will be
+            rewritten anyway - the sentences no verified claim of this topic supports."""
+            found = _invalid_segments(drafted, unit, settings=settings, grounding=grounding)
+            empty = _is_hollow(drafted, unit.claims)
+            unsupported: dict[int, list[UnsupportedSentence]] = {}
+            if support is not None and support.enabled and not found and not empty:
+                unsupported = await _unsupported_by_segment(
+                    llm, report, drafted, unit.claims, support
+                )
+            return found, empty, unsupported
+
+        stamped = await _write()
+        problems, hollow, unsupported = await _assess(stamped)
+        rewrites = 0
+        while (problems or hollow or unsupported) and rewrites < MAX_SECTION_REWRITES:
+            # A bounded rewrite, told exactly what was wrong. Nothing is left out and nothing is
+            # accepted on the strength of a rewrite: it must pass the very same checks, and if it
+            # still does not after the last one the generation fails exactly as it always did.
+            rewrites += 1
+            corrections = _corrections_for(stamped, problems, unit.claims)
+            if hollow:
+                corrections.append(HOLLOW_SECTION_CORRECTION)
+            corrections.extend(_support_corrections(stamped, unsupported))
+            log.warning(
+                "scripts.section_rewritten",
+                topic=unit.topic.title,
+                rejected=len(problems),
+                hollow=hollow,
+                unsupported=sum(len(found) for found in unsupported.values()),
+                rewrite=rewrites,
+            )
+            if retries is not None:
+                retries.append(
+                    {
+                        "topic": unit.topic.title,
+                        "rewrite": rewrites,
+                        "rejected_passages": len(problems),
+                        "hollow": hollow,
+                        "unsupported_sentences": sum(len(found) for found in unsupported.values()),
+                        "problems": corrections,
+                    }
+                )
+            if unsupported and support is not None:
+                support.rewrites_for_support += 1
+            stamped = await _write(corrections)
+            problems, hollow, unsupported = await _assess(stamped)
+        try:
+            if hollow:
+                raise HollowSectionError(
+                    f"The section written for the topic '{unit.topic.title}' cites none of its "
+                    "verified claims, so the topic is not explained from the source. Generate the "
+                    "script again."
+                )
+            if problems:
+                # Still breaking a script rule after the bounded rewrites. Nothing that breaks a
+                # rule may reach the script - but a section is not thrown away for one sentence:
+                # the offending sentences (or an uncited passage) are taken out, what is left is
+                # judged, and only if nothing usable remains is the section replaced by its claims
+                # (or, with the fallback off, the generation fails with the rule it broke).
+                stamped = await _without_rule_violations(
+                    llm,
+                    report,
+                    stamped,
+                    problems,
+                    unit=unit,
+                    settings=settings,
+                    grounding=grounding,
+                    support=support,
+                )
+                unsupported = {}
+            if unsupported:
+                # Still not supported after the rewrites: what no claim backs is taken out, never
+                # kept. The rest of the section is untouched and has already passed every check.
+                stamped = _without_unsupported(
+                    stamped,
+                    unsupported,
+                    words_per_minute=settings.SCRIPT_WORDS_PER_MINUTE,
+                    topic=unit.topic.title,
+                    support=support,
+                    restate_from=unit.claims,
+                )
+                # A section whose only remaining passages move the lesson along ("Today, we will
+                # learn about resistance") is as empty as none: such a passage can share a word with
+                # a claim, so it passes _is_hollow, but with the sentences that said something
+                # taken out the topic would be named in the lesson and never explained.
+                only_signposts = all(is_signpost_only(s.narration_text) for s in stamped)
+                if not stamped or only_signposts or _is_hollow(stamped, unit.claims):
+                    raise HollowSectionError(
+                        f"Nothing the writer produced for the topic '{unit.topic.title}' was "
+                        "supported by its verified claims. Generate the script again."
+                    )
+                remaining = _invalid_segments(stamped, unit, settings=settings, grounding=grounding)
+                if remaining:
+                    raise remaining[0][1]
+        except (HollowSectionError, UngroundedSegmentError, UnsourcedSegmentError) as exc:
+            if not settings.SCRIPT_FALLBACK_TO_CLAIMS:
+                raise
+            # The writer could not produce wording these claims support, even after rewrites and
+            # removals. The topic is not dropped and nothing unsupported is kept: its verified
+            # claims are read out as they stand (each one is backed by a cited passage), and the
+            # job's result says so.
+            stamped = _claims_as_section(unit, settings)
+            if support is not None:
+                support.fallback_sections.append(
+                    {"topic": unit.topic.title, "claims": len(stamped), "reason": str(exc)}
+                )
+            log.warning("scripts.section_fell_back_to_claims", topic=unit.topic.title)
+        fell_back = support is not None and any(
+            entry["topic"] == unit.topic.title for entry in support.fallback_sections
+        )
+        if not fell_back:
+            # An illustrative "like tigers" no claim names is not kept (a fallback section reads
+            # the claims out as they stand and has none).
+            stamped = _without_unnamed_examples(
+                stamped,
+                unit.claims,
+                words_per_minute=settings.SCRIPT_WORDS_PER_MINUTE,
+                topic=unit.topic.title,
+                support=support,
+            )
         all_segments.extend(stamped)
         if unit.unit_index == unit.unit_count - 1:
             previous_topic_title = unit.topic.title
@@ -692,10 +1323,18 @@ async def _generate_and_attach(
     )
 
     claims_by_topic: dict[UUID, list[ClaimVerificationRecord]] = {}
+    claims_left_out_unbacked = 0
     for topic in topics:
         supported = await claim_verifications_repo.list_supported_by_topic(
-            session, project_id=project_id, topic_id=topic.id
+            session,
+            project_id=project_id,
+            topic_id=topic.id,
         )
+        backed = await claim_backing_service.keep_backed_claims(
+            session, project_id=project_id, claims=supported
+        )
+        supported = backed.claims
+        claims_left_out_unbacked += len(backed.left_out)
         # Defence in depth: enqueue-time already required every one of these
         # topics to have supported evidence; claims are append-only, so this
         # should never actually be empty by the time the job runs.
@@ -704,6 +1343,30 @@ async def _generate_and_attach(
                 f"Topic '{topic.title}' has no verified evidence; generate again once it does."
             )
         claims_by_topic[topic.id] = supported
+
+    # Neighbouring topics often hold the same fact (their claims come from the same passages): say
+    # each once, under the topic it fits best, or the lesson repeats itself (domain.claim_dedupe).
+    deduped = dedupe_claims_across_topics(
+        [
+            TopicClaims(
+                topic.id,
+                topic.title,
+                [ClaimRef(claim.id, claim.claim_text) for claim in claims_by_topic[topic.id]],
+                keywords=tuple(topic.keywords),
+                summary=topic.summary or "",
+            )
+            for topic in topics
+        ]
+    )
+    # A fact is written under the topic it fits best, which may not be the topic it was extracted
+    # for (in a short source every topic is extracted from the same passages).
+    record_by_id: dict[Hashable, ClaimVerificationRecord] = {
+        claim.id: claim for claims in claims_by_topic.values() for claim in claims
+    }
+    claims_before = sum(len(claims) for claims in claims_by_topic.values())
+    for topic in topics:
+        claims_by_topic[topic.id] = [record_by_id[claim.id] for claim in deduped[topic.id]]
+    claims_deduplicated = claims_before - sum(len(claims) for claims in claims_by_topic.values())
 
     budgets = allocate_topic_budgets(
         topic_ids=[topic.id for topic in topics],
@@ -729,7 +1392,14 @@ async def _generate_and_attach(
             "the number of accepted topics or the target duration."
         )
 
-    brief = ScriptBrief(topic=project.title, language=project.language)
+    audience, tone = instructions_service.audience_and_tone(project)
+    brief = ScriptBrief(
+        topic=project.title,
+        language=project.language,
+        audience=audience,
+        tone=tone,
+        instructions=instructions_service.prompt_block(project),
+    )
     outline_topics = [
         OutlineTopicBrief(
             topic_id=topic.id,
@@ -745,6 +1415,18 @@ async def _generate_and_attach(
     )
     outline_by_topic = {topic.topic_id: topic for topic in outline_draft.topics}
 
+    # What the wording may draw on: for each topic, its title and every claim the writer was shown
+    # for it; for the lesson as a whole, the project's and the topics' own titles.
+    grounding = GroundingReference(
+        topic_texts={
+            unit.topic.id: " ".join([unit.topic.title, *(claim.text for claim in unit.claims)])
+            for unit in units
+        },
+        frame_text=" ".join([project.title, *(topic.title for topic in topics)]),
+    )
+    retried: list[dict[str, object]] = []
+    support = SupportLog(enabled=settings.SCRIPT_SUPPORT_CHECK_ENABLED)
+
     segments = await _generate_units(
         llm,
         brief,
@@ -757,13 +1439,38 @@ async def _generate_and_attach(
         payload=payload,
         report=report,
         kind="script_section",
+        grounding=grounding,
+        retries=retried,
+        support=support,
     )
 
     estimated_total = sum(segment.estimated_duration_ms for segment in segments)
     correction_applied = False
-    if settings.MAX_SCRIPT_CORRECTION_ATTEMPTS >= 1 and _outside_tolerance(
-        estimated_total, project.target_duration_ms, settings.SCRIPT_DURATION_TOLERANCE
-    ):
+    correction_failed: str | None = None
+    # A script that is short because the checks took unsupported text out of it, and that already
+    # draws on most of the claims it was given, is short because those claims cannot carry more: a
+    # second pass would ask for more words from the same claims. While many claims are still unused
+    # the writer simply covered too few, and a second pass (asking it to cover more) is worth it.
+    claims_given = {claim.id for unit in units for claim in unit.claims}
+
+    def _evidence_limited(cited: set[str]) -> bool:
+        coverage = len(cited & claims_given) / len(claims_given) if claims_given else 1.0
+        return (
+            support.enabled
+            and bool(support.removed or support.rewrites_for_support or support.fallback_sections)
+            and coverage >= EVIDENCE_COVERAGE_FLOOR
+        )
+
+    evidence_limited = _evidence_limited(
+        {claim_id for segment in segments for claim_id in segment.claim_ids}
+    )
+    length = decide_length_correction(
+        estimated_total,
+        project.target_duration_ms,
+        settings.SCRIPT_DURATION_TOLERANCE,
+        evidence_limited=evidence_limited,
+    )
+    if settings.MAX_SCRIPT_CORRECTION_ATTEMPTS >= 1 and length == "rescale":
         await _report_progress(
             sessionmaker, job_id=job_id, base_payload=payload, stage="correcting_duration"
         )
@@ -771,46 +1478,83 @@ async def _generate_and_attach(
         rescaled_units = [
             replace(unit, duration_ms=max(1, round(unit.duration_ms * factor))) for unit in units
         ]
-        segments = await _generate_units(
-            llm,
-            brief,
-            outline_draft.title,
-            rescaled_units,
-            outline_by_topic,
-            settings,
-            sessionmaker=sessionmaker,
-            job_id=job_id,
-            payload=payload,
-            report=report,
-            kind="script_correction",
-        )
-        estimated_total = sum(segment.estimated_duration_ms for segment in segments)
-        correction_applied = True
+        corrected_retries: list[dict[str, object]] = []
+        try:
+            corrected = await _generate_units(
+                llm,
+                brief,
+                outline_draft.title,
+                rescaled_units,
+                outline_by_topic,
+                settings,
+                sessionmaker=sessionmaker,
+                job_id=job_id,
+                payload=payload,
+                report=report,
+                kind="script_correction",
+                grounding=grounding,
+                retries=corrected_retries,
+                support=support,
+            )
+        except (UnsourcedSegmentError, UngroundedSegmentError, HollowSectionError) as exc:
+            # The correction pass only tunes the length; the first draft already passed every
+            # section check. A rewrite that cannot satisfy those same checks is not accepted - and
+            # it must not cost the valid draft either: the first draft is kept, unchanged, and the
+            # reason is recorded. Nothing is relaxed: only checked text is ever used.
+            correction_failed = str(exc)
+            log.warning("scripts.correction_pass_failed", reason=correction_failed)
+        else:
+            segments = corrected
+            # Only the pass that is kept describes the script that is kept.
+            retried = corrected_retries
+            estimated_total = sum(segment.estimated_duration_ms for segment in segments)
+            correction_applied = True
         # Duration is a target, not a hard gate (rule: TTS does not exist yet,
         # so this is a WPM estimate): the result is accepted from here on
         # regardless of whether it is still outside tolerance.
+
+    # The writer opens most sections with "Today, we will learn about ..."; the lesson keeps its
+    # first announcement and loses the repeats, and any "Today, we have learned ..." before the
+    # closing.
+    segments, openers_removed = drop_repeated_openers(
+        segments, words_per_minute=settings.SCRIPT_WORDS_PER_MINUTE
+    )
+    estimated_total = sum(segment.estimated_duration_ms for segment in segments)
 
     await _report_progress(
         sessionmaker, job_id=job_id, base_payload=payload, stage="validating_provenance"
     )
 
+    # A lesson ends. The writer's own closing is often a synthesis no single claim states, which the
+    # support check rightly removes, so a script that does not end in one gets a fixed closing that
+    # names the topics it covered and asserts nothing else (domain.script_closing).
+    closing_added = settings.SCRIPT_FIXED_CLOSING and not (
+        segments and has_closing(segments[-1].narration_text)
+    )
+    if closing_added:
+        segments = [*segments, _closing_segment(topics, settings)]
     reindexed = [replace(segment, segment_index=index) for index, segment in enumerate(segments)]
     supported_claim_ids = {UUID(claim.id) for unit in units for claim in unit.claims}
     draft = ScriptDraft(
         title=outline_draft.title, segments=reindexed, estimated_duration_ms=estimated_total
     )
-    # What the wording may draw on: for each topic, its title and every claim the writer was shown
-    # for it; for the lesson as a whole, the project's and the topics' own titles.
-    grounding = GroundingReference(
-        topic_texts={
-            unit.topic.id: " ".join([unit.topic.title, *(claim.text for claim in unit.claims)])
-            for unit in units
-        },
-        frame_text=" ".join([project.title, *(topic.title for topic in topics)]),
-    )
+    all_claim_texts = _claim_texts([claim for unit in units for claim in unit.claims])
     validated = filter_and_validate(
-        draft, supported_claim_ids, settings.SCRIPT_WORDS_PER_MINUTE, grounding=grounding
+        draft,
+        supported_claim_ids,
+        settings.SCRIPT_WORDS_PER_MINUTE,
+        grounding=grounding,
+        claim_texts=all_claim_texts,
     )
+    weak_citations = []
+    for segment in validated.segments:
+        coverage = weak_citation_coverage(
+            segment.narration_text, segment.claim_verification_ids, all_claim_texts
+        )
+        if coverage is not None and coverage < WEAK_CITATION_COVERAGE:
+            weak_citations.append(
+                {"segment_index": segment.segment_index, "coverage": round(coverage, 2)}
+            )
 
     await _report_progress(sessionmaker, job_id=job_id, base_payload=payload, stage="finalising")
 
@@ -835,6 +1579,43 @@ async def _generate_and_attach(
         "duration_difference_ms": difference,
         "duration_difference_pct": round(difference / target * 100, 1) if target else 0.0,
         "correction_applied": correction_applied,
+        # Claims left out because another topic holds the same fact (said once, where it fits).
+        "claims_deduplicated": claims_deduplicated,
+        # Supported claims not used because the passages they cite do not hold their wording and no
+        # other passage of the source states them (services.claim_backing).
+        "claims_left_out_unbacked": claims_left_out_unbacked,
+        # Announcements ("Today, we will learn ...") taken out after the first one.
+        "repeated_openers_removed": openers_removed,
+        # Whether the script was given its fixed closing because it did not end in one.
+        "closing_added": closing_added,
+        # Why the script is shorter than the target, when it is: ``"evidence_limited"`` means the
+        # checks removed or rewrote unsupported text and the final script already draws on most of
+        # its claims, so the verified claims cannot honestly carry more - nothing was added to reach
+        # the target; ``"writer_short"`` means claims were left unused, so a new version may be
+        # longer. ``None`` when the length is as asked.
+        "shortfall_reason": _shortfall_reason(
+            short=validated.estimated_duration_ms
+            < target * (1 - settings.SCRIPT_DURATION_TOLERANCE),
+            evidence_limited=_evidence_limited(
+                {
+                    str(claim_id)
+                    for segment in validated.segments
+                    for claim_id in segment.claim_verification_ids
+                }
+            ),
+        ),
+        # Why the optional length-correction pass was dropped and the first draft kept, if it was.
+        "correction_failed": correction_failed,
+        # Sections whose first draft broke a script rule and were rewritten once, with what was
+        # wrong; a rewrite that still broke a rule would have failed the generation.
+        "section_retries": retried,
+        # Cited segments whose cited claims cover little of their wording: for the reviewer's
+        # second look, never a rejection (an analogy legitimately adds words).
+        "weak_citation_segments": weak_citations,
+        # The sentence-level support check (``domain.narration_support``): how many sentences were
+        # judged against the verified claims, which were taken out and why, and how many could not
+        # be judged. ``None`` when the check is switched off.
+        "support_check": support.as_dict(),
         "input_tokens": report.total.input_tokens or 0,
         "output_tokens": report.total.output_tokens or 0,
         "usage": report.as_dict(),

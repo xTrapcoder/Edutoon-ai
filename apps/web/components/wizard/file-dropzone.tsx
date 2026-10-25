@@ -4,17 +4,20 @@ import { FileText, UploadCloud, X } from 'lucide-react';
 import { useId, useRef, useState, type DragEvent } from 'react';
 import { cn } from '@/lib/cn';
 import { formatBytes } from '@/lib/format';
-import { MAX_UPLOAD_MB } from './wizard-model';
+import { MAX_UPLOAD_MB, PPTX_MIME, type FileKind } from './wizard-model';
 
 interface FileDropzoneProps {
+  /** Which kind of file to ask for; a PDF unless said otherwise. */
+  kind?: FileKind;
   file: File | null;
   onChange: (file: File | null) => void;
   error?: string | null;
   disabled?: boolean;
 }
 
-/** Drag a PDF in or browse for one. The native file input stays in the tab order, so it works by keyboard. */
-export function FileDropzone({ file, onChange, error, disabled }: FileDropzoneProps) {
+/** Drag a PDF or a PowerPoint deck in, or browse for one. The native file input stays in the tab order, so it works by keyboard. */
+export function FileDropzone({ kind = 'pdf', file, onChange, error, disabled }: FileDropzoneProps) {
+  const deck = kind === 'pptx';
   const inputId = useId();
   const errorId = useId();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -54,14 +57,17 @@ export function FileDropzone({ file, onChange, error, disabled }: FileDropzonePr
           <UploadCloud className="size-6" aria-hidden />
         </span>
         <span className="mt-3 text-sm font-semibold text-ink-950">
-          Drag and drop your PDF here, or <span className="text-brand-700 underline">browse</span>
+          Drag and drop your {deck ? 'PowerPoint deck' : 'PDF'} here, or{' '}
+          <span className="text-brand-700 underline">browse</span>
         </span>
-        <span className="mt-1 text-[13px] text-ink-500">PDF files up to {MAX_UPLOAD_MB} MB</span>
+        <span className="mt-1 text-[13px] text-ink-500">
+          {deck ? '.pptx files' : 'PDF files'} up to {MAX_UPLOAD_MB} MB
+        </span>
         <input
           ref={inputRef}
           id={inputId}
           type="file"
-          accept="application/pdf,.pdf"
+          accept={deck ? `${PPTX_MIME},.pptx` : 'application/pdf,.pdf'}
           className="sr-only"
           disabled={disabled}
           aria-invalid={error ? true : undefined}

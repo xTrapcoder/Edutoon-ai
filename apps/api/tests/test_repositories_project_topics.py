@@ -13,9 +13,7 @@ from edutoon.repositories.project_topics import NewProjectTopic
 
 async def _make_project(db_session):
     owner = await users_repo.create(db_session, email=f"{uuid4()}@example.com")
-    return await projects_repo.create(
-        db_session, owner_id=owner.id, title="P", source_type="topic"
-    )
+    return await projects_repo.create(db_session, owner_id=owner.id, title="P", source_type="topic")
 
 
 async def test_create_and_get_by_id(db_session):
@@ -260,9 +258,7 @@ async def test_get_by_id_for_project_hides_another_projects_topic(db_session):
     in_other_project = await project_topics_repo.get_by_id_for_project(
         db_session, topic.id, project_b.id
     )
-    unknown_id = await project_topics_repo.get_by_id_for_project(
-        db_session, uuid4(), project_a.id
-    )
+    unknown_id = await project_topics_repo.get_by_id_for_project(db_session, uuid4(), project_a.id)
 
     assert in_other_project is None
     assert unknown_id is None
@@ -321,9 +317,10 @@ async def test_list_all_by_project_is_empty_for_a_project_with_no_topics(db_sess
 async def test_next_position_is_zero_when_there_are_no_topics(db_session):
     project = await _make_project(db_session)
 
-    assert await project_topics_repo.next_position(
-        db_session, project_id=project.id, parent_id=None
-    ) == 0
+    assert (
+        await project_topics_repo.next_position(db_session, project_id=project.id, parent_id=None)
+        == 0
+    )
 
 
 async def test_next_position_follows_the_highest_existing_position(db_session):
@@ -332,9 +329,10 @@ async def test_next_position_follows_the_highest_existing_position(db_session):
     # A gap (positions need not be contiguous, e.g. after a topic was removed).
     await project_topics_repo.create(db_session, project_id=project.id, title="B", position=4)
 
-    assert await project_topics_repo.next_position(
-        db_session, project_id=project.id, parent_id=None
-    ) == 5
+    assert (
+        await project_topics_repo.next_position(db_session, project_id=project.id, parent_id=None)
+        == 5
+    )
 
 
 async def test_next_position_is_tracked_per_parent(db_session):
@@ -349,13 +347,17 @@ async def test_next_position_is_tracked_per_parent(db_session):
         db_session, project_id=project.id, title="C1", parent_id=root.id, position=1, depth=1
     )
 
-    assert await project_topics_repo.next_position(
-        db_session, project_id=project.id, parent_id=root.id
-    ) == 2
+    assert (
+        await project_topics_repo.next_position(
+            db_session, project_id=project.id, parent_id=root.id
+        )
+        == 2
+    )
     # The roots' counter is untouched by the children.
-    assert await project_topics_repo.next_position(
-        db_session, project_id=project.id, parent_id=None
-    ) == 1
+    assert (
+        await project_topics_repo.next_position(db_session, project_id=project.id, parent_id=None)
+        == 1
+    )
 
 
 async def test_next_position_ignores_other_projects(db_session):
@@ -363,9 +365,10 @@ async def test_next_position_ignores_other_projects(db_session):
     other = await _make_project(db_session)
     await project_topics_repo.create(db_session, project_id=other.id, title="X", position=7)
 
-    assert await project_topics_repo.next_position(
-        db_session, project_id=project.id, parent_id=None
-    ) == 0
+    assert (
+        await project_topics_repo.next_position(db_session, project_id=project.id, parent_id=None)
+        == 0
+    )
 
 
 # --- update_for_project ---------------------------------------------------------------

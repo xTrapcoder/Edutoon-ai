@@ -14,7 +14,8 @@ is what turns a draft into something safe to persist.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from collections.abc import Sequence
+from dataclasses import dataclass, field, replace
 from uuid import UUID
 
 
@@ -37,6 +38,44 @@ class ScriptSegmentDraft:
     estimated_duration_ms: int
     connective: bool = False
     topic_id: UUID | None = None
+
+
+MAX_MERGE_FACTOR = 4
+"""A section may be merged down from at most this many times its segment limit. Beyond that the
+reply is not a lesson written in short passages but something else, and is rejected."""
+
+
+def merge_to_limit(
+    segments: Sequence[ScriptSegmentDraft], limit: int, words_per_minute: int
+) -> list[ScriptSegmentDraft]:
+    """``segments`` joined, neighbour with neighbour, until there are at most ``limit``.
+
+    A writer told to cover many claims may reply with many one-sentence passages (26 for a section
+    whose limit is 12). That is not an error worth a failed generation, and splitting a lesson into
+    a great many tiny passages would also make a scene for each. The two shortest neighbours are
+    joined first, so passages stay about the same length, repeatedly. A joined passage cites every
+    claim either had and is connective only if both were; its length is re-estimated.
+    """
+    merged = list(segments)
+    while len(merged) > limit > 0:
+        shortest = min(
+            range(len(merged) - 1),
+            key=lambda i: (
+                len(merged[i].narration_text.split()) + len(merged[i + 1].narration_text.split())
+            ),
+        )
+        first, second = merged[shortest], merged[shortest + 1]
+        text = f"{first.narration_text.rstrip()} {second.narration_text.lstrip()}"
+        merged[shortest : shortest + 2] = [
+            replace(
+                first,
+                narration_text=text,
+                claim_ids=list(dict.fromkeys([*first.claim_ids, *second.claim_ids])),
+                connective=first.connective and second.connective,
+                estimated_duration_ms=round(len(text.split()) / words_per_minute * 60_000),
+            )
+        ]
+    return [replace(segment, segment_index=index) for index, segment in enumerate(merged)]
 
 
 @dataclass(frozen=True, slots=True)

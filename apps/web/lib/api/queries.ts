@@ -20,6 +20,12 @@ import type {
   TopicUpdateRequest,
 } from '@edutoon/contracts';
 import { isActiveJob } from '@/lib/jobs';
+import {
+  derivePipeline,
+  pickRenderStatus,
+  type PipelineStage,
+  type PipelineStageId,
+} from '@/lib/pipeline';
 import { currentScript, deriveWorkflow, type Workflow } from '@/lib/workflow';
 import { newIdempotencyKey } from './client';
 import { ApiError } from './errors';
@@ -36,6 +42,7 @@ export const queryKeys = {
   chunks: (id: string, sourceId: string) =>
     ['projects', id, 'sources', sourceId, 'chunks'] as const,
   topics: (id: string) => ['projects', id, 'topics'] as const,
+  coverage: (id: string) => ['projects', id, 'topics', 'coverage'] as const,
   jobs: (id: string) => ['projects', id, 'jobs'] as const,
   scripts: (id: string) => ['projects', id, 'scripts'] as const,
   script: (id: string, scriptId: string) => ['projects', id, 'scripts', scriptId] as const,
@@ -82,6 +89,16 @@ export function useTopics(projectId: string) {
   return useQuery({
     queryKey: queryKeys.topics(projectId),
     queryFn: () => api.listTopics(projectId),
+  });
+}
+
+/** Whether the document backs each keyword the person typed. Reads the claims, so it is
+ * refreshed whenever topics or claims change (they share the `topics` key prefix). */
+export function useKeywordCoverage(projectId: string, enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.coverage(projectId),
+    queryFn: () => api.getKeywordCoverage(projectId),
+    enabled,
   });
 }
 
@@ -185,7 +202,11 @@ export function useSupportedClaimCount(projectId: string) {
   return useQuery({
     queryKey: queryKeys.claims(projectId),
     queryFn: () => api.listClaimVerifications(projectId),
-    select: (claims) => claims.filter((claim) => claim.status === 'supported').length,
+    // A topic-only lesson has no document, so its statements are general knowledge: they are
+    // what a script may be written from there, and are labelled as unchecked wherever shown.
+    select: (claims) =>
+      claims.filter((claim) => claim.status === 'supported' || claim.status === 'general_knowledge')
+        .length,
   });
 }
 
@@ -264,6 +285,94 @@ export function useWorkspace(projectId: string): Workspace {
     error: projectQuery.error,
     isLoading: projectQuery.isPending,
   };
+}
+
+/**
+ * The eight pipeline stages of one project, each read from the API. It reuses the queries the
+ * narration, storyboard and video panels already make (same keys, so one request serves both) and
+ * asks for a later stage only once the one before it is complete - never a call the stage's own page
+ * would refuse. Loaded project and workflow required.
+ */
+export function usePipeline(workspace: {
+  project: Project;
+  workflow: Workflow;
+  sources: ReturnType<typeof useSources>;
+  topics: ReturnType<typeof useTopics>;
+  jobs: ReturnType<typeof useJobs>;
+  scripts: ReturnType<typeof useScripts>;
+  claims: ReturnType<typeof useClaimVerifications>;
+}): PipelineStage[] {
+  const { project, workflow, sources, topics, jobs, scripts, claims } = workspace;
+  const queryClient = useQueryClient();
+  const script = workflow.script;
+  const approved = script?.status === 'approved';
+
+  const synthesis = useSynthesisStatus(project.id, approved ? script.id : undefined);
+  const measuredDurationMs =
+    synthesis.data?.script.measured_duration_ms ?? script?.measured_duration_ms;
+  const narrated = approved && measuredDurationMs !== null && measuredDurationMs !== undefined;
+
+  const storyboard = useStoryboardStatus(project.id, narrated ? script.id : undefined);
+  const storyboardComplete = narrated && storyboard.data?.is_complete === true;
+
+  const renderScriptId = storyboardComplete ? script.id : undefined;
+  const finalRender = useRenderStatus(project.id, renderScriptId, project.orientation, 'high');
+  const previewRender = useRenderStatus(project.id, renderScriptId, project.orientation, 'low');
+  const renderProgress = useRenderProgress(project.id, storyboardComplete);
+
+  // A stage's own polling stops when its job ends, but a finished job can change what the stages
+  // after it should say (a re-narration makes scenes stale, a new storyboard makes a video out of
+  // date): read them again whenever a job settles, as the panels themselves do.
+  const renderJob = renderProgress.data?.job ?? null;
+  const signature = [
+    renderJob ? `${renderJob.id}:${renderJob.status}` : '',
+    synthesis.data?.job ? `${synthesis.data.job.id}:${synthesis.data.job.status}` : '',
+    storyboard.data?.job ? `${storyboard.data.job.id}:${storyboard.data.job.status}` : '',
+    String(storyboard.data?.is_complete),
+    String(measuredDurationMs),
+  ].join('|');
+  const previous = useRef<string | null>(null);
+  useEffect(() => {
+    if (previous.current !== null && previous.current !== signature && script) {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.storyboard(project.id, script.id) });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.renderAll(project.id, script.id) });
+    }
+    previous.current = signature;
+  }, [signature, queryClient, project.id, script]);
+
+  // The moment a render job ends, what it made is stored but the status read before it still says
+  // "not rendered": until the fresh read arrives say nothing rather than something out of date.
+  const renderStatus = pickRenderStatus([finalRender.data, previewRender.data]);
+  const refreshingRender = finalRender.isFetching || previewRender.isFetching;
+  const settledRender =
+    renderJob?.status === 'succeeded' && refreshingRender && !renderStatus?.is_complete
+      ? undefined
+      : renderStatus;
+
+  const failed = new Set<PipelineStageId>();
+  if (synthesis.isError) failed.add('narration');
+  if (storyboard.isError) failed.add('storyboard');
+  if ((finalRender.isError && previewRender.isError) || renderProgress.isError) failed.add('video');
+  if (sources.isError) failed.add('source');
+  if (topics.isError || jobs.isError) failed.add('topics');
+  if (claims.isError || jobs.isError) failed.add('claims');
+  if (scripts.isError) failed.add('script');
+
+  return derivePipeline({
+    project,
+    workflow,
+    sources: sources.data,
+    topics: topics.data,
+    jobs: jobs.data,
+    scripts: scripts.data,
+    claims: claims.data,
+    synthesis: synthesis.data,
+    storyboard: storyboard.data,
+    render: settledRender,
+    renderJob: renderProgress.data ? renderJob : undefined,
+    renderProgress: renderProgress.data?.progress,
+    failed,
+  });
 }
 
 /**
@@ -362,6 +471,19 @@ export function useUploadSource(projectId: string) {
       void queryClient.invalidateQueries({ queryKey: queryKeys.jobs(projectId) });
     },
   });
+}
+
+export function usePasteText(projectId: string) {
+  const queryClient = useQueryClient();
+  return useIdempotentMutation(
+    (input: { title: string; text: string }, key) => api.pasteTextSource(projectId, input, key),
+    {
+      onSuccess: () => {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.sources(projectId) });
+        void queryClient.invalidateQueries({ queryKey: queryKeys.jobs(projectId) });
+      },
+    },
+  );
 }
 
 export function useAddKeywords(projectId: string) {

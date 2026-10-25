@@ -77,3 +77,51 @@ describe('describeError', () => {
     expect(describeError(offline).title).toMatch(/couldn't reach/i);
   });
 });
+
+describe('apiErrorFromResponse - what a refusal says about itself', () => {
+  const respond = (status: number) => new Response(null, { status });
+
+  it('reads the machine-readable reason and the topics, whatever the sentence is', () => {
+    const error = apiErrorFromResponse(respond(400), {
+      error: {
+        code: 'validation_error',
+        message: 'x'.repeat(400), // too long to show: serverMessage is null
+        details: { reason: 'no_verified_evidence', topics: ['Crypto', 7, 'Heart valves'] },
+      },
+    });
+
+    expect(error.serverMessage).toBeNull();
+    expect(error.reason).toBe('no_verified_evidence');
+    expect(error.topics).toEqual(['Crypto', 'Heart valves']);
+  });
+
+  it('has no reason and no topics when the API sent none', () => {
+    const error = apiErrorFromResponse(respond(400), {
+      error: { code: 'validation_error', message: 'Too many topics.' },
+    });
+
+    expect(error.reason).toBeNull();
+    expect(error.topics).toEqual([]);
+  });
+});
+
+describe('apiErrorFromResponse details', () => {
+  it('keeps the numeric figures of a refusal, and drops anything that is not a number', () => {
+    const error = apiErrorFromResponse(response(400), {
+      error: {
+        code: 'validation_error',
+        message: 'x'.repeat(400),
+        details: {
+          reason: 'insufficient_evidence',
+          target_duration_ms: 600000,
+          supported_claims: 8,
+          note: 'not a number',
+        },
+      },
+    });
+    expect(error.reason).toBe('insufficient_evidence');
+    expect(error.figures).toEqual({ target_duration_ms: 600000, supported_claims: 8 });
+    // The long sentence is still not shown; the figures are what the page explains from.
+    expect(error.serverMessage).toBeNull();
+  });
+});

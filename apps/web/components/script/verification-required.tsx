@@ -4,6 +4,8 @@ import { Card, CardBody } from '@/components/ui/card';
 
 interface VerificationRequiredProps {
   projectId: string;
+  /** Accepted topics the API says have no verified claim, when the project has some that do. */
+  topicsWithoutEvidence?: readonly string[];
   onCheckAgain?: () => void;
   checking?: boolean;
 }
@@ -29,9 +31,11 @@ const STEPS = [
  */
 export function VerificationRequired({
   projectId,
+  topicsWithoutEvidence = [],
   onCheckAgain,
   checking,
 }: VerificationRequiredProps) {
+  const someTopics = topicsWithoutEvidence.length > 0;
   return (
     <Card>
       <CardBody className="grid grid-cols-1 gap-8 py-10 sm:px-10 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)] lg:items-center">
@@ -44,10 +48,27 @@ export function VerificationRequired({
             A script is written only from claims that have been checked against your source, so that
             every statement can be traced back to where it came from.
           </p>
-          <p className="mt-3 text-[15px] leading-7 text-ink-600">
-            This project doesn&apos;t have any verified claims yet, so there is nothing to write
-            from. Once claims have been verified you can generate the script here.
-          </p>
+          {someTopics ? (
+            <>
+              <p className="mt-3 text-[15px] leading-7 text-ink-600">
+                These accepted topics have no claim your source supports yet:{' '}
+                <strong className="font-semibold text-ink-900">
+                  {topicsWithoutEvidence.map((topic) => `"${topic}"`).join(', ')}
+                </strong>
+                .
+              </p>
+              <p className="mt-3 text-[15px] leading-7 text-ink-600">
+                A keyword you typed that your document does not cover is marked &ldquo;not in your
+                document&rdquo; on the Topics page: use &ldquo;Leave it out&rdquo; there, or reject
+                the topic. Otherwise verify claims for it, then write the script.
+              </p>
+            </>
+          ) : (
+            <p className="mt-3 text-[15px] leading-7 text-ink-600">
+              This project doesn&apos;t have any verified claims yet, so there is nothing to write
+              from. Once claims have been verified you can generate the script here.
+            </p>
+          )}
           <div className="mt-6 flex flex-wrap gap-3">
             <ButtonLink
               href={`/projects/${projectId}/topics`}

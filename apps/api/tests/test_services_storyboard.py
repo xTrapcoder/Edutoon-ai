@@ -37,6 +37,7 @@ from edutoon.repositories import users as users_repo
 from edutoon.repositories.scripts import NewScriptSegment
 from edutoon.services import script_audio as script_audio_service
 from edutoon.services import storyboard as service
+from tests.storage_isolation import SEGMENTS_BUCKET
 
 # Stands in for an external provider (OpenAI / Anthropic): these tests prove how our code
 # handles a response, never how a real provider behaves. See "Provider-mocked tests"
@@ -44,7 +45,7 @@ from edutoon.services import storyboard as service
 pytestmark = pytest.mark.provider_mocked
 
 MODEL = "claude-sonnet-5"
-BUCKET = "edutoon-segments"
+BUCKET = SEGMENTS_BUCKET
 
 
 # --- fixtures ------------------------------------------------------------------------
@@ -123,10 +124,17 @@ def _llm_with(monkeypatch: Any, responses: dict[int, Any]) -> tuple[LLM, AsyncMo
     """
     llm = LLM(AsyncAnthropic(api_key="sk-ant-test-not-a-real-key"), model=MODEL)
     calls: list[int] = []
+    received_corrections: list[str] = []
+    llm.received_corrections = received_corrections  # type: ignore[attr-defined]
 
-    async def _compose(segment, *, max_scenes: int):
+    async def _compose(segment, *, max_scenes: int, corrections=()):
         calls.append(segment.segment_index)
+        if corrections:
+            received_corrections.extend(corrections)
         response = responses[segment.segment_index]
+        if isinstance(response, list) and response and isinstance(response[0], list):
+            # a list of answers: the first call gets the first, a rewrite the next (last repeats)
+            response = response[min(calls.count(segment.segment_index) - 1, len(response) - 1)]
         if isinstance(response, BaseException):
             raise response
         scenes = tuple(StoryboardSceneDraft(template=t, content=c) for t, c in response)
@@ -522,6 +530,32 @@ async def test_an_honest_paraphrase_using_only_narration_words_is_accepted(db_se
 
     assert job.result["ready_segment_count"] == 1
     assert len(await scenes_repo.list_by_segment_id(db_session, segments[0].id)) == 1
+
+
+async def test_a_bullet_the_narration_never_says_is_taken_off_the_slide(db_session, monkeypatch):
+    """Regression (a real run, scanned PDF): a slide said "This pattern is known as semidiurnal
+    tides." although the narration never does. It is no number, date or name, so the hard
+    provenance rule could not see it."""
+    narration = (
+        "Tides are the regular rise and fall of the sea. "
+        "Most coasts experience two high tides and two low tides each day."
+    )
+    bullets = [
+        "Most coasts experience two high tides and two low tides each day.",
+        "This pattern is known as semidiurnal tides.",
+        "Tides are the regular rise and fall of the sea",
+    ]
+    job, _status, segments = await _run(
+        db_session,
+        monkeypatch,
+        {0: [("bullet_points", {"bullets": bullets})]},
+        narrations=[narration],
+    )
+
+    assert job.result["ready_segment_count"] == 1
+    assert job.result["scene_text_trimmed_count"] == 1
+    [scene] = await scenes_repo.list_by_segment_id(db_session, segments[0].id)
+    assert scene.content["bullets"] == [bullets[0], bullets[2]]
 
 
 async def test_an_unknown_template_rejects_the_segment_but_not_the_job(db_session, monkeypatch):
@@ -1286,3 +1320,84 @@ async def test_the_job_records_one_storyboard_call_per_segment_it_composed(db_se
     assert usage["by_call"]["storyboard"]["calls"] == 2
     assert usage["total"]["input_tokens"] == 10 and usage["total"]["output_tokens"] == 10
     assert job.result["provider_calls"] == 2
+
+
+async def test_a_rewrite_that_fixes_an_invented_word_is_accepted_and_the_first_draft_never_stored(
+    db_session, monkeypatch
+):
+    """The checks are never loosened: the first draft's invented word is told to the writer, and
+    only a rewrite that passes the very same checks is stored."""
+    _owner, project, script, segments = await _project_with_ready_audio(
+        db_session, narrations=["Photosynthesis happens in the leaf."], durations_ms=[9_000]
+    )
+    llm, mock, calls = _llm_with(
+        monkeypatch,
+        {
+            0: [
+                [("title_card", {"title": "Photosynthesis", "subtitle": "Basics Explained"})],
+                [("title_card", {"title": "Photosynthesis", "subtitle": "In the leaf"})],
+            ]
+        },
+    )
+    enq = await service.enqueue_storyboard_generation(
+        db_session,
+        project_id=project.id,
+        owner_id=project.owner_id,
+        script_id=script.id,
+        idempotency_key="k",
+    )
+
+    job = await service.run_generate_storyboard_job(db_session, llm, job_id=enq.job.id)
+
+    assert job.result["failed_segment_ids"] == []
+    assert calls == [0, 0]  # one rewrite
+    assert any(
+        "'Basics'" in text and "not in the narration" in text for text in llm.received_corrections
+    )
+    [scene] = await scenes_repo.list_by_segment_id(db_session, segments[0].id)
+    assert scene.content == {"title": "Photosynthesis", "subtitle": "In the leaf"}
+
+
+async def test_scene_text_that_stays_fabricated_falls_back_to_the_narrations_own_words(
+    db_session, monkeypatch
+):
+    """With the fallback on, a segment whose scenes keep inventing a figure is not left without
+    scenes: it gets one bullet scene made only of its narration's own words (provenance-safe by
+    construction), and the job says it fell back."""
+    from edutoon.core.config import get_settings
+
+    monkeypatch.setenv("STORYBOARD_FALLBACK_TO_TEXT", "true")
+    get_settings.cache_clear()
+    try:
+        _owner, project, script, segments = await _project_with_ready_audio(
+            db_session,
+            narrations=["Now, let's talk about divergent boundaries."],
+            durations_ms=[9_000],
+        )
+        llm, _mock, _calls = _llm_with(
+            monkeypatch,
+            {
+                0: [
+                    ("title_card", {"title": "Takes 42 minutes"}),
+                    ("title_card", {"title": "Takes 42 minutes"}),
+                ]
+            },
+        )
+        enq = await service.enqueue_storyboard_generation(
+            db_session,
+            project_id=project.id,
+            owner_id=project.owner_id,
+            script_id=script.id,
+            idempotency_key="k",
+        )
+
+        job = await service.run_generate_storyboard_job(db_session, llm, job_id=enq.job.id)
+
+        assert job.result["failed_segment_ids"] == []
+        assert job.result["provenance_text_fallback_count"] == 1
+        [scene] = await scenes_repo.list_by_segment_id(db_session, segments[0].id)
+        assert scene.template == "bullet_points"
+        assert scene.content["bullets"] == ["Now, let's talk", "about divergent boundaries"]
+        assert "42" not in str(scene.content)
+    finally:
+        get_settings.cache_clear()

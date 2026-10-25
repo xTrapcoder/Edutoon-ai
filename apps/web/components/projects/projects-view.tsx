@@ -12,12 +12,13 @@ import { cn } from '@/lib/cn';
 import { pluralise } from '@/lib/format';
 import { ProjectRow, ProjectRowSkeleton } from './project-row';
 
-type SourceFilter = 'all' | 'pdf' | 'topic';
+// Only what can be created: older topic-only or PowerPoint projects stay listed under "All".
+type SourceFilter = 'all' | 'pdf' | 'text';
 
 const FILTERS: readonly { value: SourceFilter; label: string }[] = [
   { value: 'all', label: 'All' },
   { value: 'pdf', label: 'PDF' },
-  { value: 'topic', label: 'Keywords' },
+  { value: 'text', label: 'Pasted text' },
 ];
 
 export function ProjectsView() {

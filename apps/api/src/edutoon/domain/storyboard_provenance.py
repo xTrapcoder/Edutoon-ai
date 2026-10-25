@@ -130,6 +130,9 @@ MONTH_WORDS: Final[frozenset[str]] = frozenset(
     }
 )  # fmt: skip
 
+AMBIGUOUS_MONTH_WORDS: Final[frozenset[str]] = frozenset({"may", "march", "august"})
+"""Month names that are also ordinary English words; see ``_protected_tokens``."""
+
 UNIT_WORDS: Final[frozenset[str]] = frozenset(
     {
         "km", "kg", "m", "cm", "mm", "g", "mg", "l", "ml", "kmh", "mph",
@@ -187,12 +190,25 @@ class ProvenanceViolation:
     token: str
 
 
+EVERYDAY_PROPER_NOUNS: Final[frozenset[str]] = frozenset({"earth", "sun", "moon"})
+"""Capitalised only by convention, and so never a name that could be invented: the planet we live
+on and the two bodies every science lesson mentions. A lesson on plate tectonics says "Earth"
+whether or not the claim it is drawing on does, and rejecting it - as a first live run did, failing
+a whole script after two rewrites - protected nobody. Anything else capitalised mid-sentence is
+still a name that must come from the claims."""
+
+
 def _capitalised_candidates(text: str) -> set[str]:
     candidates: set[str] = set()
     for sentence in _SENTENCE_SPLIT_RE.split(text.strip()):
         words = _WORD_RE.findall(sentence)
         for word in words[1:]:  # skip the sentence's own first word
-            if len(word) >= 2 and word[0].isupper() and word[1:].islower():
+            if (
+                len(word) >= 2
+                and word[0].isupper()
+                and word[1:].islower()
+                and _strip_possessive(word) not in EVERYDAY_PROPER_NOUNS
+            ):
                 candidates.add(word)
     return candidates
 
@@ -206,9 +222,21 @@ def _protected_tokens(text: str) -> list[tuple[str, str]]:
     for symbol in CURRENCY_SYMBOLS:
         if symbol in text:
             tokens.append((symbol, "currency"))
-    words_lower = {word.lower() for word in _WORD_RE.findall(text)}
+    cased_words = set(_WORD_RE.findall(text))
+    words_lower = {word.lower() for word in cased_words}
     tokens.extend((word, "number_word") for word in words_lower & NUMBER_WORDS)
-    tokens.extend((word, "date_word") for word in words_lower & MONTH_WORDS)
+    # Three month names are also everyday words: "may" (the modal verb), "march" (to walk; a
+    # procession) and "august" (dignified). Each counts as a month only when written as one -
+    # capitalised ("May", "March", "August") or in capitals - and lower-case it is ordinary
+    # explanation ("investors may choose") that would otherwise reject a great many honest
+    # sentences. The cost is that a month typed in lower case is not noticed; the dates that
+    # matter are written capitalised, and a capitalised word is still checked, so a sentence-initial
+    # modal ("May this help...") errs on the side of rejection, never of letting a date through.
+    months = words_lower & MONTH_WORDS
+    for ambiguous in AMBIGUOUS_MONTH_WORDS:
+        if ambiguous in months and not cased_words & {ambiguous.capitalize(), ambiguous.upper()}:
+            months = months - {ambiguous}
+    tokens.extend((word, "date_word") for word in months)
     tokens.extend((word, "unit") for word in words_lower & UNIT_WORDS)
     tokens.extend((word, "proper_noun") for word in _capitalised_candidates(text))
     return tokens
@@ -240,6 +268,22 @@ def _strip_possessive(word: str) -> str:
     return lowered[:-2] if lowered.endswith("'s") else lowered
 
 
+def _spellings(word: str) -> set[str]:
+    """``word`` lower-cased, without a possessive, and with its plain singular / plural form:
+    ``Chloroplasts`` is the narration's ``chloroplast`` in the plural, not a new name. Only an
+    ``-s`` / ``-es`` / ``-ies`` ending is considered, so a genuinely different name still has to
+    appear in the narration."""
+    base = _strip_possessive(word)
+    forms = {base, base + "s"}
+    if len(base) > 3 and base.endswith("s"):
+        forms.add(base[:-1])
+    if len(base) > 4 and base.endswith("es"):
+        forms.add(base[:-2])
+    if len(base) > 4 and base.endswith("ies"):
+        forms.add(base[:-3] + "y")
+    return forms
+
+
 def _narration_words(narration_text: str) -> set[str]:
     words = {word.lower() for word in _WORD_RE.findall(narration_text)}
     return words | {_strip_possessive(word) for word in words}
@@ -264,7 +308,9 @@ def check_scene_text(
             allowed = token in narration_numbers or _canonical_number(token) in narration_numbers
         elif kind == "currency":
             allowed = token in narration_text
-        else:  # number_word, date_word, unit, proper_noun
+        elif kind == "proper_noun":
+            allowed = bool(_spellings(token) & narration_words)
+        else:  # number_word, date_word, unit
             allowed = (
                 token.lower() in narration_words or _strip_possessive(token) in narration_words
             )
@@ -377,7 +423,6 @@ was not the model's scene."""
 FallbackKind = Literal["visual_dropped", "text_only"]
 
 _FALLBACK_BULLETS: Final = 3
-_CLAUSE_SPLIT_RE = re.compile(r"[,;:]\s+|\s+(?:and|but|because|so|which|while)\s+")
 
 
 @dataclass(frozen=True, slots=True)
@@ -393,13 +438,65 @@ def _in_illustration(slot_path: str) -> bool:
     return slot_path == "illustration" or slot_path.startswith(("illustration.", "illustration["))
 
 
+_DANGLING_WORDS: Final = frozenset(
+    {
+        "a", "an", "the", "of", "to", "in", "on", "at", "for", "from", "with", "by", "and", "or",
+        "but", "that", "which", "as", "is", "are", "was", "were", "be", "its", "their", "this",
+    }
+)  # fmt: skip
+"""Words a slide line must not end on: a line cut after one reads as a broken sentence."""
+
+
 def _fit(text: str, limit: int) -> str:
-    """``text`` without its closing punctuation, at most ``limit`` characters, cut at a space."""
+    """``text`` without its closing punctuation, at most ``limit`` characters. A line that has to be
+    shortened is cut at its last comma or semicolon when that leaves most of it, else at a space,
+    and never ends on a word that needs a following one ("... the health of")."""
     text = " ".join(text.split()).rstrip(".!?;:, ")
     if len(text) <= limit:
         return text
-    cut = text.rfind(" ", 0, limit + 1)
-    return text[: cut if cut > 0 else limit].rstrip(".!?;:, ")
+    window = text[: limit + 1]
+    clause = max(window.rfind(", "), window.rfind("; "))
+    if clause >= limit // 2:
+        return text[:clause].rstrip(".!?;:, ")
+    cut = window.rfind(" ")
+    shortened = text[: cut if cut > 0 else limit].rstrip(".!?;:, ")
+    words = shortened.split()
+    while len(words) > 2 and words[-1].lower().strip(".,;:") in _DANGLING_WORDS:
+        words.pop()
+    return " ".join(words)
+
+
+def _split_one_sentence(sentence: str) -> list[str]:
+    """A single sentence as two or three whole-phrase pieces: at its commas and semicolons (a piece
+    under three words joins its neighbour), else at the conjunction nearest its middle, else in
+    half. Never at every "and": "After animals and plants die" is one phrase."""
+    parts = [p for p in re.split(r"[;:]\s+|,\s+", sentence.strip()) if p.strip()]
+    pieces: list[str] = []
+    carry = ""
+    for part in parts:
+        carry = f"{carry}, {part}" if carry else part
+        if len(carry.split()) >= 3:
+            pieces.append(carry)
+            carry = ""
+    if carry:
+        if pieces:
+            pieces[-1] = f"{pieces[-1]}, {carry}"
+        else:
+            pieces.append(carry)
+    if len(pieces) >= MIN_BULLETS:
+        return pieces
+    words = sentence.split()
+    middle = len(words) // 2
+    joiners = [
+        i
+        for i, word in enumerate(words)
+        if word.lower() in {"and", "but", "because", "so", "which", "while"}
+        and 2 <= i <= len(words) - 3
+    ]
+    split_at = min(joiners, key=lambda i: abs(i - middle)) if joiners else middle
+    # the second piece does not begin with the conjunction it was cut at
+    second = words[split_at + 1 :] if split_at in joiners else words[split_at:]
+    return [" ".join(words[:split_at]), " ".join(second)]
 
 
 def safe_text_only_content(narration_text: str) -> dict[str, object] | None:
@@ -408,15 +505,15 @@ def safe_text_only_content(narration_text: str) -> dict[str, object] | None:
     token in it is one the narration contains, so it passes the provenance check by construction.
     ``None`` if the narration is too short to make :data:`MIN_BULLETS` bullets from."""
     sentences = [s for s in _SENTENCE_SPLIT_RE.split(narration_text.strip()) if s.strip()]
-    pieces = [_fit(sentence, BULLET_MAX_CHARS) for sentence in sentences[:_FALLBACK_BULLETS]]
-    if len(pieces) < MIN_BULLETS:
-        clauses = [c for c in _CLAUSE_SPLIT_RE.split(narration_text.strip()) if c.strip()]
-        pieces = [_fit(clause, BULLET_MAX_CHARS) for clause in clauses[:_FALLBACK_BULLETS]]
-    if len(pieces) < MIN_BULLETS:
-        words = narration_text.split()
-        middle = len(words) // 2
-        pieces = [_fit(" ".join(words[:middle]), BULLET_MAX_CHARS)]
-        pieces.append(_fit(" ".join(words[middle:]), BULLET_MAX_CHARS))
+    if len(sentences) >= MIN_BULLETS:
+        pieces = [_fit(sentence, BULLET_MAX_CHARS) for sentence in sentences[:_FALLBACK_BULLETS]]
+    elif sentences:
+        pieces = [
+            _fit(piece, BULLET_MAX_CHARS)
+            for piece in _split_one_sentence(sentences[0])[:_FALLBACK_BULLETS]
+        ]
+    else:
+        pieces = []
     pieces = [piece for piece in pieces if piece][:MAX_BULLETS]
     if len(pieces) < MIN_BULLETS:
         return None
@@ -444,6 +541,22 @@ def resolve_provenance(
     if replacement is not None and not check_provenance(replacement, narration_text):
         return ProvenanceResolution("bullet_points", replacement, "text_only")
     raise FabricatedContentError(violations)
+
+
+def content_words(text: str, *, min_word_length: int = 4) -> frozenset[str]:
+    """The meaningful words of ``text``, lower-cased: at least ``min_word_length`` letters, not a
+    stopword, with a trailing possessive or plural "s" folded so "investor" and "investors"
+    match. Deliberately plain - no stemming - because a looser match would let unrelated claims in
+    the same subject (all "investment" claims) look related."""
+    words: set[str] = set()
+    for raw in _WORD_RE.findall(text):
+        word = raw.lower().removesuffix("'s")
+        if len(word) < min_word_length or word in _STOPWORDS:
+            continue
+        if len(word) > min_word_length and word.endswith("s") and not word.endswith("ss"):
+            word = word[:-1]
+        words.add(word)
+    return frozenset(words)
 
 
 def has_lexical_overlap(
@@ -474,3 +587,61 @@ def has_lexical_overlap(
 
     narration_words = _content_words(narration_text)
     return bool(scene_words & narration_words)
+
+
+# --- text on a slide that the narration never says ----------------------------------------------
+
+UNNAMED_TEXT_MAX_ABSENT: Final = 1
+"""A bullet or subtitle may use this many content words the narration lacks (a stray "road" in "the
+road deck"); with more, or when over a third of its words are missing, it is not the narration's."""
+
+UNNAMED_TEXT_MAX_SHARE: Final = 0.34
+
+_PREFIX: Final = 5
+
+
+def _is_unnamed(text: str, reference: frozenset[str], prefixes: frozenset[str]) -> bool:
+    words = content_words(text)
+    if not words:
+        return False
+    absent = [word for word in words if word not in reference and word[:_PREFIX] not in prefixes]
+    return (
+        len(absent) > UNNAMED_TEXT_MAX_ABSENT or len(absent) / len(words) > UNNAMED_TEXT_MAX_SHARE
+    )
+
+
+def without_unnamed_scene_text(
+    template: str, content: Mapping[str, object], narration_text: str
+) -> tuple[dict[str, object] | None, list[str]]:
+    """``content`` with each bullet and subtitle removed that says something the narration does
+    not, and the text that was removed. ``None`` for the content when a bullet slide would be left
+    with fewer than :data:`MIN_BULLETS` bullets (the caller replaces such a slide with the
+    narration's own words).
+
+    The hard provenance rule above catches a number, date or name that appears from nowhere; it
+    cannot see a common noun doing the same ("This pattern is known as semidiurnal tides" on a slide
+    about a narration that never says it, "The dark side" under "At new moon"), which a viewer reads
+    as part of the lesson. Titles are left alone: they name the topic. Only text is removed.
+    """
+    reference = content_words(narration_text)
+    prefixes = frozenset(word[:_PREFIX] for word in reference)
+    removed: list[str] = []
+    result: dict[str, object] = dict(content)
+    if template == "title_card":
+        subtitle = result.get("subtitle")
+        if isinstance(subtitle, str) and _is_unnamed(subtitle, reference, prefixes):
+            removed.append(subtitle)
+            result.pop("subtitle")
+    elif template == "bullet_points":
+        bullets = result.get("bullets")
+        if isinstance(bullets, list):
+            kept = [
+                bullet
+                for bullet in bullets
+                if not (isinstance(bullet, str) and _is_unnamed(bullet, reference, prefixes))
+            ]
+            removed.extend(str(b) for b in bullets if b not in kept)
+            if len(kept) < MIN_BULLETS:
+                return None, removed
+            result["bullets"] = kept
+    return result, removed

@@ -9,6 +9,28 @@ uv run uvicorn edutoon.main:app --reload --port 8000
 
 Requires the environment variables listed in the repository root `.env.example`.
 
+## Running the project's `make` targets without `make`
+
+The root `Makefile` is a thin wrapper; every target is one or two commands. **GNU Make is not
+installed on the Windows development machine this was built on**, so `make migrate`, `make lint` and
+the rest cannot be run there as documented. Either install GNU Make (and run from a shell that has
+`uv`, `pnpm` and `docker` on its path), or run the equivalent commands from the repository root:
+
+| `make ...` | Equivalent |
+|---|---|
+| `up` | `docker compose up -d --wait` |
+| `migrate` | `cd apps/api && uv run alembic upgrade head` |
+| `migrate-down` | `cd apps/api && uv run alembic downgrade -1` |
+| `test` | `cd apps/api && uv run pytest` and `pnpm --filter @edutoon/web test` |
+| `lint` | `pnpm lint`, then `cd apps/api && uv run ruff check . && uv run mypy src` |
+| `format` | `pnpm format`, then `cd apps/api && uv run ruff format .` |
+| `contracts` | `cd apps/api && uv run python scripts/export_openapi.py`, then `pnpm --filter @edutoon/contracts generate` |
+| `contracts-check` | the `--check` form of the first command, `pnpm --filter @edutoon/contracts generate`, then `git diff --exit-code -- packages/contracts` |
+| `worker` | `cd apps/api && uv run python -m edutoon.worker` |
+| `dev` | the API (`uv run uvicorn edutoon.main:app --reload --port 8000` in `apps/api`), the web app (`pnpm dev` in `apps/web`) and the worker, each in its own terminal |
+
+The `pnpm` commands need Node 22 or later with pnpm available (Corepack); the Python ones only need `uv`.
+
 ## API contract for the front end
 
 `scripts/export_openapi.py` writes this API's OpenAPI document to
@@ -27,6 +49,330 @@ handler commits its transaction *before* its result is cached or returned, so a 
 and a replay of one - always means the change is stored, and a commit that fails leaves
 nothing cached. `tests/test_idempotent_routes_contract.py` fails for any mutating route
 that loses either guarantee.
+
+## Roles, invitations and sign-in
+
+Step 1 of the training platform (`docs/training-platform-design.md`; migration **0019**).
+
+**Roles.** `users.role` is `admin` or `employee`, NOT NULL with no default. The database is the
+only authority: a role is never read from a token claim, a header or a request body (a `role` claim
+in a Clerk token is ignored, and `tests/test_provisioning_and_suspension.py` proves it).
+
+**Who can use the API.** Nobody becomes a user by signing in. `get_current_user`
+(`api/dependencies.py`) verifies the token, then `services.auth.resolve_user`:
+
+1. an identity already linked to a user is returned as it is;
+2. a new identity becomes a user **only if its email is verified** (`email_verified: true` in the
+   token) and either a *pending, unexpired invitation* names that address - the user gets the
+   invitation's role - or the address is on `ADMIN_BOOTSTRAP_EMAILS` **and no active administrator
+   exists** (the first administrator; the list is spent once one does);
+3. anything else is `403 not_invited` and **writes nothing**.
+
+Then a user whose `status` is not `active` is `403 account_inactive` - on every request, so a
+suspension takes effect at once (`PATCH /v1/admin/users/{id}` with `{"status": "suspended"}`).
+Unauthenticated is still `401`. A 403 means a capability is missing (role, invitation, suspension);
+a project, or any resource, the caller does not own is still `404` (rule 9).
+
+**Every route declares a role policy** (`api/policies.py`): `require_admin`,
+`require_admin_for_project`, `require_employee`, `require_authenticated`, or `public_route`
+(`/health` only). All existing project-generation routes are administrator-only, and an employee is
+answered like this:
+
+* a route that **names a project** (anything under `/v1/projects/{project_id}`) is
+  `require_admin_for_project`: an employee gets **`404 not_found`**, with the same body an
+  administrator gets for a project that does not exist, whether or not the project exists - so
+  nothing about which projects exist can be learned, and nothing the employee sends is acted on;
+* a route that names **no** project (`GET` / `POST /v1/projects`, everything under `/v1/admin`) is
+  `require_admin`: an employee gets **`403 forbidden`**.
+
+`tests/test_route_policies.py` walks every route of the real application and fails if one declares
+none or several, pins which policy each route has (a `{project_id}` in the path must mean
+`require_admin_for_project`), then calls every administrator route as an employee, a suspended
+administrator, an uninvited person and an anonymous caller, and compares an employee's responses for
+an existing project and a missing one. Adding a route without a policy fails the suite.
+
+**Invitations** (admin only, `Idempotency-Key` required): `POST /v1/admin/invitations`
+(`{email, role?, display_name?}`; role defaults to `employee`), `GET /v1/admin/invitations`,
+`POST /v1/admin/invitations/{id}/revoke`. Expiry is `INVITATION_TTL_DAYS` (default 7). If
+`CLERK_SECRET_KEY` is set the API asks Clerk to email the invitation (stdlib HTTP, no new
+dependency; only the address is sent, never a role) and the response says `delivery: "sent"`;
+otherwise `"not_configured"` (pass the sign-up link on yourself) or `"failed"`. The invitation row is
+the authority either way. **The Clerk call is not verified against a real Clerk instance.**
+
+**Users** (admin only): `GET /v1/admin/users`, `PATCH /v1/admin/users/{id}` (`role`, `status`:
+`active` | `suspended`). The last active administrator can be neither demoted nor suspended (409).
+`GET /v1/auth/me` returns `{id, email, display_name, role}` for any active user.
+
+**Migration 0019 backfill is least-privilege.** Every existing user becomes an `employee`; only
+addresses on `ADMIN_BOOTSTRAP_EMAILS` *at migration time* become `admin`. If that list is empty the
+migration says so and nobody is promoted. To promote someone afterwards, deliberately, on the
+server: `uv run python scripts/grant_admin.py --email someone@company.example` (audited as a
+`system` action). Downgrading drops the role column and the invitations table and loses the roles.
+
+**Worker liveness.** The queue is the `jobs` table; only a running `python -m edutoon.worker` claims jobs.
+The worker refreshes a Redis key every 5 s (20 s TTL, one key per database - `worker/heartbeat.py`) and
+`GET /health` reports `"worker": "ok" | "offline"` (separate from `status`: the API is fine without a worker).
+The web app asks `/health` only while a step is queued and then says the worker is not running.
+
+**Dev QA.** `scripts/dev_qa_api.py` (port 8001) and `scripts/dev_qa_worker.py` use their own database,
+`edutoon_qa` (`scripts/_qa_database.py`), never the normal one. `scripts/dev_qa_api.py` accepts two stand-in tokens, `ui-qa-token` (administrator) and
+`ui-qa-employee-token` (employee), and creates those two local users if they are missing.
+
+**Tests written before roles existed.** `tests/conftest.py` has an autouse fixture that, for any
+test not marked `@pytest.mark.real_auth`, makes `users_repo.create` default to `admin` and provisions
+an unknown Clerk identity as an administrator. It exists only in tests; production has no default
+role. A test of roles, invitations or suspension carries `real_auth` and must give every user an
+explicit role. The suspended-account check is never shimmed.
+
+## Training courses, modules and enrolments
+
+Step 2 of the training platform (`docs/training-platform-design.md`; schema from migration
+**0020**). Pieces 2 and 3 (below): the administrator's routes are under `/v1/admin/training`; the
+employee's two routes are under `/v1/training` ("Enrolments and employee access (Piece 3)"). Every
+mutating route needs an `Idempotency-Key`, request bodies reject unknown fields (422), durations are
+integer milliseconds.
+
+| Route | Does |
+|---|---|
+| `POST` / `GET /courses` | create (`{title, description?}`) / list (`?status=`, paginated) |
+| `GET` / `PATCH /courses/{course_id}` | read / edit title and description (archived: 409) |
+| `POST /courses/{course_id}/publish` | draft -> published; needs at least one published module (else 409) |
+| `POST /courses/{course_id}/archive` | hide and freeze a course, keeping everything |
+| `DELETE /courses/{course_id}` | 204; **409** once anyone was enrolled (any status, a withdrawn enrolment included) or, from Step 3, has other learner history (a RESTRICT foreign key): the message says to **archive it instead** |
+| `GET /courses/{course_id}/modules` | every module, published and unpublished, in order |
+| `POST /courses/{course_id}/modules` | **publish a render as a new module**, last in order (below) |
+| `PUT /courses/{course_id}/modules/order` | `{module_ids}`: every module once, in the new order |
+| `GET /modules/{module_id}` | one module (snapshot description, never the storage key) |
+| `POST /modules/{module_id}/republish` | replace the module's video with a fresh snapshot (also re-publishes an unpublished one) |
+| `POST /modules/{module_id}/unpublish` | employees lose it, its file is removed, its place and description stay |
+| `DELETE /modules/{module_id}` | 204; closes the gap in the order; **409** if a RESTRICT foreign key (Step 3 history) refuses |
+| `GET /modules/{module_id}/video` | the administrator's preview: streams the module's **own** snapshot, with `Range` and `?download=true` |
+
+**Publish by snapshot.** `POST .../modules` takes `{project_id, script_id, orientation, quality,
+title?, description?}` - the identifiers the render API already uses, so the render API is unchanged.
+The project must be the caller's (404 otherwise), the script approved (409), the render present and
+its file the size recorded for it. The MP4 is copied inside the storage server
+(`Storage.copy_object`, added in this piece) to `training/modules/{module_id}/{publication_uuid}.mp4`
+- a fresh UUID every publication, so a key is written once and never overwritten - and the module
+records its own size, duration, resolution, frame rate and the render's fingerprint
+(`video_output_hash`). `source_render_output_id` is provenance only: serving a module never reads the
+render row or the render's key, so a re-render or deleting the project cannot change or remove a
+published video (it just becomes `NULL`). The same render twice in one course is a 409, decided by the
+service before anything is copied **and** enforced by `uq_training_modules_course_source_render`.
+Not checked: that the render is *current* against the latest narration/storyboard (an administrator
+publishing a stale render is not stopped); the workspace already shows when a video is stale.
+
+**Files and commits.** Object storage cannot be rolled back, so the order is: write the new object,
+change the rows, commit, and only then remove an object no longer needed (the replaced snapshot, an
+unpublished or deleted module's video). `services.training.storage_effects` wraps each such request:
+before the commit only the *new* object is removed on failure; after the commit only the *obsolete*
+ones are removed; a removal that fails never fails the request and is logged
+(`training.object_cleanup_failed`, `orphaned=True`, bucket and key). A key is only ever deleted if it
+lies inside its own module's prefix.
+
+**Order.** Positions are 1..n and contiguous. Appending, closing a gap and reordering all hold
+`SELECT ... FOR UPDATE` on the course row. A reorder is one `UPDATE ... FROM unnest(...) WITH
+ORDINALITY` that relies on the unique constraint being `DEFERRABLE INITIALLY DEFERRED` (no negative
+placeholders, no delete and re-insert); `SET CONSTRAINTS ... IMMEDIATE` then checks it inside the
+transaction.
+
+**404s.** A route naming a course or a module answers a non-administrator the fixed
+`Course not found.` / `Module not found.` (policies `require_admin_for_course` / `_module`) - the same
+bytes an administrator gets for an id that does not exist, with no id echoed. The collection routes
+(`GET`/`POST /courses`) answer an employee 403. Modules are addressed by their own id so a route never
+names two resources. `tests/test_route_policies.py` pins every training route's policy and compares
+the bytes. The tests that need a real `COMMIT` (re-render, source deletion, rollback, clean-up
+failure, reorder, constraint, and the enrolment races) are `tests/test_training_committed.py` and
+`tests/test_training_enrolments_committed.py`; they create `qa-training-*` users and projects and
+remove exactly those, and they run on a **scratch database** (below).
+
+**A nested collection is as resource-dependent as the resource.** `GET /courses/{course_id}/modules`
+and `GET /courses/{course_id}/enrolments` do not end in an identifier, but what they answer depends on
+whether that course exists, so they carry `require_admin_for_course` and an employee gets the same
+fixed `Course not found.` 404 for a real course and a made-up one. The route-policy test decides by
+the presence of `{course_id}` / `{module_id}` / `{project_id}` *anywhere* in the path, and pins every
+training route by name.
+
+### Enrolments and employee access (Piece 3)
+
+Administrator routes (all under `/v1/admin/training`; policy in brackets - `admin_course` = an
+employee gets the fixed course 404, `admin` = a collection, an employee gets 403):
+
+| Route | Does |
+|---|---|
+| `POST /courses/{course_id}/enrolments` `{user_id}` (`admin_course`) | **enrol, or re-enrol**: 201 new, **200 when the user's withdrawn enrolment is made active again** (same row), 409 already enrolled / course archived, 422 not an employee, 404 unknown user or course |
+| `GET /courses/{course_id}/enrolments` (`admin_course`) | a course's enrolments (`?status=active\|withdrawn`, paginated) |
+| `POST /courses/{course_id}/enrolments/{user_id}/withdraw` (`admin_course`) | 200, the row is kept with status `withdrawn`; 409 already withdrawn; 404 no such enrolment |
+| `GET /enrolments?user_id=` (`admin`) | one user's enrolments across courses; `user_id` is a **query** parameter so the route names no resource in its path |
+
+The five administrator capabilities (enrol, list a course's, list a user's, withdraw, re-enrol) are four
+routes: re-enrolling is enrolling someone who has a withdrawn row, so it is the same `POST` rather than a
+second route with the same effect.
+
+Employee routes (`/v1/training`, read-only, no `Idempotency-Key`):
+
+| Route | Does |
+|---|---|
+| `GET /courses` (`employee`; an administrator gets 403) | the caller's own published, actively-enrolled courses, each with its **published** modules and for every module `locked` plus `lock` (`reason`, `blocking_module_id`, `blocking_module_position`, `blocking_module_title`). No user id is accepted: the caller is the token |
+| `GET /modules/{module_id}/video` (`employee_module`) | streams the module's **own snapshot** with `Range`, through `api.video_response.serve_module_video` |
+
+**Enrolment rules.** Only a user whose `role` is `employee` can be enrolled (422 otherwise, checked in
+the service - a CHECK cannot see another table - and nothing is written). One row per `(course, user)`
+for ever: withdrawing sets `status = 'withdrawn'` in place, re-enrolling sets it back to `active` in
+place (same id, same `created_at`, `assigned_by` becomes the re-enrolling administrator; the audit
+trail keeps who did what: `training.enrolment.created` / `.withdrawn` / `.reactivated`). The row is
+created by `INSERT ... ON CONFLICT DO NOTHING` on `uq_course_enrolments_course_id_user_id`, so the
+database decides a race, never a prior look: of N simultaneous enrolments of one person exactly one is
+201 and the rest are 409 (`tests/test_training_enrolments_committed.py`, real concurrent
+transactions). Enrolling holds a shared lock on the course row, so it cannot interleave with an archive
+or a delete of the course. There is no deferred constraint in enrolment, and the unique conflict is
+absorbed by `ON CONFLICT`, so no `IntegrityError` can surface at the commit that the idempotency
+wrapper makes after the handler; a commit that fails for any other reason releases the key and writes
+nothing (tested). An enrolment that is already true is a **409** under a *different* key (a replay of
+the same key returns the first result).
+
+**404 versus locked 403.** Five causes give one identical 404 (status, body bytes and headers; `Module
+not found.`), tested byte for byte: no such module, not enrolled, enrolment withdrawn, course not
+published (draft or archived), module not published - and an administrator calling the employee route.
+None of them is listed in `GET /courses`. The one 403 about a resource is **`module_locked`**: the
+employee *is* enrolled, the course and module are published, and an earlier published module has not
+been passed. It is allowed to say so because the module is already in their own listing; the body is
+`{"error": {"code": "module_locked", "message": ..., "details": {"blocking_module_id",
+"blocking_module_position", "blocking_module_title"}}}`. Access is decided by one pure function
+(`domain.training_access.decide_module_access`) applied by `services.training_access`, for both the
+listing and the stream, so they cannot disagree. **`passed_module_ids` still returns the empty set**
+(no assessment exists), so an enrolled employee can open module 1 and every later module is locked;
+`tests/test_employee_training_api.py` pins that and fails visibly when Step 3 changes it.
+
+**One serving function.** The preview and the employee stream both end in
+`api.video_response.serve_module_video` (snapshot lookup, `Range` parsing, 206 / 416, `Accept-Ranges`,
+`Content-Range`, the 404 for a module with nothing to play). The Range suite is the preview's, run
+once; a structural test proves neither route serves by itself. Revocation is checked per request: a
+withdrawal stops the next request, a download already in flight finishes.
+
+**Test isolation: the scratch database.** `audit_logs` is append-only by design (a trigger rejects
+`DELETE`), so any test that really commits writes audit rows that nothing can remove. Those tests grew
+the development database's `audit_logs` from 301 to 1,336 rows. They now use
+`conftest.committed_database_url`: a database created for the test session, migrated by the real
+`alembic upgrade head`, and dropped at its end. The ordinary `db_session` tests roll back and write
+nothing. The same applies to the other tests that reach the application's process-wide engine
+(worker, stale-job recovery, services that really commit): module-level detection points that engine
+at the scratch database. Limits: it protects only tests that reach the database through those paths
+(`world` asserts it is not the development database); Redis is still shared, so tests keep to their
+own keys; existing audit rows were left alone.
+
+**Test isolation: scratch object storage.** The development buckets (`edutoon-uploads`,
+`-segments`, `-outputs`, `-assets`) are never touched by a test session (`tests/storage_isolation.py`,
+regression test `tests/test_storage_isolation.py`). At import of `tests/conftest.py` the four `BUCKET_*`
+settings are *overwritten* (never defaulted: `.env` and the shell cannot win) with per-session scratch
+buckets `edutoon-test-<run id>-<purpose>`; `pytest_sessionstart` creates them and `pytest_sessionfinish`
+empties and deletes exactly those. Every `Storage` built in the process (`Storage.__init__` is wrapped)
+refuses, before any request is built, an operation whose `Bucket` or `CopySource` is not one of the four
+scratch buckets - protected, hard-coded or unknown alike - so a test cannot fall back to a development
+bucket by any route, including a raw `storage._client` call. Dedicated buckets rather than a key prefix:
+the storage layer addresses `(bucket, key)` everywhere and has no namespace, so a prefix could not be
+enforced in one place. Limits: a session killed hard leaves its `edutoon-test-*` buckets (empty or not)
+behind - harmless, and deliberately not swept by later sessions, because a session removes only what it
+created; `scripts/verify_phase10.py`, `verify_phase11.py` and `smoke_test_phase4.py` are manual
+verification scripts, not tests, and still use the development buckets. The upload path is unchanged:
+write the object, then insert the row.
+
+### Training assessments (Step 3, migration 0021)
+
+One optional **assessment per module**: single-correct multiple choice, 1-50 questions of 2-6 options
+(`domain/training_assessment.py` holds every limit and the grading). Design and the list of decisions:
+`docs/training-platform-design.md`, "Step 3".
+
+- **Authoring** (administrators): `PUT /v1/admin/training/modules/{module_id}/assessment` replaces the
+  whole assessment (threshold 1-100, default 70, stored on the assessment) as a **draft**; it is a 409
+  while the assessment is published, even with no attempts. `GET` returns it with `is_correct` and its
+  `status` / `published_at`; `DELETE` is allowed for a draft or published assessment and is 409 once it
+  has attempts. `POST .../assessment/publish` re-validates the whole assessment (422 if it has no
+  questions, a question outside 2-6 options, or not exactly one correct option; 1-50 questions), makes it
+  live and returns `active_enrolments_affected`; `POST .../assessment/unpublish` returns it to a draft
+  and is 409 once anyone has attempted it. An attempted assessment is therefore frozen for good.
+- **Taking it** (employees): `GET /v1/training/modules/{module_id}/assessment` returns the questions with
+  no key; `POST .../assessment/attempts` (`Idempotency-Key`) submits **every** answer once, is graded in
+  that request and recorded; `GET .../assessment/attempts` lists the caller's own attempts. The
+  response is the integer score (`correct_count`, `question_count`), the `threshold_percent` it was
+  graded with and `passed` - never which answers were right. The history carries no question or option
+  id and no wording either, so it has nothing to tell the right option apart (`tests/test_assessments_api.py`,
+  `test_an_employees_attempt_history_shows_their_outcome_and_nothing_that_reveals_the_key`). It does not
+  echo the options the employee chose. The score itself is still information: with unlimited retakes an
+  employee could probe the key one answer at a time - no attempt limit or cooldown exists (a product
+  decision, not made).
+- **Draft and published.** Only a published assessment is visible to employees (a draft is the same
+  byte-identical `Assessment not found.` 404 as every other unreachable cause, on all three employee
+  routes) and only a published one counts toward the pass gate, so a draft never blocks the next module.
+  Publishing deliberately starts gating the enrolled employees. An unpublished module's assessment is
+  hidden and blocks nothing too. (Migration 0021 carries `status` and `published_at`; it was edited in
+  place before it had been applied to any persistent database.)
+- **Grading** is integer-only: `passed <=> correct * 100 >= threshold_percent * question_count`
+  (7/10 and 70/100 pass a 70% gate; 69/100 and 2/3 do not). A submission with a missing, repeated,
+  unknown or foreign answer is a 422 and writes nothing.
+- **History is immutable.** An attempt is inserted already graded together with the question set,
+  options, key and threshold used (`assessment_attempt_answers` has no foreign key into the authoring
+  tables), so editing the assessment never changes a recorded attempt. `reject_mutation` triggers refuse
+  any UPDATE/DELETE, a CHECK ties `passed` to the integers, and no code under `src` issues an UPDATE or
+  DELETE for these tables (`tests/test_architecture_rules.py`).
+- **Progression.** `services.training_access.passed_module_ids` returns the modules with a passing
+  attempt - sticky, a later failed retake changes nothing. A module with no assessment blocks nothing:
+  module N is open once every lower-positioned module that has an assessment is passed.
+- **Deleting and reordering.** `DELETE .../modules/{id}` and `PUT .../courses/{id}/modules/order` are 409
+  once an attempt exists (the reorder message says to create a new course); the foreign keys from
+  attempts to modules, users and assessments are `ON DELETE RESTRICT` (migration 0021's docstring
+  explains why, citing 0018).
+- **Known limitations (Step 3, as built).**
+  1. *An attempted assessment is frozen for good.* It is published, `PUT` is a 409 while published, and
+     unpublishing is a 409 once anyone has attempted it - so its questions and threshold can never be
+     changed again. Fixing a wrong question means a new module (or course) with a new assessment.
+  2. *The key can be inferred by repeated attempts.* A result is the integer score, and there is no
+     limit on retakes and no cooldown, so an employee can vary one answer at a time and watch
+     `correct_count` move. Nothing in a single response reveals the key; the score across attempts
+     does. An attempt limit, a cooldown or shuffled options would be a product decision.
+  3. *The history does not show an employee which options they chose.* It is outcome-only (number,
+     score, threshold, verdict, time). The chosen options are recorded
+     (`assessment_attempt_answers.selected_option_id`) but no route returns them, so an employee cannot
+     review their own answers.
+- **Two correct options cannot be stored.** `assessment_answer_keys` has one row per question (its
+  primary key), so a question with two correct options is unrepresentable in the database. Saving
+  refuses it (422) before anything is written, and publishing re-checks the stored questions with the
+  same rule; because no real data can hold that state, the publish test for it injects the state at
+  the one place publish reads the questions (`list_admin_questions`). The other publish-time
+  flaws (no questions, one option, no correct option) are produced by deleting rows underneath a
+  stored draft.
+- **Concurrency.** The module row is the one serialisation point. Publish, unpublish, save and delete
+  take the course row and then the module row `FOR UPDATE` before they read anything; a submission takes
+  the module row `FOR KEY SHARE` first, then reads the assessment, and inserts its attempt under that
+  lock. They conflict, so an unpublish racing a submission is either wholly after it (it waits, sees the
+  attempt, 409) or wholly before it (the submission waits, then finds a draft, 404): an assessment with
+  an attempt is never a draft. The *same order* matters: an earlier version had the submission lock the
+  assessment row first, reaching the module only through the attempt's foreign key, and
+  `test_a_submission_paused_before_its_insert_neither_deadlocks_nor_loses_to_an_unpublish` reproduced
+  Postgres aborting one of the two with a deadlock error - that is why there are no row locks on the
+  assessment itself any more (they were redundant once the module is the serialisation point, and an
+  assessment-row lock is what created the opposite order). Proved with real overlapping transactions in
+  `tests/test_training_assessments_committed.py`; the mutation runner kills a submission that does not
+  lock the module, one that locks it after reading, and administrator operations that do not lock it.
+- **404 for assessment routes.** Seven causes (no module, not enrolled, withdrawn, course or module not
+  published, not an employee, no assessment) give the byte-identical `Assessment not found.`; a locked
+  module is the 403 `module_locked`.
+- **Tests**: `tests/test_assessments_api.py`,
+  `test_domain_training_assessment.py`, `test_migration_0021_upgrade_downgrade.py` (up/down/up, also
+  with attempt data present), and the pinned route tables in `test_route_policies.py` and
+  `test_training_route_security.py`. The development database stays at 0020 until you run
+  `make migrate` - and until then the assessment API tests (which use the shared database, rolled
+  back) fail with `relation "assessments" does not exist`; to run the suite without touching the
+  development database, point `DATABASE_URL` and `DATABASE_DIRECT_URL` at a scratch database that
+  `alembic upgrade head` has migrated.
+
+## Formatting
+
+Python is formatted with `ruff format` (line length 100); the whole tree is formatted, and `make lint`
+runs `ruff check` and `mypy` (run `uv run ruff format --check .` to see drift). The one commit that
+reformatted the tree is listed in `.git-blame-ignore-revs` at the repository root so `git blame` skips it:
+once per clone, run `git config blame.ignoreRevsFile .git-blame-ignore-revs` (GitHub reads the file by
+itself). Any later whole-tree format should be its own commit, added to that file.
 
 ## Project generation settings
 
@@ -105,7 +451,10 @@ lock out of a model call's transaction.
 ## Deleting a project
 
 `DELETE /v1/projects/{id}` removes the project and, through `ON DELETE CASCADE`, its sources,
-topics, jobs, claims and scripts. It also removes the PDFs the project uploaded from object
+topics, jobs, claims (with their citations), scripts (with their segments, claim links, audio,
+scenes and render rows). Two foreign keys used to be `RESTRICT` and made this fail for any project
+with claims - `claim_citations -> source_chunks` and `script_segment_claims -> claim_verifications`;
+migration 0018 made them `CASCADE`, and nothing else about deletion changed. It also removes the PDFs the project uploaded from object
 storage, which the rows only pointed at. The order matters, because the database is the record
 of what exists:
 
@@ -397,6 +746,79 @@ whole script any more), `MAX_CLAIMS_PER_GENERATION` (the whole script's
 claim-count ceiling, distinct from the new per-section one) and
 `SCRIPT_WORDS_PER_MINUTE`.
 
+## PowerPoint decks
+
+A project can be built from a `.pptx` deck (`source_type: "pptx"`). It runs the same stages as a PDF project
+- topics, claims, script, narration, storyboard, video - under the **same job kinds, endpoints and review
+pages**, but **no model writes anything**: the lesson is planned by deterministic code
+(`domain/deck.py`, `deck_text.py`, `deck_plan.py`, `deck_scenes.py`; `services/deck_lesson.py`). It needs no
+provider key, makes no provider call and needs no embeddings. A PDF project never reaches this code: the worker
+routes by the project's source type (`worker.dispatch`), and the PDF services are unchanged.
+
+**Upload.** `POST /v1/projects/{id}/sources` accepts a PDF or a `.pptx` (up to `MAX_UPLOAD_BYTES`, and
+`MAX_DECK_SLIDES` slides, counted before any text is read). The file's *bytes* decide what it is, not its name
+or type: a `.pptx` the browser reported as `application/octet-stream` is accepted, a PDF called `.pptx` is a
+`422`, and an older binary `.ppt` is a `422` that says to save it as `.pptx`. The archive is checked before it is
+opened (entry count and expanded size). A deck that cannot be read, has too many slides, or has no text at all
+(every slide a picture) is recorded as `failed` with a reason, exactly as a PDF is. Hidden slides are skipped;
+every slide keeps its number in the deck, which is the chunk's `page_from`/`page_to`.
+
+**Structure, not flat text** (migration 0017). Each slide is one `source_chunks` row with two renderings: the
+flat `content` every chunk has always had (a citation shows it, and every claim is checked against it) and a new
+`structure` (`jsonb`) holding what the slide is made of - title, paragraphs, bullets with their level, numbered
+steps, tables, speaker notes. The generator reads the structure; nothing else changed about chunks.
+
+**Topics** (`extract_topics`). The deck's own section-header slides name the topics; with none, neighbouring slides
+are cut into balanced runs of three or so. No more than `MAX_SCRIPT_SECTIONS` topics and six slides to a topic.
+Each topic cites the slides it covers and is saved `accepted` (it can still be rejected or renamed on the review
+page before the script is written). Title, agenda, closing ("Thank you", "Questions") and empty slides shape the
+lesson but are not narrated point by point.
+
+**Claims** (`extract_claims`). Every statement a slide makes - a bullet, a numbered step, a table row, a sentence
+of a paragraph or of the speaker notes - becomes a claim, `supported` because it is *quoted* from the slide
+(`domain.deck.claim_is_quoted`) and citing that slide's chunk. There is no judge and no embedding, so the ledger
+records the engine, not a model: `llm_model = deck-engine/1`, `embedding_model = none`. Footers repeated across
+slides, URLs, e-mail addresses and presenter instructions in the notes ("click to show the chart") are not
+statements.
+
+**Script** (`generate_script`). The verified statements are fitted to the target length and written as one
+continuous narration. It goes through the same rules as a model-written script
+(`script_provenance.filter_and_validate`: every fact-bearing section cites a supported claim; no number, date or
+name appears that the slides do not contain).
+
+- *Choosing.* If the deck holds more than the target can carry, the lowest-ranked statements are left out first
+  (`score_statement`: definitions, steps and anything with a figure rank higher; later and nested points lower),
+  then whole slides, but never the last slide of a topic. If it holds less, **nothing is added**: the video is
+  shorter than the target and the script page says so. (A 25-minute deck asked to fill 30 minutes is a 25-minute
+  video; the same deck asked for 20 drops statements until it fits.)
+- *One lesson, not a run of slides.* It opens by naming the lesson and what it covers; each topic is introduced
+  and tied to the last ("Now that we have seen X, let's move on to Y"; the last is "Finally, ..."); each slide is
+  introduced by its title with varying lead-ins; short fragment bullets are spoken as one sentence ("This covers
+  slips, trips and falls, including wet floors and loose cables ..."), steps in order ("There are four steps.
+  First, ... Finally, ..."), table rows as comparisons; connectives vary and are never put in front of a
+  proper noun; and it closes with a summary. Wording is plain, short sentences - what a new employee can follow.
+- *Pace.* `DECK_SPEECH_WORDS_PER_MINUTE` (160) sizes the plan. Piper was measured at 163 words a minute on a real
+  deck lesson (145 to 180 by section) and 132 on a longer-worded sample, so the plan is an estimate; the measured
+  narration replaces it.
+
+**Storyboard.** `DeckStoryboardComposer` stands where the model stands in `services.storyboard` (the same
+`compose_storyboard_scenes` call, the same slot and provenance checks on its output). It composes each section's
+scenes **from what the narration says**: the slide is found by which of its statements are spoken, so it does not
+matter if the target or the accepted topics changed since the script was written. A welcome is a title card, a
+slide is its spoken statements as bullets under its own title (about three a scene), the summary is a "Recap".
+Text only: a table is shown as its rows, and a diagram is never invented.
+
+**Not done, on purpose.** Keywords for a deck (the wizard offers none; a keyword topic would have no slide behind
+it); pictures, charts and SmartArt (they carry no text this library exposes, so a picture-only slide is left out);
+an older `.ppt`; a second language; a table as a comparison diagram (the procedural visuals exist, nothing in the
+deck engine produces one yet).
+
+**Verified** (this machine, the real stack, the real worker, no provider key): the sample induction deck
+(13 slides, one hidden) through the browser to a 2-minute MP4, and two large synthetic decks to 25 and 30
+minutes; see the numbers under "Video rendering". `tests/test_deck_api.py` runs the same journey through the real
+API and worker with every provider call made to fail. **Not verified:** how the narration *sounds* to a listener
+(no one has listened to it), a real customer deck, Indian-English pronunciation.
+
 ## Text-to-speech
 
 Phase 8 turns an approved script into narrated audio with
@@ -458,6 +880,16 @@ resulting service is distributed - **this needs a company legal/licensing
 review before any production or customer-facing distribution**, independent
 of whether a genuine Indian-English voice is also added. This is not yet
 reviewed or approved for production use.
+
+**Pace, measured (2026-10-07).** At its trained settings `en_GB-cori-medium` leaves about 250 ms between sentences on its own
+(measured: 120 ms or longer gaps between every pair of sentences) and speaks **163 words a minute on a real deck lesson** (339 words,
+145 to 180 by section) and 132 on a longer-worded sample - the pace depends on the words, which is why a plan is an estimate that the
+measured narration replaces. It is not the cause of the robotic sound, so it is not slowed down by default. What *can* be tuned without
+a paid service is how it speaks: `PIPER_LENGTH_SCALE`, `PIPER_NOISE_SCALE` (pitch variation) and `PIPER_NOISE_W_SCALE` (rhythm
+variation) - the trained values by default, and part of the narration's fingerprint (`providers.tts.engine_version`) when changed.
+Four samples of the same lesson text in different styles are written to `var/samples/voice-sample-*.wav` for someone to **listen
+to and choose**; nothing in this repository has been judged by ear. Whether another free voice sounds more natural, or more Indian, needs
+the same listening (and a download, which was not done).
 
 Settings (all optional, see `core/config.py`): `PIPER_VOICES_DIR` (where
 `make voices` / `scripts/download_piper_voices.py` puts the downloaded
@@ -576,8 +1008,8 @@ configuration.
 ## Video rendering
 
 Phase 10 turns an approved script - with fully measured narration and a complete
-storyboard - into a real, seekable MP4: **H.264 High + AAC-LC, 60 fps**, 1920×1080
-(horizontal) or 1080×1920 (vertical) at `high` quality, and half that size at `low`
+storyboard - into a real, seekable MP4: **H.264 High + AAC-LC, 30 fps**, at most 720p: 1280×720
+(horizontal) or 720×1280 (vertical) at `high` quality, and half that size at `low`
 (a review render). Rendering makes no provider call and needs no key: it reads what
 Phases 8 and 9 stored and produces pictures and bytes. No image is generated. Since
 Phase 11 a scene's diagram is drawn procedurally from its structured `visual` (see
@@ -788,9 +1220,9 @@ one banner "Timings update when narration finishes." and keeps its per-scene sta
 
 | | `high` | `low` |
 | --- | --- | --- |
-| Size | 1920×1080 / 1080×1920 | 960×540 / 540×960 |
-| H.264 | High profile, **level 4.2**, `yuv420p`, BT.709 limited range, CRF 20, preset `medium` | High, **level 3.2**, CRF 30, `veryfast` |
-| GOP / B-frames | 2 seconds = 120 frames, none (a chunk's last frame must be removable without re-encoding) | same |
+| Size | 1280×720 / 720×1280 | 640×360 / 360×640 |
+| H.264 | High profile, **level 3.1**, `yuv420p`, BT.709 limited range, CRF 20, preset `medium` | High, **level 3.0**, CRF 30, `veryfast` |
+| GOP / B-frames | 2 seconds = 60 frames, none (a chunk's last frame must be removable without re-encoding) | same |
 | x264 tuning | `scenecut=0:threads=4:rc-lookahead=10` | same |
 | Audio | AAC-LC, mono, 22 050 Hz (the narration's own format - never widened to stereo / 48 kHz), 96 kb/s target (≈ 109 kb/s achieved) | 64 kb/s target |
 | Container | MP4, `+faststart` (index first: plays and seeks before it has downloaded) | same |
@@ -801,10 +1233,10 @@ works on this machine's RTX 3050 Ti but is not faster (the compositor, not the e
 bottleneck - 190 fps vs 220 fps for libx264 on a 1080p chunk) and produced 66% larger files
 (138 KB vs 83 KB for the same chunk), so `libx264` stays the default.
 
-**60 fps** (it was 30 through Phase 11; the change and why the H.264 level had to change with it
-are in "Reliability and safety before the first real-provider run"). Level 4.2 / 3.2 are the lowest
-valid levels for 1080p and 540p at 60 fps, derived from the frame size rather than trusted
-(`domain.render.minimum_level_idc`). Slides, fades and slide-ins are smoother, and web/phone playback
+**720p at 30 fps** (the output specification: at most 720p; it was 1080p at 60 fps from the pre-API pass
+to 2026-10-07, and 1080p at 30 before that - `RENDERER_VERSION` is `pillow-ffmpeg/5`). Level 3.1 / 3.0 are
+the lowest valid levels for 720p and 360p at 30 fps, derived from the frame size rather than trusted
+(`domain.render.minimum_level_idc`); the 1080p/60 figures in the tables below are history. Slides, fades and slide-ins are smoother, and web/phone playback
 is frame-rate agnostic. Phase 9 stores no frame rate; only the render configuration does.
 
 x264's default thread count (one frame-thread per logical core, 20 here) held ~2 GB of frames in
@@ -835,7 +1267,7 @@ fields are a 422) answers `202` with a `render_video` job and an **estimate** (s
 video length, expected size). It refuses, before any work and with a message that says what to do:
 a script that is not approved (409); narration missing, stale or in another format; a storyboard
 that is incomplete or stale; scenes whose timings do not tile their segment; a video longer than
-`MAX_RENDER_DURATION_MS` (10 minutes today - the design does not depend on the number); another render
+`MAX_RENDER_DURATION_MS` (30 minutes today - the design does not depend on the number); another render
 already queued or running for the project (409); or too little free disk space in `RENDER_WORK_DIR`
 (507; checked again by the worker). It needs an `Idempotency-Key` (1–255 characters).
 
@@ -989,6 +1421,21 @@ was left as it was: over-estimating is the safe direction for a free-space check
 **Not measured:** GPU use (libx264 does not use it; it was not sampled in this run, and Phase 10 sampled 0%); a render at
 exactly the 10:00 ceiling (the longest was 9.7 minutes, 581 977 ms); any render longer than that; `h264_nvenc` at 60 fps.
 
+### Measured at 720p / 30 fps (2026-10-07, PowerPoint decks, the real stack, no provider key)
+
+Real API, real worker, Piper, the Pillow compositor and FFmpeg on the development machine (i7-12700H, libx264). Every file
+was checked by the render job's own `ffprobe` gate before it was published: H.264 **High, level 3.1**, 1280x720 `yuv420p`,
+constant 30/1, `+faststart`, AAC mono 22.05 kHz, video frames exactly `round(narration_ms * 30 / 1000)`.
+
+| Lesson | Narration (measured) | Narrating | Storyboard | Render | File | Frames |
+| --- | --- | --- | --- | --- | --- | --- |
+| sample induction deck, 9 sections | 125.0 s | 9.1 s | 0.2 s | 9.8 s | 4.3 MB | 3 750 / 3 750 |
+| synthetic deck, 72 sections (nothing dropped) | 25.2 min (1 510 202 ms) | 98.9 s | 6.1 s | 99.0 s | 62.9 MB | 45 306 / 45 306 |
+| synthetic deck asked for 30:00, 82 sections | 28.8 min (1 730 747 ms) | 82.6 s | 4.1 s | 105.0 s | 71.1 MB | 51 922 / 51 922 |
+
+Video and audio durations agreed to within 14 ms in every file. Not measured this time: peak memory, vertical or `low` renders at length,
+a render at exactly 30:00 (the ceiling check and the frame arithmetic - unit-tested to 60 minutes - allow it).
+
 ### Not decided / not verified
 
 - **H.264 and AAC patent licensing, and distributing an FFmpeg build that contains libx264 (GPL),** are business/legal decisions.
@@ -1028,6 +1475,9 @@ application has no billing and does not try to reproduce the providers'; the in-
 stop a runaway, not a budget.
 
 ### 60 fps, and an H.264 level that is valid for it
+
+> **Superseded 2026-10-07.** The output specification is now at most 720p at 30 fps (`pillow-ffmpeg/5`; see "Encoding"). The
+> reasoning about levels below is unchanged and is what the 720p/30 levels were derived with; the 60 fps figures are history.
 
 The production frame rate is a constant **60 fps** (`domain.render.FPS`; it was 30). The change is not
 the constant: an H.264 stream signals a *level* that bounds its macroblock rate, and a decoder may
@@ -1152,20 +1602,23 @@ chunks, and is not queued for indexing; a source's `failure_reason` (derived, no
 could not be read, was too long, or had no text. The whole file is still held in memory while it is
 stored and parsed (up to 100 MB): streaming it is future work.
 
-### Keyword-only projects are switched off
+### Keyword-only (topic-only) projects - removed
 
-**Implemented** (`KEYWORD_ONLY_PROJECTS_ENABLED`, default `false`). With keywords and no material there is
-nothing to verify against, so a keyword-only project cannot produce a verified script. Creating one is a 400,
-a topic extraction from keywords alone is refused at enqueue and again when the job runs, and the wizard's
-Keywords card is disabled with an explanation; an existing keyword-only project shows a clear "not supported
-yet" stage. PDF projects, with or without keywords, are unaffected; no data model was removed. If the mode
-returns it should be a separate mode that says its output is unverified.
+Removed 2026-10-18 (owner's scope decision: exactly five modes, all grounded in a document or pasted text).
+There is no setting: creating a `topic` project is a 400, and a topic extraction with keywords and no parsed
+material is refused at enqueue and again when the job runs (`domain.topic.KEYWORD_ONLY_UNSUPPORTED`). The
+general-knowledge claim path (`services/general_knowledge`, the spoken notice, `include_general_knowledge`)
+was deleted. Projects of that kind that already exist stay listed and their old `general_knowledge` claims
+stay readable (migration 0022's status remains allowed), but they cannot progress. PDF and pasted-text
+projects, with or without keywords, are unaffected.
 
 ### Duration: any length, up to what can actually be made
 
 The model, the database and the API schema hold milliseconds and accept 1 to 60 minutes. What is
-*supported end to end* is what rendering was built and verified to: `MAX_RENDER_DURATION_MS`, **10 minutes**.
-The web app offers any whole number of seconds from 1:00 to 10:00 (never presets) and says longer videos
+*supported end to end* is `MAX_RENDER_DURATION_MS`, **30 minutes** (the product's maximum; it was 10 until
+2026-10-07, and the scene ceiling `MAX_SCENES_PER_SCRIPT` was raised from 300 to 1200 - exactly 200 segments
+of 6 scenes - when a 25-minute, 72-section deck counted 432 and was refused). The longest video actually rendered
+and checked is 28.8 minutes (below). The web app offers any whole number of seconds from 1:00 to 30:00 (never presets) and says longer videos
 are not supported yet; script generation, the first paid step, refuses a longer target. Raising that
 setting lifts the limit in the API; the web app mirrors it in `lib/generation-settings.ts`.
 
@@ -1185,7 +1638,7 @@ Done: deleting a project removes its PDFs, narration audio and render objects (a
 render prunes the chunks it no longer uses; a worker sweeps the scratch directories a killed render left
 behind (`sweep_abandoned_work_dirs`, narrowly matched and age-guarded). **Deferred, on purpose:** the narration audio
 and rendered videos of a *superseded* script stay in storage until the project is deleted (about 26 MB of audio
-and 32 MB of video per ten minutes per regeneration) - a collector must be written and tested with care because it
+and 32 MB of video per ten minutes per regeneration, at the old 1080p60 size) - a collector must be written and tested with care because it
 deletes, and a bucket lifecycle rule is the simpler stop-gap; an object orphaned by a crash between an upload and its row
 is overwritten by a retry or, otherwise, only by a lifecycle rule.
 
@@ -1207,6 +1660,178 @@ length. Expanding these is a later, targeted task after the first controlled rea
 
 Planned, not done: a controlled educational PDF, a 3-5 minute target, the current model, usage and stop-reason
 capture, a provenance review, measured against target duration, and a manual review of the video.
+
+## Local AI backend (free, no API key)
+
+`AI_BACKEND=local` makes the language-model and embedding calls go to an [Ollama](https://ollama.com)
+server on this machine instead of Anthropic and OpenAI: no key, no recurring cost, and nothing leaves
+the machine. `AI_BACKEND=cloud` (the default) is unchanged. Everything else - Postgres, MinIO, Piper,
+FFmpeg, the PowerPoint path - was already local.
+
+**How it fits.** The whole backend is `providers/ollama.py`, behind the two factories
+(`llm_from_settings`, `embeddings_from_settings`). It offers the one method `LLM` calls on an Anthropic
+client and the one `Embeddings` calls on an OpenAI client and returns what those SDKs would, so every
+prompt, response check, id filter and domain rule runs unchanged:
+
+- **Structured output, not a forced tool call.** Ollama's Anthropic-compatible endpoint has no
+  `tool_choice`, and every language task here is a forced tool call. The tool's own `input_schema` is
+  sent as Ollama's `format` (grammar-constrained JSON) and the reply is wrapped as a `tool_use` block.
+- **Refused rather than trusted.** A reply cut off at the output limit is the existing "cut off" error.
+  A prompt that fills the context window (`OLLAMA_NUM_CTX`) is refused: Ollama would silently drop the
+  start of it. An embedding input too long for the model is an error (`truncate: false`).
+- **Embeddings are zero-padded to 1536.** The column is `vector(1536)`; a narrower local model's vectors
+  are padded with zeros, which changes no dot product and no norm and so no cosine similarity (a test
+  shows it). A wider one is an error. No migration.
+- Failures are `LocalModelError` (a kind and a status, never the server's text) with fixed messages;
+  unreachable, timed-out and 5xx are retried by the one existing policy, a missing model is not.
+
+**Set up** (nothing here is automatic - install Ollama yourself):
+
+```bash
+ollama pull qwen2.5:7b-instruct   # the language model (about 4.7 GB)
+ollama pull bge-m3                # the embedding model (1024 wide, about 1.2 GB)
+```
+
+```dotenv
+# apps/api/.env  (keep the two placeholder API keys - a local backend never uses them)
+AI_BACKEND=local
+LLM_MODEL=qwen2.5:7b-instruct
+SCRIPT_LLM_MODEL=qwen2.5:7b-instruct   # the same model, so Ollama does not swap models between jobs
+EMBEDDING_MODEL=bge-m3
+# Smaller jobs for a small machine (a 4 GB GPU runs a 7B model partly on the CPU):
+TOPIC_INPUT_BUDGET_CHARS=32000
+MAX_TOPICS_PER_EXTRACTION=12
+MAX_CLAIMS_PER_TOPIC=8
+```
+
+`MAX_CLAIMS_PER_TOPIC` is **how much a lesson can say**: a script may state only what its verified claims
+state, so a topic that has four claims can carry about four facts of narration. It used to be recommended
+as `4` here to keep claim extraction fast; that capped every lesson at roughly 25 to 40 seconds of
+supported narration per topic however long the source was, and was the main reason videos came out much
+shorter than their target (see "Why a video can be shorter than its target"). Each extra claim costs one
+more local-model call to verify. The default is 10; 8 is a reasonable compromise on a small machine.
+
+Then restart the API **and the worker** (a worker started earlier keeps the old settings), and prove it
+works with your models before trusting a project to it:
+
+```bash
+cd apps/api && uv run python scripts/check_local_ai.py
+```
+
+It checks the server and models, embeddings, the claim judge on a supported, a contradicted and an
+unmentioned claim, and the three largest structured answers (topics, candidate claims, storyboard
+scenes), with timings. **Nothing about a local model's quality or speed is verified until it passes
+on your machine** - the unit tests (`tests/test_ollama_backend.py`) prove only how our code handles a
+reply, with the HTTP call stubbed.
+
+**Expect, compared with a cloud model:** slower calls (a job makes many, one after another); weaker
+scripts and storyboards and more rejected answers; and a less reliable claim judge. The judge is the one
+to watch: the code requires a "supported" verdict to cite a passage but does not itself check that the
+passage supports the claim, so a weak model can wrongly approve. Chunks already indexed with another
+embedding model are not comparable with new ones - use a new project after changing `EMBEDDING_MODEL`.
+`OLLAMA_DISABLE_THINKING=True` is only for a model that thinks by default (such as `qwen3`).
+
+## Input modes, OCR, instructions and the sentence-level check (2026-10-17, migration 0024)
+
+**Scanned PDFs (OCR).** `providers/ocr.py` (the only importer of `rapidocr`/`pypdfium2`) draws a page with
+pdfium and reads it with RapidOCR; the ONNX models ship inside the wheel, so nothing is downloaded and
+nothing leaves the machine. `services/uploaded_sources._read_scanned_pages` decides when: a PDF in which
+*every* page has next to no text needs OCR (it fails with `ocr_unavailable` / `ocr_too_many_pages`
+(`OCR_MAX_PAGES`, default 30) / `ocr_no_text` / `ocr_failed` if it cannot); a PDF with text but where a fifth
+or more of the pages are empty has those pages OCR'd best-effort. A page counts only if it has at least 20
+letters and a mean line confidence of 0.6. `uploaded_sources` records `extraction_method` (`text`/`ocr`),
+`ocr_page_count` and `failure_code`; the API response carries a plain-language `failure_reason`. OCR runs inline
+in the upload request, one document at a time, about 5 s a page on the reference laptop. Limits: no layout
+analysis, words can run together inside a line, handwriting and tiny print are unreliable.
+
+**Free-text instructions** (`projects.instructions`, at most 2,000 characters). `domain/instructions.py`
+understands audience, tone, definitions, simple examples, a page range, a chapter and focus terms by fixed
+patterns; `services/instructions.py` applies them: a page range or chapter narrows the pages the topic finder
+reads, focus terms put the pages that mention them first when the document is longer than the topic budget,
+audience and tone go to the script writer, and the rest is passed to the topic, claim, script and storyboard
+prompts as fenced guidance that can never add a fact. `ProjectResponse.instructions_notes` says back what was
+`applied`, what is `guidance` only and what is `unsupported` (images, outside facts, language, length, quizzes).
+A PowerPoint deck takes none (no model writes it).
+
+**Keyword coverage.** `GET /v1/projects/{id}/topics/coverage` says, for each keyword the owner typed, whether the
+document backs it: `covered`, `not_in_document` (statements were drafted, none supported), `not_checked`,
+`left_out`. A keyword the document does not back is never taught as if it did; the owner can leave it out.
+
+**Sentence-level support check.** Claim verification is retrieval plus a 7B judge, and a script's own checks are
+citations plus a figures-and-names rule - neither stops a sentence that reuses a claim's words to say something
+else (a photosynthesis script said "plants need water to open their stomata" while its claim said a plant short
+of water *closes* them). Every sentence is now judged against the claims of its section
+(`domain/narration_support.py`, `services/narration_support.py`, `LLM.judge_sentence_support`): one pass that
+reasons about what the sentence adds, and a stricter second pass for a sentence with a cause/requirement/
+importance cue. Measured on the local 7B model (`scripts/check_support_judge.py`): 21 of 23 hand-labelled
+sentences right, and it flags the stomata reversal. It is a model, not a proof. A flagged sentence is rewritten
+once with the reason; one still flagged is removed. A sentence that still breaks the figures-and-names rule, or
+an uncited passage, is likewise removed rather than failing the job. If nothing usable is left, the topic's
+verified claims are read out as they stand (`SCRIPT_FALLBACK_TO_CLAIMS`, on by default; off = the job fails).
+Everything is recorded on the job's `result["support_check"]` (judged, second opinions, unchecked, removed
+sentences with reasons, fallback sections) and shown on the script page. `SCRIPT_SUPPORT_CHECK_ENABLED=false`
+turns the judge off; it adds one to two local-model calls per sentence (minutes per script).
+
+### Why a video can be shorter than its target
+
+The target length is a guide. A script may say only what its verified claims say, so a lesson as long as
+its claims can honestly carry is the most one can ask for; nothing is added to reach the target. The full
+investigation, with the sentences that were read, is `docs/script-length-investigation.md`. What decides the
+length, and what each setting does:
+
+- **How many claims there are.** `MAX_CLAIMS_PER_TOPIC` (default 10) is how many facts one topic can
+  carry. It used to be recommended as 4 for small machines, which capped every lesson at roughly 25 to
+  40 seconds of narration per topic whatever the source; 8 is a fair compromise. The claim prompt asks for
+  every distinct fact the passages state.
+- **Each fact is said once, under the topic it is about.** Neighbouring topics hold the same claims (they
+  are drawn from the same passages, and in a short source every topic is extracted from all of it), so
+  `domain.claim_dedupe` keeps each distinct fact once and places it under the topic - *any* topic, not only
+  one that listed it - that fits it best: title and keywords count double, summary words count once, each
+  word weighted by how rare it is among the lesson's facts; the lesson's own subject word is ignored. A fact
+  that fits nowhere stays with the earliest topic that holds it; a topic is never left with fewer than two
+  claims. The job result records `claims_deduplicated`. (First version scored title words only: "Python" in
+  the first topic's title won every tie, so a pasted-notes lesson taught variables and dictionaries under
+  "Functions" and ended its "Errors" section with the release year.)
+- **No padding pass.** If a script is short *because the checks trimmed unsupported text* and it already
+  cites at least 70% of its claims, it is not re-written with a larger word budget
+  (`domain.script_duration.decide_length_correction`); a script that is too long is always corrected.
+- **A lesson ends.** A script that does not end in a closing gets a fixed one naming the topics it covered
+  (`domain.script_closing`, `SCRIPT_FIXED_CLOSING`, on by default). It carries no figure and is checked
+  against the same figures-and-names rule as everything else, so it cannot fail a generation. The writer's own
+  closing is often a summary that no single claim states, which the support check rightly removes.
+- **Too many passages are joined, not refused.** A section reply with more passages than
+  `MAX_SCRIPT_SEGMENTS` is joined down to it (`domain.script.merge_to_limit`); a reply more than four times
+  over is still rejected.
+- **The job says why.** `result["shortfall_reason"]` is `evidence_limited` (the claims cannot carry more),
+  `writer_short` (claims went unused: write a new version) or absent (the length is as asked), and the script
+  page says so in the owner's words.
+
+What this does **not** do: it does not make the 7B writer or judge reliable. The judge still removes a whole
+sentence when one clause is the problem, still over-flags an occasional fair paraphrase (21 of 23 on the
+labelled set, one false negative and one over-flag), and the writer still repeats itself a little.
+
+### Grounding and placement fixes from the 2026-10-18 verification pass
+
+Each was found by reading a real run against its source, fixed at the smallest point that is deterministic,
+and pinned by a regression test built from that run's own claims or sentences. None loosens a check.
+
+| Found in a real run | Fix | Where |
+| --- | --- | --- |
+| A keyword the document never mentions ("coral bleaching" over an ecosystems chapter) was reported "covered by 4 statements": statements are judged against the *nearest* passages, so true statements about neighbouring topics were supported, and one was even worded as a link to the keyword that no passage makes | A keyword is covered only if the document contains its words; the report names the missing words; a script cannot be written over such a keyword until it is left out | `domain.keyword_coverage.missing_terms`, `services.keyword_coverage`, `services.scripts.enqueue_script_generation` |
+| The judge approved claims while citing a passage that does not contain them: "land clearing ... to make way for agriculture or development" cited a page on energy flow; "tiny living things that we can't see with our eyes" and "herbivores, like cows" were elaborations; "Animals that eat plants are called herbivores" was true but cited the wrong page | A supported claim's wording must be in what it cites (floor 50% of its content words). Below it: re-pointed to the retrieved passage that states it (>= 60%), else `partially_supported`. Scripts apply the same rule to claims already in the ledger. On the 276 supported claims of the fresh runs it flagged 9 elaborations and re-pointed 8 true claims, and none of the 66 / 61 / 16 claims of three other runs | `domain.claim_grounding`, `services.evidence.verify_claim`, `services.claim_backing` |
+| The judge removes a whole sentence for one flourish, losing the only statement of a verified fact ("Temperature changes affect the length of bridge decks"; "suspension bridges can span very long distances") and leaving a dangling "these temperature changes" | A rejected sentence that contains >= 60% (and >= 3) of one verified claim's content words is replaced by that claim's own text, cited, unless the claim is already said. A loosely related sentence is still removed. Recorded as `restated` in the removed-sentence list | `domain.narration_support.restating_claim_index`, `services.scripts._without_unsupported` |
+| A section was left as "Today, we will learn about resistance." alone (a signpost can share a word with a claim), so the lesson never said what resistance is | After removal, a section whose passages are all signposts reads its verified claims out through the existing fallback | `services.scripts` (hollow check after removal) |
+| "Today, we will learn about ..." opened four of ten sections; a topic-only lesson wrapped up before its closing. The prompt rule did not stop a 7B writer | The first announcement stays, repeats and premature wrap-ups are dropped after the sections are written; every section keeps a passage. Recorded as `repeated_openers_removed` | `domain.script_openers` |
+| A judge that cites one passage twice failed every claim of that topic ("This source chunk is already cited by this verification") | Citations are de-duplicated before they are stored | `services.evidence.verify_claim` |
+| The topic-only pipeline panel said "32 claims checked, none supported yet" | It says "32 statements from general knowledge, not checked against a document" | `apps/web/lib/pipeline.ts` |
+
+**Residual risk, measured, not fixed:** the claim judge and the sentence judge are a 7B model. In the fresh
+runs one claim marked supported contradicted the source ("steel is strong in compression but weak in
+tension"; the source says strong in both, and it did not reach the script); a closing-adjacent sentence,
+"This is due to its rotational period matching its orbital period around Earth", reached a lesson although no
+claim or passage says it; and invented everyday examples ("cows eat grass", "things that move, like cars")
+survive. A lexical backstop on each sentence was measured and rejected: the scores of leaks (0.11 to 0.29 of a
+sentence's words in the section's claims) interleave with those of fair sentences (0.14 to 0.33).
 
 ## Testing, and what is not yet verified against a real provider
 
@@ -1235,7 +1860,8 @@ the genuine local MinIO. `pytest.mark.provider_mocked` does not apply to it.
 1. **Keys and models.** That the keys authenticate and that `LLM_MODEL` and
    `EMBEDDING_MODEL` (and the `claude-sonnet-5` default) are available to the
    accounts.
-2. ~~Keywords-only extraction~~ - switched off (`KEYWORD_ONLY_PROJECTS_ENABLED=false`); see "Reliability and safety".
+2. **Keywords-only extraction** - runs on the local model (verified 2026-10-17); against a real provider it is
+   untested. See "Topic-only lessons".
 3. **Long-PDF extraction:** how much of a real document the
    `TOPIC_INPUT_BUDGET_CHARS` sample covers, and the quality of the citations.
 4. **`scripts/smoke_test_phase4.py`**, run unmodified, against the real providers.
@@ -1340,14 +1966,22 @@ both), so set them up before running `make dev`.
    [dashboard.clerk.com](https://dashboard.clerk.com), click **Create
    application**, and give it any name (a free "Development" instance is
    enough for local work).
-2. **Include `email` in the session token.** By default Clerk's session
-   token only carries `sub`; this API's Clerk provider
-   (`src/edutoon/providers/clerk.py`) also requires an `email` claim to
-   provision a `users` row. In the dashboard, go to **Sessions > Customize
-   session token** and add:
+2. **Include `email` (and its verification) in the session token.** By default
+   Clerk's session token only carries `sub`; this API's Clerk provider
+   (`src/edutoon/providers/clerk.py`) requires an `email` claim, and a *first* sign-in
+   (accepting an invitation, or the first administrator) additionally requires
+   `email_verified: true`, because the address must be proven to belong to the person.
+   In the dashboard, go to **Sessions > Customize session token** and add:
    ```json
-   { "email": "{{user.primary_email_address}}" }
+   {
+     "email": "{{user.primary_email_address}}",
+     "email_verified": "{{user.email_verified}}"
+   }
    ```
+   **Unverified:** the exact shortcode for the second claim and whether Clerk emits it as a
+   JSON boolean (the API accepts only a literal `true`) have not been checked against a real
+   Clerk instance. Users who are already linked are unaffected. For invitation-only sign-up,
+   also set the instance's sign-up mode to **Restricted** in the dashboard.
 3. **Find `CLERK_ISSUER`.** In **Configure > API Keys**, copy the
    **Frontend API URL** (looks like `https://your-app-name-12.clerk.accounts.dev`,
    or `https://clerk.<your-domain>` on a production instance with a custom

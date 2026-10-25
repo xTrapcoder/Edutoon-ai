@@ -168,9 +168,7 @@ def _truncate(text: str, max_chars: int) -> str:
 # --- user keywords ---------------------------------------------------------------------
 
 
-def normalise_user_keywords(
-    raw: Sequence[str], *, max_keywords: int, max_length: int
-) -> list[str]:
+def normalise_user_keywords(raw: Sequence[str], *, max_keywords: int, max_length: int) -> list[str]:
     """Clean the keywords a user typed, strictly.
 
     Each is normalised (:func:`normalise_term`); duplicates that differ only in
@@ -522,8 +520,13 @@ def validate_and_build(
       bare root. A seed's title is always the user's own wording, and a seed is
       always a root - a parent the model gave it is ignored.
     - **Hierarchy.** Unknown parents, duplicate refs and cycles raise; depth is
-      assigned from the parent chain and must stay below ``limits.max_depth``;
-      the total may not exceed ``limits.max_topics``.
+      assigned from the parent chain and stays below ``limits.max_depth``; the
+      total does not exceed ``limits.max_topics``. A model that over-nests or
+      over-produces is not failed for it: its own deepest, last topics are dropped
+      until the tree fits (a dropped topic's children move up to its nearest
+      surviving ancestor) and counted in ``dropped_over_limit``. A user topic is
+      never dropped, so only a user who supplied more topics than the limit gets
+      :class:`TopicLimitError`.
     - **Order.** ``nodes`` are in reading order (depth-first, a parent before
       its children). Seeds keep their existing positions and come first; new
       roots follow from ``first_root_position``; children are numbered from 0
@@ -619,6 +622,8 @@ def validate_and_build(
         raise NoTopicsError(
             "No topic survived validation: none of the proposed topics cited the material."
         )
+    dropped_over_limit = _trim_to_limits(entries, limits)
+    survivors -= dropped_over_limit
     if survivors > limits.max_topics:
         raise TopicLimitError(survivors, limits.max_topics)
 
@@ -626,7 +631,48 @@ def validate_and_build(
         mode=mode,
         nodes=_arrange(entries, seeds, has_passages, limits, first_root_position),
         dropped_uncited=dropped,
+        dropped_over_limit=dropped_over_limit,
     )
+
+
+def _trim_to_limits(entries: Sequence[_Entry], limits: TopicLimits) -> int:
+    """Mark model-proposed topics as not surviving until no survivor is at or beyond
+    ``limits.max_depth`` and there are at most ``limits.max_topics`` of them; return how many.
+
+    The victim each time is the deepest remaining model topic, the last proposed among equals, so
+    the model's major early topics are kept. A user topic is never a candidate: it is always a
+    root and always survives. If only user topics remain and there are still too many, nothing
+    more is dropped and the caller raises. Deterministic, and each pass removes exactly one topic,
+    so it terminates.
+    """
+
+    def nearest_survivor(index: int | None) -> int | None:
+        while index is not None and not entries[index].survives:
+            index = entries[index].parent
+        return index
+
+    def depth_of(index: int) -> int:
+        depth = 0
+        parent = nearest_survivor(entries[index].parent)
+        while parent is not None:
+            depth += 1
+            parent = nearest_survivor(entries[parent].parent)
+        return depth
+
+    dropped = 0
+    while True:
+        alive = [i for i, entry in enumerate(entries) if entry.survives]
+        depths = {i: depth_of(i) for i in alive}
+        too_deep = [i for i in alive if depths[i] >= limits.max_depth]
+        if not too_deep and len(alive) <= limits.max_topics:
+            return dropped
+        pool = too_deep or alive
+        candidates = [i for i in pool if entries[i].seed is None]
+        if not candidates:
+            return dropped
+        victim = max(candidates, key=lambda i: (depths[i], i))
+        entries[victim].survives = False
+        dropped += 1
 
 
 def _claim_seeds(
@@ -728,9 +774,7 @@ def _arrange(
             )
         )
         stack.extend(
-            reversed(
-                [(child, index, depth + 1, n) for n, child in enumerate(children.get(i, []))]
-            )
+            reversed([(child, index, depth + 1, n) for n, child in enumerate(children.get(i, []))])
         )
     return tuple(arranged)
 

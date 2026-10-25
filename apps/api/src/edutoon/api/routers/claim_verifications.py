@@ -35,6 +35,7 @@ from edutoon.api.dependencies import (
     RedisDep,
     get_current_user,
 )
+from edutoon.api.policies import require_admin_for_project
 from edutoon.api.schemas.claim_verifications import (
     ClaimExtractionRequest,
     ClaimVerificationListResponse,
@@ -51,7 +52,9 @@ from edutoon.services import projects as projects_service
 from edutoon.services.users import UserRecord
 
 router = APIRouter(
-    prefix="/projects/{project_id}/claim-verifications", tags=["claim-verifications"]
+    prefix="/projects/{project_id}/claim-verifications",
+    tags=["claim-verifications"],
+    dependencies=[Depends(require_admin_for_project)],
 )
 
 CurrentUser = Annotated[UserRecord, Depends(get_current_user)]
@@ -75,9 +78,7 @@ async def create_claim_verification(
         # a non-owned project is a 404): only the lock winner ever touches
         # the session, so a genuine concurrent duplicate is a clean 409
         # rather than two coroutines racing on the same connection.
-        await projects_service.get_project(
-            session, project_id=project_id, owner_id=current_user.id
-        )
+        await projects_service.get_project(session, project_id=project_id, owner_id=current_user.id)
         verification = await evidence_service.verify_manual_claim(
             session,
             embeddings,
@@ -136,9 +137,7 @@ async def enqueue_claim_extraction(
             idempotency_key=idempotency_key,
             replace=replace,
         )
-        return status.HTTP_202_ACCEPTED, JobResponse.from_record(result.job).model_dump(
-            mode="json"
-        )
+        return status.HTTP_202_ACCEPTED, JobResponse.from_record(result.job).model_dump(mode="json")
 
     _, response_body = await idempotency_service.run_with_idempotency(
         redis,
@@ -165,9 +164,7 @@ async def list_claim_verifications(
     the page to claims extracted for that one topic (Phase 6); omitted, every
     verification is returned, manual and extracted alike.
     """
-    await projects_service.get_project(
-        session, project_id=project_id, owner_id=current_user.id
-    )
+    await projects_service.get_project(session, project_id=project_id, owner_id=current_user.id)
 
     page = await evidence_service.list_claim_verifications(
         session, project_id=project_id, topic_id=topic_id, limit=limit, cursor=cursor
@@ -193,9 +190,7 @@ async def get_claim_verification(
     current_user: CurrentUser,
     session: Session,
 ) -> ClaimVerificationResponse:
-    await projects_service.get_project(
-        session, project_id=project_id, owner_id=current_user.id
-    )
+    await projects_service.get_project(session, project_id=project_id, owner_id=current_user.id)
     verification = await evidence_service.get_claim_verification(
         session, verification_id=verification_id, project_id=project_id
     )

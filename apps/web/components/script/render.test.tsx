@@ -69,6 +69,23 @@ function serve(render: ReturnType<typeof renderStatus>, progress = renderProgres
   });
 }
 
+/** Serve one status for the quick preview ("low") and another for Final ("high"). */
+function serveByQuality(by: {
+  low?: ReturnType<typeof renderStatus>;
+  high?: ReturnType<typeof renderStatus>;
+}) {
+  server.use(
+    http.get(`${base}/scripts/:id/render`, ({ request }) => {
+      const quality = new URL(request.url).searchParams.get('quality');
+      return HttpResponse.json(
+        quality === 'high'
+          ? (by.high ?? renderStatus({ quality: 'high' }))
+          : (by.low ?? renderStatus({ quality: 'low' })),
+      );
+    }),
+  );
+}
+
 beforeEach(() => {
   vi.stubGlobal(
     'URL',
@@ -102,7 +119,7 @@ describe('Video (Phase 10)', () => {
     renderProjectPage(<ScriptPage />, 'script');
 
     expect(await screen.findByText('Not ready to render yet')).toBeInTheDocument();
-    expect(screen.getByText(/generate the storyboard first/i)).toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent(/generate the storyboard first/i);
     expect(await screen.findByRole('button', { name: 'Render preview' })).toBeDisabled();
   });
 
@@ -281,16 +298,17 @@ describe('Video (Phase 10)', () => {
         }),
       ),
     );
-    serve(
-      renderStatus({
-        scenes: scenes(['ready', 'ready']),
-        ready_count: 2,
-        needs_render_count: 0,
-        is_complete: true,
-        output_is_current: true,
-        output: renderOutput(),
-      }),
-    );
+    const finished = renderStatus({
+      scenes: scenes(['ready', 'ready']),
+      ready_count: 2,
+      needs_render_count: 0,
+      is_complete: true,
+      output_is_current: true,
+      output: renderOutput(),
+    });
+    serve(finished);
+    serveByQuality({ low: finished }); // only the quick preview has been made
+
     renderProjectPage(<ScriptPage />, 'script');
 
     expect(await screen.findByText('Video: Up to date')).toBeInTheDocument();
@@ -302,6 +320,71 @@ describe('Video (Phase 10)', () => {
     expect(screen.getByText(/960 × 540/)).toBeInTheDocument();
   });
 
+  it('opens on the Final video when one has been made, so a finished video is not shown as missing after a reload', async () => {
+    server.use(
+      http.get(`${base}/scripts/:id/render/video`, () =>
+        HttpResponse.arrayBuffer(new Uint8Array([0, 0, 0, 24, 102, 116, 121, 112]).buffer, {
+          headers: { 'content-type': 'video/mp4' },
+        }),
+      ),
+    );
+    const finalDone = renderStatus({
+      quality: 'high',
+      scenes: scenes(['ready', 'ready']),
+      ready_count: 2,
+      needs_render_count: 0,
+      is_complete: true,
+      output_is_current: true,
+      output: renderOutput({ width: 1280, height: 720 }),
+    });
+    serve(finalDone);
+    serveByQuality({ high: finalDone }); // Final made, no preview
+
+    renderProjectPage(<ScriptPage />, 'script');
+
+    const video = await screen.findByLabelText('Your video', { selector: 'video' });
+    expect(video).toHaveAttribute('controls');
+    expect(screen.getByRole('link', { name: /download mp4/i })).toHaveAttribute(
+      'download',
+      'video-horizontal-high.mp4',
+    );
+    expect(screen.getByRole('radio', { name: /final/i })).toBeChecked();
+  });
+
+  it('stays on the quick preview when no Final video exists', async () => {
+    serve(
+      renderStatus({ scenes: scenes(['ready', 'ready']), ready_count: 2, needs_render_count: 0 }),
+    );
+    serveByQuality({});
+
+    renderProjectPage(<ScriptPage />, 'script');
+
+    await screen.findByRole('radio', { name: /preview/i });
+    expect(screen.getByRole('radio', { name: /preview/i })).toBeChecked();
+    expect(screen.getByRole('radio', { name: /final/i })).not.toBeChecked();
+  });
+
+  it('does not override a quality the person chose themselves', async () => {
+    const finalDone = renderStatus({
+      quality: 'high',
+      scenes: scenes(['ready', 'ready']),
+      ready_count: 2,
+      needs_render_count: 0,
+      is_complete: true,
+      output_is_current: true,
+      output: renderOutput({ width: 1280, height: 720 }),
+    });
+    serve(finalDone);
+    serveByQuality({ high: finalDone });
+
+    renderProjectPage(<ScriptPage />, 'script');
+    await screen.findByRole('radio', { name: /final/i });
+    await userEvent.click(screen.getByRole('radio', { name: /preview/i }));
+
+    await waitFor(() => expect(screen.getByRole('radio', { name: /preview/i })).toBeChecked());
+    expect(screen.getByRole('radio', { name: /final/i })).not.toBeChecked();
+  });
+
   it('marks an out-of-date video as such, offers the previous one, and updates only what changed', async () => {
     server.use(
       http.get(`${base}/scripts/:id/render/video`, () =>
@@ -310,17 +393,18 @@ describe('Video (Phase 10)', () => {
         }),
       ),
     );
-    serve(
-      renderStatus({
-        scenes: scenes(['ready', 'stale']),
-        ready_count: 1,
-        stale_count: 1,
-        needs_render_count: 0,
-        is_complete: false,
-        output_is_current: false,
-        output: renderOutput({ is_current: false }),
-      }),
-    );
+    const outOfDate = renderStatus({
+      scenes: scenes(['ready', 'stale']),
+      ready_count: 1,
+      stale_count: 1,
+      needs_render_count: 0,
+      is_complete: false,
+      output_is_current: false,
+      output: renderOutput({ is_current: false }),
+    });
+    serve(outOfDate);
+    serveByQuality({ low: outOfDate }); // only the quick preview has been made
+
     renderProjectPage(<ScriptPage />, 'script');
 
     expect(await screen.findByText('This video is out of date')).toBeInTheDocument();

@@ -23,6 +23,7 @@ from edutoon.repositories import topic_citations as topic_citations_repo
 from edutoon.repositories import uploaded_sources as uploaded_sources_repo
 from edutoon.repositories import users as users_repo
 from edutoon.repositories.source_chunks import NewSourceChunk
+from tests.storage_isolation import UPLOADS_BUCKET
 
 
 async def _project_with_chunks(db_session, *, chunks: int = 3):
@@ -37,7 +38,7 @@ async def _project_with_chunks(db_session, *, chunks: int = 3):
         db_session,
         project_id=project.id,
         original_filename="notes.pdf",
-        storage_bucket="edutoon-uploads",
+        storage_bucket=UPLOADS_BUCKET,
         storage_key=f"{project.id}/{uuid4()}.pdf",
         byte_size=1024,
         checksum_sha256=uuid4().hex + uuid4().hex[:32],
@@ -62,10 +63,18 @@ async def _project_with_chunks(db_session, *, chunks: int = 3):
     return project, source, sorted(created, key=lambda c: c.chunk_index), topic
 
 
-async def _citation_count(db_session, topic_id=None) -> int:
+async def _citation_count(db_session, topic_id=None, project_id=None) -> int:
+    """How many citations a topic - or a project - has. Always scoped to the test's own rows: the
+    development database may hold real ones, so a count over the whole table proves nothing."""
     stmt = select(func.count()).select_from(topic_citations)
     if topic_id is not None:
         stmt = stmt.where(topic_citations.c.topic_id == topic_id)
+    if project_id is not None:  # through the project's topics (the table has no project column)
+        stmt = stmt.where(
+            topic_citations.c.topic_id.in_(
+                select(project_topics.c.id).where(project_topics.c.project_id == project_id)
+            )
+        )
     return int((await db_session.execute(stmt)).scalar_one())
 
 
@@ -319,7 +328,7 @@ async def test_delete_by_project_clears_every_topics_evidence_including_user_top
     deleted = await topic_citations_repo.delete_by_project(db_session, project.id)
 
     assert deleted == 2
-    assert await _citation_count(db_session) == 0
+    assert await _citation_count(db_session, project_id=project.id) == 0
 
 
 async def test_delete_by_project_leaves_other_projects_evidence_alone(db_session):
@@ -349,7 +358,7 @@ async def test_deleting_a_topic_deletes_its_citations(db_session):
 
     await db_session.execute(delete(project_topics).where(project_topics.c.id == topic.id))
 
-    assert await _citation_count(db_session) == 0
+    assert await _citation_count(db_session, topic.id) == 0
     # ...and the chunk it pointed at is untouched.
     assert await source_chunks_repo.get_by_id(db_session, chunks[0].id) is not None
 
@@ -370,7 +379,7 @@ async def test_deleting_the_source_material_is_not_blocked_by_topic_evidence(db_
 
     await db_session.execute(delete(uploaded_sources).where(uploaded_sources.c.id == source.id))
 
-    assert await _citation_count(db_session) == 0
+    assert await _citation_count(db_session, topic.id) == 0
     assert await source_chunks_repo.get_by_id(db_session, chunks[0].id) is None
     assert await project_topics_repo.get_by_id(db_session, topic.id) == topic
 

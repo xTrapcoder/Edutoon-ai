@@ -24,9 +24,13 @@ class AppError(Exception):
     status_code: int = status.HTTP_500_INTERNAL_SERVER_ERROR
     code: str = "internal_error"
 
-    def __init__(self, message: str | None = None) -> None:
+    def __init__(
+        self, message: str | None = None, *, details: dict[str, Any] | None = None
+    ) -> None:
         super().__init__(message or self.code)
         self.message = message or self.code
+        self.details = details
+        """Optional machine-readable facts for the client, sent as ``error.details``."""
 
 
 class UnauthorizedError(AppError):
@@ -40,11 +44,55 @@ class UnauthorizedError(AppError):
     code = "unauthorized"
 
 
+class ForbiddenError(AppError):
+    """The caller is who they say they are, but this account or role may not do this.
+
+    Only for *capabilities* - a route that needs another role, an account that is suspended,
+    an identity nobody invited. A resource the caller merely does not own is still
+    :class:`NotFoundError` (rule 9): never use this to say "that exists but is not yours".
+    """
+
+    status_code = status.HTTP_403_FORBIDDEN
+    code = "forbidden"
+
+
+class ModuleLockedError(ForbiddenError):
+    """An enrolled employee asked for a training module that an earlier module still blocks.
+
+    The one 403 about a *resource* (rule 9 otherwise says 404): it is allowed because the module is
+    already in the caller's own course listing, so nothing is revealed by saying it is locked.
+    ``details`` names the blocking module so the screen can say what to finish first.
+    """
+
+    code = "module_locked"
+
+
+class NotInvitedError(ForbiddenError):
+    """A valid identity that no administrator invited. No account is created for it."""
+
+    code = "not_invited"
+
+
+class AccountInactiveError(ForbiddenError):
+    """The account exists but is suspended (or deleted)."""
+
+    code = "account_inactive"
+
+
 class NotFoundError(AppError):
     """A resource does not exist, or the caller does not own it (rule 9: never 403)."""
 
     status_code = status.HTTP_404_NOT_FOUND
     code = "not_found"
+
+
+class UnprocessableError(AppError):
+    """The request is well formed but names something the rules refuse (e.g. enrolling an
+    administrator in a course). A 422, like a body that fails validation, but raised by a
+    service."""
+
+    status_code = status.HTTP_422_UNPROCESSABLE_CONTENT
+    code = "unprocessable"
 
 
 class ConflictError(AppError):
@@ -146,15 +194,9 @@ _UNIQUE_CONSTRAINT_MESSAGES: dict[str, str] = {
     "uq_uploaded_sources_project_id_checksum_sha256": (
         "This file has already been uploaded to this project."
     ),
-    "uq_uploaded_sources_storage_bucket_storage_key": (
-        "This storage location is already in use."
-    ),
-    "uq_jobs_project_id_kind_idempotency_key": (
-        "A job with this idempotency key already exists."
-    ),
-    "uq_project_topics_project_id_parent_id_position": (
-        "A topic already occupies this position."
-    ),
+    "uq_uploaded_sources_storage_bucket_storage_key": ("This storage location is already in use."),
+    "uq_jobs_project_id_kind_idempotency_key": ("A job with this idempotency key already exists."),
+    "uq_project_topics_project_id_parent_id_position": ("A topic already occupies this position."),
     "uq_source_chunks_source_id_chunk_index": (
         "A chunk with this index already exists for this source."
     ),
@@ -164,15 +206,18 @@ _UNIQUE_CONSTRAINT_MESSAGES: dict[str, str] = {
     "uq_topic_citations_topic_id_source_chunk_id": (
         "This source chunk is already cited by this topic."
     ),
-    "uq_scripts_project_id_active": (
-        "This project already has an active script."
-    ),
+    "uq_scripts_project_id_active": ("This project already has an active script."),
     "uq_script_segments_script_id_segment_index": (
         "A segment already occupies this index in the script."
     ),
     "uq_script_segment_claims_segment_verification": (
         "This claim is already cited by this script segment."
     ),
+    "uq_training_modules_course_source_render": (
+        "This rendered video is already published in this course."
+    ),
+    "uq_training_modules_video_key": "This module video location is already in use.",
+    "uq_training_modules_course_id_position": "A module already occupies this position.",
 }
 
 
@@ -204,8 +249,13 @@ def raise_conflict_from_integrity_error(exc: IntegrityError) -> NoReturn:
     raise ConflictError(message) from exc
 
 
-def _error_body(code: str, message: str) -> dict[str, dict[str, str]]:
-    return {"error": {"code": code, "message": message}}
+def _error_body(
+    code: str, message: str, details: dict[str, Any] | None = None
+) -> dict[str, dict[str, Any]]:
+    body: dict[str, Any] = {"code": code, "message": message}
+    if details is not None:
+        body["details"] = details
+    return {"error": body}
 
 
 def _validation_error_body(exc: RequestValidationError) -> dict[str, Any]:
@@ -233,7 +283,7 @@ def register_exception_handlers(app: FastAPI) -> None:
     async def _handle_app_error(request: Request, exc: AppError) -> JSONResponse:
         return JSONResponse(
             status_code=exc.status_code,
-            content=_error_body(exc.code, exc.message),
+            content=_error_body(exc.code, exc.message, exc.details),
         )
 
     @app.exception_handler(RequestValidationError)

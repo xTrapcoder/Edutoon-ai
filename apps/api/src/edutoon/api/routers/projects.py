@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from edutoon.api.dependencies import IdempotencyKey, RedisDep, StorageDep, get_current_user
+from edutoon.api.policies import require_admin, require_admin_for_project
 from edutoon.api.schemas.projects import (
     ProjectCreateRequest,
     ProjectListResponse,
@@ -33,13 +34,17 @@ from edutoon.services import projects as projects_service
 from edutoon.services.projects import StorageLocation
 from edutoon.services.users import UserRecord
 
+# No router-level policy: the two collection routes (list, create) name no project and answer a
+# non-administrator 403 (``require_admin``); every route with a ``{project_id}`` answers a
+# non-administrator 404, the same whether or not the project exists
+# (``require_admin_for_project``).
 router = APIRouter(prefix="/projects", tags=["projects"])
 
 CurrentUser = Annotated[UserRecord, Depends(get_current_user)]
 Session = Annotated[AsyncSession, Depends(get_session)]
 
 
-@router.post("", status_code=status.HTTP_201_CREATED)
+@router.post("", status_code=status.HTTP_201_CREATED, dependencies=[Depends(require_admin)])
 async def create_project(
     request: Request,
     body: ProjectCreateRequest,
@@ -58,10 +63,9 @@ async def create_project(
             language=body.language,
             orientation=body.orientation,
             target_duration_ms=body.target_duration_ms,
+            instructions=body.instructions,
         )
-        return status.HTTP_201_CREATED, ProjectResponse.from_record(project).model_dump(
-            mode="json"
-        )
+        return status.HTTP_201_CREATED, ProjectResponse.from_record(project).model_dump(mode="json")
 
     _, response_body = await idempotency_service.run_with_idempotency(
         redis,
@@ -75,7 +79,7 @@ async def create_project(
     return ProjectResponse.model_validate(response_body)
 
 
-@router.get("")
+@router.get("", dependencies=[Depends(require_admin)])
 async def list_projects(
     current_user: CurrentUser,
     session: Session,
@@ -91,7 +95,7 @@ async def list_projects(
     )
 
 
-@router.get("/{project_id}")
+@router.get("/{project_id}", dependencies=[Depends(require_admin_for_project)])
 async def get_project(
     project_id: UUID, current_user: CurrentUser, session: Session
 ) -> ProjectResponse:
@@ -101,7 +105,7 @@ async def get_project(
     return ProjectResponse.from_record(project)
 
 
-@router.patch("/{project_id}")
+@router.patch("/{project_id}", dependencies=[Depends(require_admin_for_project)])
 async def update_project(
     request: Request,
     project_id: UUID,
@@ -131,7 +135,11 @@ async def update_project(
     return ProjectResponse.model_validate(response_body)
 
 
-@router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/{project_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_admin_for_project)],
+)
 async def delete_project(
     request: Request,
     project_id: UUID,
@@ -164,6 +172,4 @@ async def delete_project(
     # Only now - the deletion is committed - are the project's uploaded files removed. A replay
     # of this request does not run ``_execute``, so ``stored_files`` is empty and nothing is
     # removed twice; a failure to remove a file is logged, never surfaced (the project is gone).
-    await projects_service.remove_stored_files(
-        storage, project_id=project_id, files=stored_files
-    )
+    await projects_service.remove_stored_files(storage, project_id=project_id, files=stored_files)

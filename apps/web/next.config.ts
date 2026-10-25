@@ -27,6 +27,10 @@ const qaAliases = uiQaMode
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
+  // UI QA compiles the Clerk stub into its chunks, so it gets a build folder of its own. Sharing
+  // `.next` with the normal dev server leaked the stub into the real app ("useUser can only be used
+  // within the <ClerkProvider />" and a fake token that the API answers with 401).
+  distDir: uiQaMode ? '.next-qa' : '.next',
   // The workspace root, so Next does not guess from a stray lockfile higher up the tree.
   outputFileTracingRoot: path.resolve(process.cwd(), '../..'),
   transpilePackages: ['@edutoon/contracts'],

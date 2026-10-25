@@ -30,6 +30,24 @@ users = sa.Table(
     sa.Column("email", sa.Text, nullable=False),
     sa.Column("display_name", sa.Text),
     sa.Column("status", sa.Text, nullable=False),
+    sa.Column("role", sa.Text, nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+)
+
+invitations = sa.Table(
+    "invitations",
+    metadata,
+    sa.Column("id", UUID(as_uuid=True), primary_key=True, server_default=sa.FetchedValue()),
+    sa.Column("email", sa.Text, nullable=False),
+    sa.Column("display_name", sa.Text),
+    sa.Column("role", sa.Text, nullable=False),
+    sa.Column("status", sa.Text, nullable=False),
+    sa.Column("invited_by", UUID(as_uuid=True), nullable=False),
+    sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("accepted_user_id", UUID(as_uuid=True)),
+    sa.Column("accepted_at", sa.DateTime(timezone=True)),
+    sa.Column("clerk_invitation_id", sa.Text),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
 )
@@ -46,6 +64,7 @@ projects = sa.Table(
     sa.Column("language", sa.Text, nullable=False),
     sa.Column("orientation", sa.Text, nullable=False),
     sa.Column("target_duration_ms", sa.BigInteger, nullable=False),
+    sa.Column("instructions", sa.Text),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
 )
@@ -106,6 +125,9 @@ uploaded_sources = sa.Table(
     sa.Column("checksum_sha256", sa.Text, nullable=False),
     sa.Column("page_count", sa.Integer),
     sa.Column("status", sa.Text, nullable=False),
+    sa.Column("extraction_method", sa.Text, nullable=False),
+    sa.Column("ocr_page_count", sa.Integer),
+    sa.Column("failure_code", sa.Text),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
 )
@@ -123,6 +145,8 @@ source_chunks = sa.Table(
     sa.Column("token_count", sa.Integer),
     sa.Column("embedding", Vector(EMBEDDING_DIMENSIONS)),
     sa.Column("embedding_model", sa.Text),
+    # Migration 0017. A deck slide's structure (domain.deck); NULL for a PDF page.
+    sa.Column("structure", JSONB(none_as_null=True)),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
 )
@@ -225,7 +249,8 @@ script_segments = sa.Table(
 )
 
 # The traceability link back to the Evidence Engine: every row points at a
-# real claim_verifications row (FK ON DELETE RESTRICT).
+# real claim_verifications row (FK ON DELETE CASCADE since migration 0018, so a
+# deleted project takes its script's claim links with it).
 script_segment_claims = sa.Table(
     "script_segment_claims",
     metadata,
@@ -335,4 +360,124 @@ render_output_scenes = sa.Table(
     sa.Column("script_segment_id", UUID(as_uuid=True), nullable=False),
     sa.Column("scene_index", sa.Integer, nullable=False),
     sa.Column("chunk_hash", sa.Text, nullable=False),
+)
+
+training_courses = sa.Table(
+    "training_courses",
+    metadata,
+    sa.Column("id", UUID(as_uuid=True), primary_key=True, server_default=sa.FetchedValue()),
+    sa.Column("title", sa.Text, nullable=False),
+    sa.Column("description", sa.Text),
+    sa.Column("status", sa.Text, nullable=False),
+    sa.Column("created_by", UUID(as_uuid=True), nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+)
+
+training_modules = sa.Table(
+    "training_modules",
+    metadata,
+    sa.Column("id", UUID(as_uuid=True), primary_key=True, server_default=sa.FetchedValue()),
+    sa.Column("course_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("position", sa.Integer, nullable=False),
+    sa.Column("title", sa.Text, nullable=False),
+    sa.Column("description", sa.Text),
+    sa.Column("status", sa.Text, nullable=False),
+    sa.Column("source_render_output_id", UUID(as_uuid=True)),
+    sa.Column("video_bucket", sa.Text),
+    sa.Column("video_key", sa.Text),
+    sa.Column("video_byte_size", sa.BigInteger, nullable=False),
+    sa.Column("video_duration_ms", sa.BigInteger, nullable=False),
+    sa.Column("video_width", sa.Integer, nullable=False),
+    sa.Column("video_height", sa.Integer, nullable=False),
+    sa.Column("video_fps", sa.Integer, nullable=False),
+    sa.Column("video_output_hash", sa.Text, nullable=False),
+    sa.Column("published_by", UUID(as_uuid=True), nullable=False),
+    sa.Column("published_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("unpublished_at", sa.DateTime(timezone=True)),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+)
+
+course_enrolments = sa.Table(
+    "course_enrolments",
+    metadata,
+    sa.Column("id", UUID(as_uuid=True), primary_key=True, server_default=sa.FetchedValue()),
+    sa.Column("course_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("user_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("status", sa.Text, nullable=False),
+    sa.Column("assigned_by", UUID(as_uuid=True), nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+)
+
+
+# --- training assessments (migration 0021) ---------------------------------------------------
+
+assessments = sa.Table(
+    "assessments",
+    metadata,
+    sa.Column("id", UUID(as_uuid=True), primary_key=True, server_default=sa.FetchedValue()),
+    sa.Column("module_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("threshold_percent", sa.Integer, nullable=False),
+    sa.Column("status", sa.Text, nullable=False),
+    sa.Column("published_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("created_by", UUID(as_uuid=True), nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+)
+
+assessment_questions = sa.Table(
+    "assessment_questions",
+    metadata,
+    sa.Column("id", UUID(as_uuid=True), primary_key=True, server_default=sa.FetchedValue()),
+    sa.Column("assessment_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("position", sa.Integer, nullable=False),
+    sa.Column("prompt", sa.Text, nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+)
+
+assessment_options = sa.Table(
+    "assessment_options",
+    metadata,
+    sa.Column("id", UUID(as_uuid=True), primary_key=True, server_default=sa.FetchedValue()),
+    sa.Column("question_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("position", sa.Integer, nullable=False),
+    sa.Column("label", sa.Text, nullable=False),
+)
+
+assessment_answer_keys = sa.Table(
+    "assessment_answer_keys",
+    metadata,
+    sa.Column("question_id", UUID(as_uuid=True), primary_key=True),
+    sa.Column("correct_option_id", UUID(as_uuid=True), nullable=False),
+)
+
+assessment_attempts = sa.Table(
+    "assessment_attempts",
+    metadata,
+    sa.Column("id", UUID(as_uuid=True), primary_key=True, server_default=sa.FetchedValue()),
+    sa.Column("assessment_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("module_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("user_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("attempt_number", sa.Integer, nullable=False),
+    sa.Column("threshold_percent", sa.Integer, nullable=False),
+    sa.Column("correct_count", sa.Integer, nullable=False),
+    sa.Column("question_count", sa.Integer, nullable=False),
+    sa.Column("passed", sa.Boolean, nullable=False),
+    sa.Column("idempotency_key", sa.Text, nullable=False),
+    sa.Column("submitted_at", sa.DateTime(timezone=True), nullable=False),
+)
+
+assessment_attempt_answers = sa.Table(
+    "assessment_attempt_answers",
+    metadata,
+    sa.Column("attempt_id", UUID(as_uuid=True), primary_key=True),
+    sa.Column("position", sa.Integer, primary_key=True),
+    sa.Column("question_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("prompt", sa.Text, nullable=False),
+    sa.Column("options", JSONB, nullable=False),
+    sa.Column("correct_option_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("selected_option_id", UUID(as_uuid=True), nullable=False),
+    sa.Column("is_correct", sa.Boolean, nullable=False),
 )

@@ -41,6 +41,7 @@ from edutoon.repositories.claim_verifications import NewClaimCitation
 from edutoon.repositories.source_chunks import NewSourceChunk
 from edutoon.services import audit_logs as audit_logs_service
 from edutoon.services import scripts as service
+from tests.storage_isolation import UPLOADS_BUCKET
 
 KIND = "generate_script"
 SCRIPT_MODEL = "claude-sonnet-5"
@@ -56,13 +57,13 @@ async def _project_with_supported_topic(db_session):
         db_session, owner_id=owner.id, title="Photosynthesis", source_type="pdf"
     )
     topic = await project_topics_repo.create(
-        db_session, project_id=project.id, title="A topic", status="accepted"
+        db_session, project_id=project.id, title="A topic", status="accepted", origin="source"
     )
     source = await uploaded_sources_repo.create(
         db_session,
         project_id=project.id,
         original_filename="notes.pdf",
-        storage_bucket="edutoon-uploads",
+        storage_bucket=UPLOADS_BUCKET,
         storage_key=f"{project.id}/{uuid4()}.pdf",
         byte_size=1024,
         checksum_sha256=uuid4().hex + uuid4().hex[:32],

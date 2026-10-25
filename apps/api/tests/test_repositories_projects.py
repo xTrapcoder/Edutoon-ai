@@ -85,9 +85,7 @@ async def _stored_settings(db_session, project_id):
     """What is actually in the row, read around the repository."""
     return (
         await db_session.execute(
-            text(
-                "SELECT orientation, target_duration_ms, language FROM projects WHERE id = :id"
-            ),
+            text("SELECT orientation, target_duration_ms, language FROM projects WHERE id = :id"),
             {"id": project_id},
         )
     ).one()

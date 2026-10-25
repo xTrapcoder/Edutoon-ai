@@ -31,7 +31,6 @@ import {
 } from '@/lib/api/queries';
 import { cn } from '@/lib/cn';
 import { formatDateTime, formatDuration, formatElapsed } from '@/lib/format';
-import type { RenderSelection } from '@/lib/render';
 import { languageLabel, orientationLabel } from '@/lib/generation-settings';
 import {
   isActiveJob,
@@ -48,6 +47,7 @@ import {
 } from './script-model';
 import { SegmentAudioPlayer } from './segment-audio-player';
 import { RenderPanel } from './render-panel';
+import { useRenderSelection } from './use-render-selection';
 import { StoryboardPanel } from './storyboard-panel';
 
 interface ScriptStudioProps {
@@ -414,7 +414,7 @@ function ApprovalCard({ project, script }: { project: Project; script: ScriptDet
  * script may be narrated. en-IN projects currently narrate with the same British-English voice as
  * en-GB - a deliberate, explicit temporary substitution, never presented as Indian English.
  */
-function SynthesisCard({ project, script }: { project: Project; script: ScriptDetail }) {
+export function SynthesisCard({ project, script }: { project: Project; script: ScriptDetail }) {
   const approved = script.status === 'approved';
   const { data: status } = useSynthesisStatus(project.id, approved ? script.id : undefined);
   const enqueue = useEnqueueSynthesis(project.id, script.id);
@@ -635,10 +635,7 @@ function DetailsCard({ script }: { script: ScriptDetail }) {
 export function ScriptStudio({ project, script, topics }: ScriptStudioProps) {
   const [selected, setSelected] = useState(0);
   // Which video the render panel and the storyboard's per-scene badges are talking about.
-  const [renderSelection, setRenderSelection] = useState<RenderSelection>({
-    orientation: project.orientation,
-    quality: 'low',
-  });
+  const [renderSelection, chooseRenderSelection] = useRenderSelection(project, script);
   const index = Math.min(selected, Math.max(0, script.segments.length - 1));
   const { data: synthesisStatus } = useSynthesisStatus(
     project.id,
@@ -684,7 +681,7 @@ export function ScriptStudio({ project, script, topics }: ScriptStudioProps) {
           project={project}
           script={script}
           selection={renderSelection}
-          onSelectionChange={setRenderSelection}
+          onSelectionChange={chooseRenderSelection}
         />
         <ProjectSettingsCard project={project} script={script} />
         <DetailsCard script={script} />

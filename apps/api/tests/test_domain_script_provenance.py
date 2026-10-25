@@ -111,9 +111,7 @@ def test_malformed_claim_id_is_dropped_not_raised() -> None:
 
 def test_duplicate_claim_ids_are_deduplicated_in_order() -> None:
     c1, c2 = uuid4(), uuid4()
-    draft = _draft(
-        _segment("Repeats a citation.", [str(c1), str(c2), str(c1), str(c2)])
-    )
+    draft = _draft(_segment("Repeats a citation.", [str(c1), str(c2), str(c1), str(c2)]))
 
     result = filter_and_validate(draft, {c1, c2}, WPM)
 
@@ -182,3 +180,128 @@ def test_empty_draft_validates_to_an_empty_result() -> None:
 
     assert result.segments == ()
     assert result.estimated_duration_ms == 0
+
+
+# --- names that cannot be invented ------------------------------------------------------------
+
+
+def _grounded(narration: str, claim_text: str) -> ValidatedScriptDraft:
+    from edutoon.domain.script_provenance import GroundingReference
+
+    claim = uuid4()
+    return filter_and_validate(
+        _draft(_segment(narration, [str(claim)])),
+        {claim},
+        WPM,
+        grounding=GroundingReference(topic_texts={None: claim_text}, frame_text="A lesson"),
+        claim_texts={claim: claim_text},
+    )
+
+
+def test_earth_sun_and_moon_are_not_names_a_claim_must_contain() -> None:
+    """Regression: a plate-tectonics script failed after two rewrites over the word "Earth" in a
+    section whose claims talk about plates. The planet is not a name that could be invented."""
+    claim = "Plates are pieces of the lithosphere that move slowly over the mantle."
+    result = _grounded("Over millions of years, the plates move across the Earth's surface.", claim)
+    assert len(result.segments) == 1
+    _grounded("Heat from the Sun and the Moon's pull both move the plates.", claim)
+
+
+def test_any_other_capitalised_name_must_still_come_from_the_claims() -> None:
+    from edutoon.domain.script_provenance import UngroundedSegmentError
+
+    claim = "Plates are pieces of the lithosphere that move slowly over the mantle."
+    with pytest.raises(UngroundedSegmentError) as caught:
+        _grounded("The plates move, as Alfred Wegener first argued in Germany.", claim)
+    named = {token for _, token in caught.value.tokens}
+    assert {"Alfred", "Wegener", "Germany"} <= named
+    assert "Earth" not in named
+
+
+# --- a closing is kept without a citation ------------------------------------------------------
+
+
+def test_a_closing_the_writer_did_not_flag_as_connective_is_kept():
+    """Regression: three of four real scripts ended abruptly because the writer's closing ("This
+    concludes our lesson ... we've learned about different types of boundaries") came back with no
+    claim ids and was not flagged connective, so it was dropped whole."""
+    cited = uuid4()
+    draft = ScriptDraft(
+        title="Plate tectonics",
+        segments=[
+            _segment("Plates slide past each other at transform boundaries.", [str(cited)]),
+            _segment(
+                "This concludes our lesson on plate tectonics. We've learned about different "
+                "types of boundaries and the effects they have on our planet.",
+                [],
+                connective=False,
+            ),
+        ],
+        estimated_duration_ms=0,
+    )
+
+    result = filter_and_validate(draft, {cited}, WPM)
+
+    assert [s.connective for s in result.segments] == [False, True]
+    assert result.segments[1].claim_verification_ids == ()
+
+
+def test_an_uncited_passage_that_states_a_fact_is_still_rejected():
+    draft = ScriptDraft(
+        title="Plate tectonics",
+        segments=[_segment("Magma rises to form new crust at ridges.", [], connective=False)],
+        estimated_duration_ms=0,
+    )
+    with pytest.raises(UnsourcedSegmentError):
+        filter_and_validate(draft, set(), WPM)
+
+
+# --- merge_to_limit ----------------------------------------------------------------------------
+
+
+def test_segments_over_the_limit_are_joined_shortest_neighbours_first():
+    from edutoon.domain.script import merge_to_limit
+
+    a, b = uuid4(), uuid4()
+    segments = [
+        _segment("A long first passage with many words in it to keep it apart.", [str(a)], index=0),
+        _segment("Short.", [], index=1, connective=True),
+        _segment("Tiny.", [str(b)], index=2),
+        _segment("Another long passage with just as many words as the first.", [str(a)], index=3),
+    ]
+
+    merged = merge_to_limit(segments, 3, WPM)
+
+    assert [s.narration_text for s in merged] == [
+        "A long first passage with many words in it to keep it apart.",
+        "Short. Tiny.",
+        "Another long passage with just as many words as the first.",
+    ]
+    assert merged[1].claim_ids == [str(b)]
+    assert merged[1].connective is False  # one of the two cited a claim
+    assert [s.segment_index for s in merged] == [0, 1, 2]
+    assert merged[1].estimated_duration_ms == round(2 / WPM * 60_000)
+
+
+def test_two_connective_passages_stay_connective_when_joined():
+    from edutoon.domain.script import merge_to_limit
+
+    merged = merge_to_limit(
+        [_segment("Welcome.", [], connective=True), _segment("Let us begin.", [], connective=True)],
+        1,
+        WPM,
+    )
+
+    assert merged[0].connective is True
+    assert merged[0].claim_ids == []
+
+
+def test_segments_within_the_limit_are_left_alone_and_reindexed():
+    from edutoon.domain.script import merge_to_limit
+
+    segments = [_segment("One.", [], index=5), _segment("Two.", [], index=9)]
+
+    merged = merge_to_limit(segments, 5, WPM)
+
+    assert [s.narration_text for s in merged] == ["One.", "Two."]
+    assert [s.segment_index for s in merged] == [0, 1]

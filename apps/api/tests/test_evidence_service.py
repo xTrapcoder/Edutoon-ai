@@ -33,6 +33,7 @@ from edutoon.repositories.source_chunks import NewSourceChunk
 from edutoon.services import evidence as evidence_service
 from edutoon.services import job_errors
 from tests.leaky_errors import assert_clean, leaky_openai
+from tests.storage_isolation import UPLOADS_BUCKET
 
 # Stands in for an external provider (OpenAI / Anthropic): these tests prove how our code
 # handles a response, never how a real provider behaves. See "Provider-mocked tests"
@@ -94,7 +95,7 @@ async def _make_source(db_session, num_chunks: int = 2):
         db_session,
         project_id=project.id,
         original_filename="notes.pdf",
-        storage_bucket="edutoon-uploads",
+        storage_bucket=UPLOADS_BUCKET,
         storage_key=f"{project.id}/notes.pdf",
         byte_size=1024,
         checksum_sha256=uuid4().hex + uuid4().hex[:32],
@@ -143,9 +144,7 @@ async def test_enqueuing_twice_for_the_same_source_raises_conflict_error(db_sess
 
 async def test_index_source_embeds_every_chunk(db_session, monkeypatch):
     _, source, chunks = await _make_source(db_session, num_chunks=3)
-    embeddings = _fake_embeddings(
-        monkeypatch, {f"chunk {i}": [float(i)] * 1536 for i in range(3)}
-    )
+    embeddings = _fake_embeddings(monkeypatch, {f"chunk {i}": [float(i)] * 1536 for i in range(3)})
 
     count = await evidence_service.index_source(db_session, embeddings, source_id=source.id)
 
@@ -199,9 +198,7 @@ async def test_run_build_evidence_job_succeeds_and_records_the_chunk_count(db_se
         db_session, project_id=project.id, source_id=source.id
     )
 
-    completed = await evidence_service.run_build_evidence_job(
-        db_session, embeddings, job_id=job.id
-    )
+    completed = await evidence_service.run_build_evidence_job(db_session, embeddings, job_id=job.id)
 
     assert completed.status == "succeeded"
     assert completed.result == {"chunks_embedded": 2}
@@ -223,9 +220,7 @@ async def test_run_build_evidence_job_marks_failed_on_embedding_error(db_session
     client.embeddings.create = _boom  # type: ignore[method-assign]
     embeddings = Embeddings(client, model=MODEL)
 
-    completed = await evidence_service.run_build_evidence_job(
-        db_session, embeddings, job_id=job.id
-    )
+    completed = await evidence_service.run_build_evidence_job(db_session, embeddings, job_id=job.id)
 
     assert completed.status == "failed"
     # A bare exception's text is never shown to the owner - only a fixed sentence.
@@ -279,7 +274,7 @@ async def _make_indexed_chunk(db_session, *, project=None, content: str = "The s
         db_session,
         project_id=project.id,
         original_filename="notes.pdf",
-        storage_bucket="edutoon-uploads",
+        storage_bucket=UPLOADS_BUCKET,
         storage_key=f"{project.id}/{uuid4()}.pdf",
         byte_size=1024,
         checksum_sha256=uuid4().hex + uuid4().hex[:32],
@@ -319,6 +314,144 @@ async def test_verify_claim_persists_supported_verdict_with_its_citation(db_sess
     assert verification.status == "supported"
     assert verification.embedding_model == MODEL
     assert verification.llm_model == LLM_MODEL
+    citations = await claim_verifications_repo.list_citations(db_session, verification.id)
+    assert [c.source_chunk_id for c in citations] == [chunk.id]
+
+
+async def test_verify_claim_downgrades_a_supported_claim_that_names_a_place_the_source_lacks(
+    db_session, monkeypatch
+):
+    """Regression: the judge approved "Factory towns in India ..." on the strength of the three
+    English cities, and the claim was stored as supported. A name no passage contains keeps it
+    from being treated as established; its citation and the judge's words are kept."""
+    project, chunk = await _make_indexed_chunk(
+        db_session,
+        content=(
+            "Factory towns grew very fast. Manchester, Birmingham and Leeds filled with workers."
+        ),
+    )
+    claim_text = "Factory towns in India grew rapidly, with workers filling Manchester and Leeds."
+    embeddings = _fake_embeddings(monkeypatch, {claim_text: QUERY_VECTOR})
+    llm = _fake_llm(
+        monkeypatch,
+        {
+            "status": "supported",
+            "rationale": "Passage [p1] says the towns grew very fast.",
+            "cited_passage_ids": [str(chunk.id)],
+        },
+    )
+
+    verification = await evidence_service.verify_claim(
+        db_session, embeddings, llm, project_id=project.id, claim_text=claim_text
+    )
+
+    assert verification.status == "partially_supported"
+    assert verification.rationale is not None
+    assert "Passage [p1] says the towns grew very fast." in verification.rationale
+    assert "'India'" in verification.rationale
+    citations = await claim_verifications_repo.list_citations(db_session, verification.id)
+    assert [c.source_chunk_id for c in citations] == [chunk.id]
+
+
+async def test_verify_claim_downgrades_a_supported_claim_whose_citation_does_not_hold_its_wording(
+    db_session, monkeypatch
+):
+    """Regression (a real run): the judge approved "Humans alter ecosystems through land clearing,
+    which involves removing vegetation to make way for agriculture or development" citing a page
+    about energy flow. A supported claim's wording has to be in what it cites."""
+    project, energy = await _make_indexed_chunk(
+        db_session,
+        content=(
+            "Energy does not recycle through an ecosystem. It flows from the sun to producers "
+            "and is finally lost as heat."
+        ),
+    )
+    claim_text = (
+        "Humans alter ecosystems through land clearing, which involves removing vegetation to "
+        "make way for agriculture or development."
+    )
+    embeddings = _fake_embeddings(monkeypatch, {claim_text: QUERY_VECTOR})
+    llm = _fake_llm(
+        monkeypatch,
+        {
+            "status": "supported",
+            "rationale": "Passage [p1] discusses ecosystems.",
+            "cited_passage_ids": [str(energy.id)],
+        },
+    )
+
+    verification = await evidence_service.verify_claim(
+        db_session, embeddings, llm, project_id=project.id, claim_text=claim_text
+    )
+
+    assert verification.status == "partially_supported"
+    assert "Passage [p1] discusses ecosystems." in verification.rationale
+    assert "of the claim's wording is in the passages it cites" in verification.rationale
+
+
+async def test_verify_claim_points_a_true_claim_at_the_passage_that_states_it(
+    db_session, monkeypatch
+):
+    """Regression (a real run): "Animals that eat plants are called herbivores" was true, and the
+    source says so, but the judge cited a page about energy flow."""
+    project, energy = await _make_indexed_chunk(
+        db_session,
+        content=(
+            "Energy does not recycle through an ecosystem. It flows from the sun to producers "
+            "and is finally lost as heat."
+        ),
+    )
+    _project, consumers = await _make_indexed_chunk(
+        db_session,
+        project=project,
+        content=(
+            "Animals cannot make their own food. Herbivores are animals that eat plants and "
+            "carnivores are animals that eat other animals."
+        ),
+    )
+    claim_text = "Animals that eat plants are called herbivores."
+    embeddings = _fake_embeddings(monkeypatch, {claim_text: QUERY_VECTOR})
+    llm = _fake_llm(
+        monkeypatch,
+        {
+            "status": "supported",
+            "rationale": "Directly stated.",
+            "cited_passage_ids": [str(energy.id)],
+        },
+    )
+
+    verification = await evidence_service.verify_claim(
+        db_session, embeddings, llm, project_id=project.id, claim_text=claim_text
+    )
+
+    assert verification.status == "supported"
+    citations = await claim_verifications_repo.list_citations(db_session, verification.id)
+    assert [c.source_chunk_id for c in citations] == [consumers.id]
+    assert "citation was corrected" in verification.rationale
+
+
+async def test_verify_claim_stores_one_citation_when_the_judge_names_a_passage_twice(
+    db_session, monkeypatch
+):
+    """Regression (a real run): a judge that cited the same passage twice raised "This source chunk
+    is already cited by this verification" and failed every claim of that topic."""
+    project, chunk = await _make_indexed_chunk(db_session, content="The sky is blue.")
+    claim_text = "The sky is blue."
+    embeddings = _fake_embeddings(monkeypatch, {claim_text: QUERY_VECTOR})
+    llm = _fake_llm(
+        monkeypatch,
+        {
+            "status": "supported",
+            "rationale": "Directly stated.",
+            "cited_passage_ids": [str(chunk.id), str(chunk.id)],
+        },
+    )
+
+    verification = await evidence_service.verify_claim(
+        db_session, embeddings, llm, project_id=project.id, claim_text=claim_text
+    )
+
+    assert verification.status == "supported"
     citations = await claim_verifications_repo.list_citations(db_session, verification.id)
     assert [c.source_chunk_id for c in citations] == [chunk.id]
 

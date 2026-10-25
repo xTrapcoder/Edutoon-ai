@@ -53,11 +53,11 @@ def scratch_database() -> Iterator[str]:
         asyncio.run(_admin(base, f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
 
 
-def run_alembic(url: str, *args: str) -> str:
+def run_alembic(url: str, *args: str, env: dict[str, str] | None = None) -> str:
     result = subprocess.run(
         [sys.executable, "-m", "alembic", *args],
         cwd=API_ROOT,
-        env={**os.environ, "DATABASE_DIRECT_URL": url},
+        env={**os.environ, "DATABASE_DIRECT_URL": url, **(env or {})},
         capture_output=True,
         text=True,
         timeout=300,
@@ -102,7 +102,14 @@ def projects_constraints(url: str) -> set[str]:
 
 def add_owner(url: str) -> Any:
     email = f"{uuid4()}@example.com"
-    [row] = sql(url, "INSERT INTO users (email) VALUES (:email) RETURNING id", email=email)
+    # Migration 0019 added ``users.role`` (NOT NULL, no default); older revisions lack it.
+    has_role = sql(
+        url,
+        "SELECT 1 FROM information_schema.columns "
+        "WHERE table_schema = 'public' AND table_name = 'users' AND column_name = 'role'",
+    )
+    columns, values = ("email, role", ":email, 'admin'") if has_role else ("email", ":email")
+    [row] = sql(url, f"INSERT INTO users ({columns}) VALUES ({values}) RETURNING id", email=email)
     return row["id"]
 
 

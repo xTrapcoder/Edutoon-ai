@@ -1,17 +1,34 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
+  fileKindOf,
   fileProblem,
+  instructionsProblem,
   isModeAvailable,
-  KEYWORD_ONLY_SUPPORTED,
-  KEYWORD_ONLY_UNSUPPORTED_MESSAGE,
+  MODE_UNAVAILABLE_MESSAGE,
+  MAX_INSTRUCTIONS_CHARS,
   MAX_KEYWORDS,
+  MAX_TEXT_CHARS,
   mergeKeywords,
+  MIN_TEXT_CHARS,
   projectSourceType,
   settingsErrors,
   sourceErrors,
   suggestTitle,
+  textProblem,
+  usesDeck,
+  usesFile,
+  usesInstructions,
+  usesKeywords,
+  usesText,
   type WizardValues,
 } from './wizard-model';
+
+vi.mock('@/lib/scope', () => ({
+  // These tests exercise the dormant PowerPoint mode too, so they run with every mode offered;
+  // scope.test.tsx holds the real defaults.
+  OFFERED_MODES: ['pdf', 'pptx', 'text', 'both', 'instructions', 'scan'],
+  INSTRUCTIONS_OFFERED: true,
+}));
 
 const pdf = (name = 'notes.pdf', size = 1000, type = 'application/pdf') =>
   new File([new Uint8Array(size)], name, { type });
@@ -21,6 +38,8 @@ const values = (over: Partial<WizardValues> = {}): WizardValues => ({
   mode: 'pdf',
   file: pdf(),
   keywords: [],
+  text: '',
+  instructions: '',
   orientation: 'horizontal',
   durationMs: 300_000,
   language: 'en-IN',
@@ -77,25 +96,62 @@ describe('sourceErrors', () => {
   });
 });
 
-describe('keyword-only projects', () => {
-  it('are not supported yet, and the only mode that is refused', () => {
-    expect(KEYWORD_ONLY_SUPPORTED).toBe(false);
-    expect(isModeAvailable('keywords')).toBe(false);
-    expect(isModeAvailable('pdf')).toBe(true);
-    expect(isModeAvailable('both')).toBe(true);
+describe('the five modes', () => {
+  it('are all available, and each asks only for what it needs', () => {
+    for (const mode of ['pdf', 'pptx', 'text', 'both', 'instructions', 'scan'] as const) {
+      expect(isModeAvailable(mode)).toBe(true);
+    }
+    expect(sourceErrors(values({ mode: 'scan' }))).toEqual({});
+    expect(sourceErrors(values({ mode: 'scan', file: null }))).toEqual({
+      file: 'Choose a PDF to upload.',
+    });
+    expect(sourceErrors(values({ mode: 'instructions', instructions: 'Be brief.' }))).toEqual({});
   });
 
-  it('cannot be submitted even with keywords filled in', () => {
-    const errors = sourceErrors(values({ mode: 'keywords', file: null, keywords: ['a'] }));
-    expect(errors.mode).toBe(KEYWORD_ONLY_UNSUPPORTED_MESSAGE);
-    expect(Object.keys(errors)).toEqual(['mode']);
+  it('send PDF + keywords, PDF + instructions and a scan to the API as PDF projects', () => {
+    for (const mode of ['pdf', 'both', 'instructions', 'scan'] as const) {
+      expect(projectSourceType(mode)).toBe('pdf');
+      expect(usesFile(mode)).toBe(true);
+    }
+    expect(projectSourceType('text')).toBe('text');
   });
 
-  it('say why, and what to do instead, in the same words the API uses', () => {
-    expect(KEYWORD_ONLY_UNSUPPORTED_MESSAGE).toContain(
-      'Keyword-only projects are not supported yet',
-    );
-    expect(KEYWORD_ONLY_UNSUPPORTED_MESSAGE).toContain('Upload a PDF');
+  it('have no topic-only mode, and say what to do when a mode is not offered', () => {
+    expect(isModeAvailable('keywords' as never)).toBe(false);
+    expect(MODE_UNAVAILABLE_MESSAGE).toContain('not offered');
+    expect(MODE_UNAVAILABLE_MESSAGE).toContain('Upload a PDF');
+  });
+});
+
+describe('instructions', () => {
+  it('are asked for only by PDF + instructions, which needs them', () => {
+    expect(sourceErrors(values({ instructions: '' }))).toEqual({});
+    expect(sourceErrors(values({ mode: 'instructions', instructions: '' }))).toEqual({
+      instructions: 'Say how you want the lesson, in your own words.',
+    });
+    expect(
+      sourceErrors(
+        values({ mode: 'instructions', instructions: 'Make it suitable for a beginner.' }),
+      ),
+    ).toEqual({});
+    expect(usesInstructions('instructions')).toBe(true);
+    for (const mode of ['pdf', 'text', 'both', 'scan', 'pptx'] as const) {
+      expect(usesInstructions(mode)).toBe(false);
+    }
+    expect(
+      sourceErrors(values({ mode: 'pptx', instructions: 'x'.repeat(5000), file: pdf('d.pptx') }))
+        .instructions,
+    ).toBeUndefined();
+  });
+
+  it('are refused over the limit, with the limit in the message, counting collapsed spaces', () => {
+    expect(instructionsProblem('x'.repeat(MAX_INSTRUCTIONS_CHARS))).toBeNull();
+    expect(instructionsProblem('   a   b   ')).toBeNull();
+    const problem = instructionsProblem('x'.repeat(MAX_INSTRUCTIONS_CHARS + 1));
+    expect(problem).toContain('2,000');
+    expect(
+      sourceErrors(values({ mode: 'instructions', instructions: 'x'.repeat(2500) })).instructions,
+    ).toContain('2,000');
   });
 });
 
@@ -108,9 +164,73 @@ describe('settingsErrors', () => {
 
   it('refuses a length that is too short, or longer than can be made yet, and says which', () => {
     expect(settingsErrors(values({ durationMs: 59_000 })).duration).toMatch(/shorter than 1:00/);
-    expect(settingsErrors(values({ durationMs: 1_800_000 })).duration).toMatch(
-      /longer than 10:00 are not supported yet/,
+    expect(settingsErrors(values({ durationMs: 2_400_000 })).duration).toMatch(
+      /longer than 30:00 are not supported yet/,
     );
+  });
+});
+
+describe('PowerPoint decks', () => {
+  const deck = (name = 'induction.pptx', size = 10, type = '') =>
+    new File([new Uint8Array(size)], name, { type });
+
+  it('accepts a .pptx by its name or its type, and refuses everything else with the reason', () => {
+    expect(fileProblem(deck(), 'pptx')).toBeNull();
+    expect(
+      fileProblem(
+        deck('x', 10, 'application/vnd.openxmlformats-officedocument.presentationml.presentation'),
+        'pptx',
+      ),
+    ).toBeNull();
+    expect(fileProblem(deck('notes.docx'), 'pptx')).toMatch(/not a PowerPoint deck/);
+    expect(fileProblem(deck('old.ppt'), 'pptx')).toMatch(/Older \.ppt files are not supported/);
+    expect(fileProblem(deck('empty.pptx', 0), 'pptx')).toMatch(/empty/);
+    expect(fileProblem(deck('induction.pptx'))).toMatch(/not a PDF/); // a PDF is still the default
+  });
+
+  it('is a project source of its own, and a file project, but has no keywords', () => {
+    expect(projectSourceType('pptx')).toBe('pptx');
+    expect(usesFile('pptx')).toBe(true);
+    expect(usesDeck('pptx')).toBe(true);
+    expect(usesKeywords('pptx')).toBe(false);
+    expect(fileKindOf('pptx')).toBe('pptx');
+    expect(fileKindOf('both')).toBe('pdf');
+  });
+
+  it('names a project from the deck file, dropping .pptx', () => {
+    expect(suggestTitle('data_structures-notes.pptx')).toBe('Data structures notes');
+  });
+
+  it('asks for a deck, not a PDF, when none is chosen', () => {
+    const errors = sourceErrors({ ...values(), mode: 'pptx', file: null });
+    expect(errors.file).toBe('Choose a PowerPoint deck to upload.');
+  });
+});
+
+describe('pasted text', () => {
+  const enough = 'Plants make food from light. '.repeat(20);
+
+  it('is a project source of its own, needs no file and no keywords', () => {
+    expect(projectSourceType('text')).toBe('text');
+    expect(usesText('text')).toBe(true);
+    expect(usesFile('text')).toBe(false);
+    expect(usesKeywords('text')).toBe(false);
+    expect(isModeAvailable('text')).toBe(true);
+    expect(sourceErrors(values({ mode: 'text', file: null, text: enough }))).toEqual({});
+  });
+
+  it("asks for text, and says how much is needed, using the API's own limits", () => {
+    expect([MIN_TEXT_CHARS, MAX_TEXT_CHARS]).toEqual([300, 200_000]);
+    expect(textProblem('   ')).toMatch(/paste the material/i);
+    expect(textProblem('x'.repeat(MIN_TEXT_CHARS - 1))).toMatch(/at least 300 characters.*299/);
+    expect(textProblem('x'.repeat(MIN_TEXT_CHARS))).toBeNull();
+    expect(textProblem('x'.repeat(MAX_TEXT_CHARS))).toBeNull();
+    expect(textProblem('x'.repeat(MAX_TEXT_CHARS + 1))).toMatch(/limit is 200,000/);
+  });
+
+  it('counts the text without its surrounding blank space', () => {
+    expect(textProblem(`\n\n  ${'x'.repeat(MIN_TEXT_CHARS)}  \n`)).toBeNull();
+    expect(sourceErrors(values({ mode: 'text', file: null, text: 'short' })).text).toBeDefined();
   });
 });
 
@@ -118,7 +238,6 @@ describe('projectSourceType', () => {
   it('sends a PDF-plus-keywords project to the API as a PDF project', () => {
     expect(projectSourceType('pdf')).toBe('pdf');
     expect(projectSourceType('both')).toBe('pdf');
-    expect(projectSourceType('keywords')).toBe('topic');
   });
 });
 

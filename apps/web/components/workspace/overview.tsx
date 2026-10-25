@@ -1,6 +1,14 @@
 'use client';
 
-import { ArrowRight, CheckCircle2, FileText, ListChecks, PenLine, Settings2 } from 'lucide-react';
+import {
+  ArrowRight,
+  CheckCircle2,
+  FileText,
+  ListChecks,
+  PenLine,
+  Settings2,
+  Video,
+} from 'lucide-react';
 import { useState } from 'react';
 import type { Source, Topic } from '@edutoon/contracts';
 import { Badge } from '@/components/ui/badge';
@@ -9,11 +17,13 @@ import { Card, CardBody, CardHeader } from '@/components/ui/card';
 import { ErrorState, Progress, Skeleton } from '@/components/ui/feedback';
 import { formatBytes, formatDateTime, formatDuration, pluralise } from '@/lib/format';
 import { languageLabel, orientationLabel } from '@/lib/generation-settings';
+import { isDeckProject, isFileProject, isTextProject, sourceWords } from '@/lib/source-kind';
 import { STAGES, type StageId, type Tone } from '@/lib/workflow';
 import { ActivityCard } from './activity-card';
-import { AddPdfForm } from './add-source';
+import { AddSourceForm, PasteTextForm } from './add-source';
 import { DeleteProjectCard } from './delete-project';
 import { EditSettingsModal } from './edit-settings-modal';
+import { InstructionsCard } from './instructions-card';
 import { useWorkspaceContext } from './workspace-context';
 
 const SOURCE_STATUS: Record<Source['status'], { label: string; tone: Tone }> = {
@@ -28,19 +38,35 @@ interface Guidance {
   body: string;
 }
 
+/** What differs for a PowerPoint deck: the wording about the file and its slides. */
+const DECK_GUIDANCE: Partial<Record<StageId, Guidance>> = {
+  needs_source: {
+    title: 'Add your PowerPoint deck',
+    body: 'The lesson is written from your slides - their titles, bullets, tables and speaker notes - and nothing else.',
+  },
+  source_failed: {
+    title: "We couldn't read that deck",
+    body: 'It may be damaged, protected, an older .ppt file, or slides that are only pictures. Save it as .pptx and try again.',
+  },
+  reading_source: {
+    title: 'Reading your deck',
+    body: 'This only takes a moment. The next step opens as soon as it is done.',
+  },
+  ready_for_topics: {
+    title: 'Ready to group your slides',
+    body: 'We will group your slides into topics, with the slides each topic comes from.',
+  },
+};
+
 const GUIDANCE: Record<StageId, Guidance> = {
   unknown: { title: 'Loading your project', body: 'One moment.' },
   needs_source: {
     title: 'Add your source material',
     body: 'Everything in the video will be traced back to what you add here.',
   },
-  keywords_unsupported: {
-    title: 'Keyword-only projects are not supported yet',
-    body: 'Every claim in a video is checked against your own source material, and keywords alone give nothing to check against. Start a new project from a PDF - you can add keywords to guide it.',
-  },
   source_failed: {
     title: "We couldn't read that PDF",
-    body: 'It may be a scanned image, protected, or damaged. Try a different PDF.',
+    body: 'The reason is shown under the file below. A scanned PDF is read with text recognition on this machine; if that could not find words, rescan it at a higher quality, or try a different PDF.',
   },
   reading_source: {
     title: 'Reading your PDF',
@@ -76,16 +102,22 @@ const GUIDANCE: Record<StageId, Guidance> = {
   },
   approved: {
     title: 'Script approved',
-    body: 'Narrate it and build its storyboard from Script Studio. Rendering is the production stage still to come.',
+    body: 'Next: Narration → Storyboard → Video. Each has its own page, and each waits for the one before it.',
   },
 };
 
 function NextStepCard() {
-  const { project, workflow } = useWorkspaceContext();
+  const { project, workflow, pipeline } = useWorkspaceContext();
   const { stage, next, meta } = workflow;
-  const guidance = GUIDANCE[stage];
-  const showPdfForm =
-    project.source_type === 'pdf' && (stage === 'needs_source' || stage === 'source_failed');
+  const guidance = (isDeckProject(project) ? DECK_GUIDANCE[stage] : undefined) ?? GUIDANCE[stage];
+  // After approval, the way on is the first of the production stages that is not finished yet.
+  const production = pipeline.filter((entry) =>
+    ['narration', 'storyboard', 'video'].includes(entry.id),
+  );
+  const continueTo = production.find((entry) => entry.status !== 'completed');
+  const video = production.find((entry) => entry.id === 'video');
+  const showSourceForm =
+    isFileProject(project) && (stage === 'needs_source' || stage === 'source_failed');
 
   return (
     <Card className="overflow-hidden">
@@ -103,17 +135,34 @@ function NextStepCard() {
             </h2>
             <p className="mt-1 max-w-xl text-sm text-ink-500">{guidance.body}</p>
           </div>
-          {next && !showPdfForm ? (
-            <ButtonLink
-              href={next.href}
-              trailingIcon={<ArrowRight className="size-4" aria-hidden />}
-            >
-              {next.label}
-            </ButtonLink>
+          {next && !showSourceForm ? (
+            <div className="flex flex-wrap gap-3">
+              <ButtonLink
+                href={next.href}
+                trailingIcon={<ArrowRight className="size-4" aria-hidden />}
+              >
+                {next.label}
+              </ButtonLink>
+              {stage === 'approved' && (continueTo ?? video) ? (
+                <ButtonLink
+                  href={(continueTo ?? video)!.href}
+                  variant="secondary"
+                  leadingIcon={<Video className="size-4" aria-hidden />}
+                >
+                  {continueTo ? `Continue to ${continueTo.label.toLowerCase()}` : 'Watch the video'}
+                </ButtonLink>
+              ) : null}
+            </div>
           ) : null}
         </div>
         {meta.busy ? <Progress label={guidance.title} /> : null}
-        {showPdfForm ? <AddPdfForm projectId={project.id} /> : null}
+        {showSourceForm ? (
+          isTextProject(project) ? (
+            <PasteTextForm projectId={project.id} title={project.title} />
+          ) : (
+            <AddSourceForm projectId={project.id} kind={isDeckProject(project) ? 'pptx' : 'pdf'} />
+          )
+        ) : null}
       </CardBody>
     </Card>
   );
@@ -128,16 +177,18 @@ function SourceCard({ sources, topics }: { sources: readonly Source[]; topics: r
       <CardHeader
         title="Source"
         description={
-          project.source_type === 'pdf'
+          isFileProject(project)
             ? 'The material this project is built from.'
             : 'The topics you entered.'
         }
         icon={<FileText className="size-4" aria-hidden />}
       />
       <CardBody className="space-y-4">
-        {project.source_type === 'pdf' ? (
+        {isFileProject(project) ? (
           sources.length === 0 ? (
-            <p className="text-sm text-ink-500">No PDF has been added yet.</p>
+            <p className="text-sm text-ink-500">
+              No {sourceWords(project).noun} has been added yet.
+            </p>
           ) : (
             <ul className="divide-y divide-line">
               {sources.slice(0, 3).map((source) => {
@@ -156,13 +207,28 @@ function SourceCard({ sources, topics }: { sources: readonly Source[]; topics: r
                       </p>
                       <p className="text-[13px] text-ink-500">
                         {formatBytes(source.byte_size)}
-                        {source.page_count ? ` · ${pluralise(source.page_count, 'page')}` : ''} ·
-                        Added {formatDateTime(source.created_at)}
+                        {source.page_count
+                          ? ` · ${pluralise(source.page_count, sourceWords(project).unit)}`
+                          : ''}{' '}
+                        · Added {formatDateTime(source.created_at)}
                       </p>
                     </div>
                     <Badge tone={status.tone} dot>
                       {status.label}
                     </Badge>
+                    {source.status === 'parsed' && source.extraction_method === 'ocr' ? (
+                      <p className="basis-full text-[13px] text-ink-600">
+                        Read with text recognition (OCR) on this machine:{' '}
+                        {pluralise(source.ocr_page_count ?? 0, 'page')} of {source.page_count ?? 0}{' '}
+                        were scans. Scanned text can contain small reading errors, so check the
+                        script against your document.
+                      </p>
+                    ) : null}
+                    {source.status === 'failed' && source.failure_reason ? (
+                      <p role="alert" className="basis-full text-[13px] text-danger-700">
+                        {source.failure_reason}
+                      </p>
+                    ) : null}
                   </li>
                 );
               })}
@@ -172,7 +238,7 @@ function SourceCard({ sources, topics }: { sources: readonly Source[]; topics: r
         {keywords.length > 0 ? (
           <div>
             <p className="mb-2 text-sm font-semibold text-ink-950">
-              {project.source_type === 'pdf' ? 'Your keywords' : 'Keywords'}{' '}
+              {isFileProject(project) ? 'Your keywords' : 'Keywords'}{' '}
               <span className="font-normal text-ink-500">({keywords.length})</span>
             </p>
             <ul className="flex flex-wrap gap-1.5">
@@ -246,7 +312,7 @@ function SettingsCard() {
 
   return (
     <>
-      <Card>
+      <Card id="settings" className="scroll-mt-24">
         <CardHeader
           title="Generation settings"
           icon={<Settings2 className="size-4" aria-hidden />}
@@ -320,6 +386,7 @@ export function ProjectOverview() {
       </div>
       <div className="space-y-6">
         <SettingsCard />
+        <InstructionsCard />
         <DeleteProjectCard project={project} />
       </div>
     </div>

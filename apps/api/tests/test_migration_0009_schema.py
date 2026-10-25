@@ -20,9 +20,7 @@ from edutoon.repositories import users as users_repo
 
 async def _make_project(db_session):
     owner = await users_repo.create(db_session, email=f"{uuid4()}@example.com")
-    return await projects_repo.create(
-        db_session, owner_id=owner.id, title="P", source_type="topic"
-    )
+    return await projects_repo.create(db_session, owner_id=owner.id, title="P", source_type="topic")
 
 
 async def _column(db_session, table: str, column: str):
@@ -56,14 +54,18 @@ async def test_origin_is_not_a_postgres_enum(db_session):
     schema at all, so neither this migration nor a future one can slip one in.
     """
     enum_types = (
-        await db_session.execute(
-            text(
-                "SELECT t.typname FROM pg_type t "
-                "JOIN pg_namespace n ON n.oid = t.typnamespace "
-                "WHERE t.typtype = 'e' AND n.nspname = 'public'"
+        (
+            await db_session.execute(
+                text(
+                    "SELECT t.typname FROM pg_type t "
+                    "JOIN pg_namespace n ON n.oid = t.typnamespace "
+                    "WHERE t.typtype = 'e' AND n.nspname = 'public'"
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
 
     assert enum_types == []
 
@@ -85,10 +87,7 @@ async def test_origin_check_rejects_anything_else(db_session, origin):
     with pytest.raises(IntegrityError) as excinfo:
         async with db_session.begin_nested():
             await db_session.execute(
-                text(
-                    "INSERT INTO project_topics (project_id, title, origin) "
-                    "VALUES (:p, 'T', :o)"
-                ),
+                text("INSERT INTO project_topics (project_id, title, origin) VALUES (:p, 'T', :o)"),
                 {"p": project.id, "o": origin},
             )
 
@@ -237,9 +236,6 @@ async def test_topic_citations_rejects_a_reference_to_a_missing_topic_or_chunk(d
     with pytest.raises(IntegrityError):
         async with db_session.begin_nested():
             await db_session.execute(
-                text(
-                    "INSERT INTO topic_citations (topic_id, source_chunk_id) "
-                    "VALUES (:t, :c)"
-                ),
+                text("INSERT INTO topic_citations (topic_id, source_chunk_id) VALUES (:t, :c)"),
                 {"t": uuid4(), "c": uuid4()},
             )

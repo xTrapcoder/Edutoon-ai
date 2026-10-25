@@ -40,6 +40,7 @@ from edutoon.providers.renderer import Renderer, get_renderer
 from edutoon.providers.storage import Storage, get_storage_client
 from edutoon.repositories.jobs import JobRecord
 from edutoon.services import claim_extraction as claim_extraction_service
+from edutoon.services import deck_lesson as deck_lesson_service
 from edutoon.services import evidence as evidence_service
 from edutoon.services import render as render_service
 from edutoon.services import script_audio as script_audio_service
@@ -123,6 +124,8 @@ async def _handle_generate_script(
     job_id: UUID,
     sessionmaker: async_sessionmaker[AsyncSession] | None,
 ) -> JobRecord:
+    if await deck_lesson_service.job_is_for_deck(session, job_id):
+        return await deck_lesson_service.run_generate_script_job(session, job_id=job_id)
     return await scripts_service.run_generate_script_job(
         session, providers.script_llm, job_id=job_id, sessionmaker=sessionmaker
     )
@@ -134,6 +137,8 @@ async def _handle_extract_topics(
     job_id: UUID,
     sessionmaker: async_sessionmaker[AsyncSession] | None,
 ) -> JobRecord:
+    if await deck_lesson_service.job_is_for_deck(session, job_id):
+        return await deck_lesson_service.run_extract_topics_job(session, job_id=job_id)
     return await topic_extraction_service.run_extract_topics_job(
         session, providers.llm, job_id=job_id
     )
@@ -145,6 +150,8 @@ async def _handle_extract_claims(
     job_id: UUID,
     sessionmaker: async_sessionmaker[AsyncSession] | None,
 ) -> JobRecord:
+    if await deck_lesson_service.job_is_for_deck(session, job_id):
+        return await deck_lesson_service.run_extract_claims_job(session, job_id=job_id)
     return await claim_extraction_service.run_extract_claims_job(
         session, providers.embeddings, providers.llm, job_id=job_id
     )
@@ -171,8 +178,11 @@ async def _handle_generate_storyboard(
     job_id: UUID,
     sessionmaker: async_sessionmaker[AsyncSession] | None,
 ) -> JobRecord:
+    composer: storyboard_service.SceneComposer = providers.llm
+    if await deck_lesson_service.job_is_for_deck(session, job_id):
+        composer = await deck_lesson_service.build_storyboard_composer(session, job_id=job_id)
     return await storyboard_service.run_generate_storyboard_job(
-        session, providers.llm, job_id=job_id, sessionmaker=sessionmaker
+        session, composer, job_id=job_id, sessionmaker=sessionmaker
     )
 
 

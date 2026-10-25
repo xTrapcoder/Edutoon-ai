@@ -57,7 +57,7 @@ describe('accessibility', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Next' }));
     await screen.findByRole('heading', { name: 'Review and create' });
     expect(await violationsIn(container)).toEqual([]);
-  });
+  }, 30_000); // four axe scans of a four-option form: well over the 5 s default on a busy machine
 
   it('the dashboard', async () => {
     server.use(

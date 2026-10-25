@@ -29,7 +29,7 @@ _STANDS_IN_FOR_A_PROVIDER = re.compile(
     r"(?m)"
     r"(\b(messages\.create|embeddings\.create|AsyncAnthropic|AsyncOpenAI|"
     r"_StubLLM|_StubEmbeddings|stub_llm|stub_embeddings|get_llm|get_embeddings|"
-    r"leaky_anthropic|leaky_openai)\b"
+    r"leaky_anthropic|leaky_openai|_mock_llm|_judge_with)\b"
     r"|^(import|from) (anthropic|openai)\b)"
 )
 _MARKED = re.compile(r"(?m)^pytestmark\s*=\s*pytest\.mark\.provider_mocked\s*$")

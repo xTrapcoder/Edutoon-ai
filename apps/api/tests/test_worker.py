@@ -68,6 +68,7 @@ from edutoon.services import topic_extraction as topic_extraction_service
 from edutoon.worker.dispatch import JOB_HANDLERS, WorkerProviders
 from edutoon.worker.runner import process_one_job
 from tests.leaky_errors import assert_clean, leaky_anthropic, leaky_db_error
+from tests.storage_isolation import SEGMENTS_BUCKET, UPLOADS_BUCKET
 from tests.usage_helpers import usage_of
 
 # Stands in for an external provider (OpenAI / Anthropic): these tests prove how our code
@@ -165,7 +166,7 @@ def _fake_script_llm(
     is not itself about duration correction does not trigger it by accident.
     """
     client = AsyncAnthropic(api_key="sk-ant-test-not-a-real-key")
-    narration = " ".join(["word"] * narration_words)
+    narration = " ".join(["fact"] * narration_words)  # shares wording with the claim it cites
 
     async def _create(*, tool_choice: dict[str, str], **_kwargs: Any) -> Message:
         name = tool_choice["name"]
@@ -248,7 +249,7 @@ async def _make_source_with_chunks(db_session: AsyncSession, project, num_chunks
         db_session,
         project_id=project.id,
         original_filename="notes.pdf",
-        storage_bucket="edutoon-uploads",
+        storage_bucket=UPLOADS_BUCKET,
         storage_key=f"{project.id}/{uuid4()}.pdf",
         byte_size=1024,
         checksum_sha256=uuid4().hex + uuid4().hex[:32],
@@ -272,13 +273,13 @@ async def _project_with_supported_claim(db_session: AsyncSession):
     """
     project = await _make_project(db_session)
     topic = await project_topics_repo.create(
-        db_session, project_id=project.id, title="A topic", status="accepted"
+        db_session, project_id=project.id, title="A topic", status="accepted", origin="source"
     )
     source = await uploaded_sources_repo.create(
         db_session,
         project_id=project.id,
         original_filename="notes.pdf",
-        storage_bucket="edutoon-uploads",
+        storage_bucket=UPLOADS_BUCKET,
         storage_key=f"{project.id}/{uuid4()}.pdf",
         byte_size=1024,
         checksum_sha256=uuid4().hex + uuid4().hex[:32],
@@ -579,7 +580,7 @@ async def test_process_one_job_runs_the_synthesise_voice_handler(db_session, wor
     """
     owner = await users_repo.create(db_session, email=f"{uuid4()}@example.com")
     project = await projects_repo.create(
-        db_session, owner_id=owner.id, title="P", source_type="topic"
+        db_session, owner_id=owner.id, title="P", source_type="pdf"
     )
     script = await scripts_repo.create(db_session, project_id=project.id, llm_model=LLM_MODEL)
     await scripts_repo.add_segments(
@@ -662,7 +663,7 @@ async def test_process_one_job_runs_the_generate_storyboard_handler(
     """
     owner = await users_repo.create(db_session, email=f"{uuid4()}@example.com")
     project = await projects_repo.create(
-        db_session, owner_id=owner.id, title="P", source_type="topic"
+        db_session, owner_id=owner.id, title="P", source_type="pdf"
     )
     script = await scripts_repo.create(db_session, project_id=project.id, llm_model=LLM_MODEL)
     [segment] = await scripts_repo.add_segments(
@@ -682,7 +683,7 @@ async def test_process_one_job_runs_the_generate_storyboard_handler(
         db_session,
         script_segment_id=segment.id,
         status="ready",
-        storage_bucket="edutoon-segments",
+        storage_bucket=SEGMENTS_BUCKET,
         storage_key=f"k/{segment.id}",
         format="wav",
         sample_rate=22_050,
@@ -740,6 +741,27 @@ async def _project_with_a_user_topic(db_session: AsyncSession):
     seed = await project_topics_repo.create(
         db_session, project_id=project.id, title="Photosynthesis", status="accepted"
     )
+    # A topic with no document is not offered: the project holds one parsed page.
+    source = await uploaded_sources_repo.create(
+        db_session,
+        project_id=project.id,
+        original_filename="notes.pdf",
+        storage_bucket=UPLOADS_BUCKET,
+        storage_key=f"{project.id}/{uuid4()}.pdf",
+        byte_size=1024,
+        checksum_sha256=uuid4().hex + uuid4().hex[:32],
+    )
+    await source_chunks_repo.create_many(
+        db_session,
+        [
+            NewSourceChunk(
+                source_id=source.id,
+                project_id=project.id,
+                chunk_index=0,
+                content="Plants make food from light.",
+            )
+        ],
+    )
     return project, seed
 
 
@@ -759,6 +781,7 @@ async def test_process_one_job_runs_the_extract_topics_handler(
     db_session, worker_sessionmaker, monkeypatch
 ):
     project, seed = await _project_with_a_user_topic(db_session)
+    [chunk] = await source_chunks_repo.list_by_project_in_order(db_session, project.id)
     enqueued = await topic_extraction_service.enqueue_topic_extraction(
         db_session, project_id=project.id, owner_id=project.owner_id, idempotency_key="k"
     )
@@ -781,7 +804,7 @@ async def test_process_one_job_runs_the_extract_topics_handler(
                 "parent_ref": "t1",
                 "summary": "",
                 "keywords": [],
-                "evidence_chunk_ids": [],
+                "evidence_chunk_ids": [str(chunk.id)],
             },
         ],
     )
@@ -800,12 +823,14 @@ async def test_process_one_job_runs_the_extract_topics_handler(
     assert finished is not None
     assert finished.status == "succeeded"
     assert finished.result == {
-        "mode": "keywords",
+        "instructions": [],
+        "mode": "pdf_keywords",
         "topic_count": 2,
-        "chunks_total": 0,
-        "chunks_used": 0,
+        "chunks_total": 1,
+        "chunks_used": 1,
         "truncated": False,
         "dropped_uncited": 0,
+        "dropped_over_limit": 0,
         "replaced": False,
         "input_tokens": 11,
         "output_tokens": 22,
@@ -815,7 +840,7 @@ async def test_process_one_job_runs_the_extract_topics_handler(
     stored = await project_topics_repo.list_all_by_project(db_session, project.id)
     topics = {t.title: t for t in stored}
     assert topics["Light reactions"].parent_id == seed.id
-    assert topics["Light reactions"].origin == "suggested"
+    assert topics["Light reactions"].origin == "source"
 
 
 async def test_process_one_job_marks_extract_topics_failed_on_a_provider_error(

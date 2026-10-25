@@ -12,11 +12,13 @@ import { useStartExtraction } from '@/lib/api/queries';
 import { claimsForTopic } from '@/lib/claims';
 import { pluralise } from '@/lib/format';
 import { isActiveJob, jobFailureMessage, latestJobOfKind, readExtractionSummary } from '@/lib/jobs';
-import { AddKeywordsForm, AddPdfForm } from '@/components/workspace/add-source';
+import { AddKeywordsForm, AddSourceForm, PasteTextForm } from '@/components/workspace/add-source';
 import { JobProgressCard, stepsForJob } from '@/components/workspace/job-progress';
 import { QueryGate } from '@/components/workspace/query-gate';
 import { useWorkspaceContext } from '@/components/workspace/workspace-context';
+import { isDeckProject, isFileProject, isTextProject, sourceWords } from '@/lib/source-kind';
 import { ClaimExtractionPanel } from './claim-extraction-panel';
+import { KeywordCoverageCard } from './keyword-coverage';
 import { TopicDetail } from './topic-detail';
 import { TopicList } from './topic-list';
 import { buildTree, countTopics, findTopic } from './topic-tree';
@@ -49,6 +51,7 @@ function ExtractButton({
 
 function TopicsView() {
   const { project, workflow, sources, topics, jobs, claims } = useWorkspaceContext();
+  const words = sourceWords(project);
   const start = useStartExtraction(project.id);
   const topicList = useMemo(() => topics.data ?? [], [topics.data]);
   const claimList = useMemo(() => claims.data ?? [], [claims.data]);
@@ -112,41 +115,23 @@ function TopicsView() {
     : null;
   const failed = extraction?.status === 'failed';
 
-  // --- a keyword-only project: there is nothing to verify claims against ------------------
-  if (workflow.stage === 'keywords_unsupported' && !hasTopics) {
-    return (
-      <Card>
-        <CardHeader
-          title="Keyword-only projects are not supported yet"
-          description="Every claim in a video is checked against your own source material, and keywords alone give nothing to check against."
-          icon={<FilePlus2 className="size-4" aria-hidden />}
-        />
-        <CardBody className="space-y-3">
-          <p className="text-sm text-ink-600">
-            Start a new project from a PDF. You can add keywords to it to steer which topics it
-            covers.
-          </p>
-          <ButtonLink href="/projects/new" leadingIcon={<Plus className="size-4" aria-hidden />}>
-            Start a PDF project
-          </ButtonLink>
-        </CardBody>
-      </Card>
-    );
-  }
-
   // --- the source is not ready ---------------------------------------------------------
   const sourceMissing = workflow.stage === 'needs_source' || workflow.stage === 'source_failed';
   if (sourceMissing && !hasTopics) {
     return (
       <Card>
         <CardHeader
-          title={project.source_type === 'pdf' ? 'Add your PDF first' : 'Add your keywords first'}
+          title={
+            isFileProject(project) ? `Add your ${words.noun} first` : 'Add your keywords first'
+          }
           description="Topics are found from your source, so we need that before we can start."
           icon={<FilePlus2 className="size-4" aria-hidden />}
         />
         <CardBody>
-          {project.source_type === 'pdf' ? (
-            <AddPdfForm projectId={project.id} />
+          {isTextProject(project) ? (
+            <PasteTextForm projectId={project.id} title={project.title} />
+          ) : isFileProject(project) ? (
+            <AddSourceForm projectId={project.id} kind={isDeckProject(project) ? 'pptx' : 'pdf'} />
           ) : (
             <AddKeywordsForm projectId={project.id} />
           )}
@@ -161,12 +146,12 @@ function TopicsView() {
       <JobProgressCard
         icon={<ListTree className="size-7" aria-hidden />}
         title="Extracting topics from your content"
-        description="We are working out what is worth covering, and which pages each topic comes from."
+        description={`We are working out what is worth covering, and which ${words.unit}s each topic comes from.`}
         job={extraction}
         steps={stepsForJob(extraction, {
           ready:
-            project.source_type === 'pdf' && sources.data?.length
-              ? 'Your PDF has been read'
+            isFileProject(project) && sources.data?.length
+              ? `Your ${words.noun} has been read`
               : 'Your keywords are saved',
           working: 'Extracting and organising topics',
         })}
@@ -197,8 +182,9 @@ function TopicsView() {
                   {failed ? "Let's try that again" : 'Ready to find your topics'}
                 </h2>
                 <p className="mt-2 text-sm text-ink-500">
-                  We will read your material and outline what is worth covering, with the pages each
-                  topic comes from. Nothing is added to a script until you have reviewed it.
+                  We will read your material and outline what is worth covering, with the{' '}
+                  {words.unit}s each topic comes from. Nothing is added to a script until you have
+                  reviewed it.
                 </p>
               </div>
               {failed ? (
@@ -273,14 +259,17 @@ function TopicsView() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-3">
-          <Button
-            variant="secondary"
-            onClick={() => setAddingKeywords((value) => !value)}
-            aria-expanded={addingKeywords}
-            leadingIcon={<Plus className="size-4" aria-hidden />}
-          >
-            Add keywords
-          </Button>
+          {/* Keywords steer which topics a PDF covers; a deck's topics follow its own sections. */}
+          {!isDeckProject(project) ? (
+            <Button
+              variant="secondary"
+              onClick={() => setAddingKeywords((value) => !value)}
+              aria-expanded={addingKeywords}
+              leadingIcon={<Plus className="size-4" aria-hidden />}
+            >
+              Add keywords
+            </Button>
+          ) : null}
           {derived ? (
             <Button
               variant="secondary"
@@ -303,8 +292,8 @@ function TopicsView() {
               disabled={active}
               leadingIcon={<Wand2 className="size-4" aria-hidden />}
             >
-              {project.source_type === 'pdf' && sources.data?.length
-                ? 'Extract topics from PDF'
+              {isFileProject(project) && sources.data?.length
+                ? `Extract topics from ${words.noun}`
                 : 'Suggest related topics'}
             </Button>
           )}
@@ -354,6 +343,8 @@ function TopicsView() {
         refreshingJobs={jobs.isRefetching}
       />
 
+      {isFileProject(project) ? <KeywordCoverageCard projectId={project.id} /> : null}
+
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)]">
         <Card className="lg:sticky lg:top-24 lg:max-h-[calc(100vh-8rem)] lg:self-start lg:overflow-hidden">
           <CardHeader
@@ -378,6 +369,7 @@ function TopicsView() {
               onSelect={select}
               collapsed={collapsed}
               onToggle={toggle}
+              unit={words.Unit}
             />
           </div>
         </Card>
@@ -389,6 +381,7 @@ function TopicsView() {
               topic={selected}
               wordingLocked={active}
               claims={claimsForTopic(claimList, selected.id)}
+              unit={words.Unit}
             />
           ) : null}
         </div>

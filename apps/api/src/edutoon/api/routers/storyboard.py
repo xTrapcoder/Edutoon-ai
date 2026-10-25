@@ -30,6 +30,7 @@ from fastapi import APIRouter, Depends, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from edutoon.api.dependencies import IdempotencyKey, RedisDep, get_current_user
+from edutoon.api.policies import require_admin_for_project
 from edutoon.api.schemas.jobs import JobResponse
 from edutoon.api.schemas.storyboard import (
     StoryboardEnqueueRequest,
@@ -41,7 +42,11 @@ from edutoon.services import idempotency as idempotency_service
 from edutoon.services import storyboard as storyboard_service
 from edutoon.services.users import UserRecord
 
-router = APIRouter(prefix="/projects/{project_id}/scripts/{script_id}", tags=["storyboard"])
+router = APIRouter(
+    prefix="/projects/{project_id}/scripts/{script_id}",
+    tags=["storyboard"],
+    dependencies=[Depends(require_admin_for_project)],
+)
 
 CurrentUser = Annotated[UserRecord, Depends(get_current_user)]
 Session = Annotated[AsyncSession, Depends(get_session)]

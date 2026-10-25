@@ -294,7 +294,7 @@ export interface WaitAssessment {
 // How long each phase may take before it is called out. Deliberately generous: a long PDF is a
 // long model call.
 const QUEUED_SLOW_MS = 90_000;
-const RUNNING_SLOW_MS = 4 * 60_000;
+const RUNNING_SLOW_MS = 90_000;
 const RUNNING_STALLED_MS = 12 * 60_000;
 
 /** How long a queued or running job has been waiting, and whether that is unusual. */
@@ -316,15 +316,158 @@ export function assessWait(job: Job, now: number = Date.now()): WaitAssessment {
       level: 'stalled',
       elapsedMs,
       message:
-        "This is taking much longer than expected. Refresh to check on it; if it still hasn't finished, it will be marked as failed and you can try again.",
+        'This is taking much longer than expected. Check that the worker and the local AI (Ollama) are running. A step that is truly stuck is marked as failed within the hour, and then you can try again.',
     };
   }
   if (!queued && elapsedMs > RUNNING_SLOW_MS) {
     return {
       level: 'slow',
       elapsedMs,
-      message: 'Longer documents take longer. You can leave this page - we will keep going.',
+      message:
+        'Still working. Reading a long document with the local AI can take 5 to 10 minutes, and nothing is wrong unless this page says the step failed. You can leave this page - we will keep going.',
     };
   }
   return { level: 'normal', elapsedMs, message: null };
+}
+
+export interface RemovedSentence {
+  sentence: string;
+  reason: string;
+  topic: string | null;
+  /** The rest of that passage was too short to read out, so the whole passage went. */
+  segmentDropped: boolean;
+}
+
+export interface SupportCheck {
+  /** Whether the AI judge ran (the rule-based removals are recorded either way). */
+  enabled: boolean;
+  judgedSentences: number;
+  uncheckedSentences: number;
+  removed: RemovedSentence[];
+  /** Topics whose writing could not be supported, so their verified claims are read out as they stand. */
+  fallbackTopics: string[];
+}
+
+/** How the script's length compares with what the owner asked for, when the evidence is why it is short. */
+const SHORTFALL_REASONS = ['evidence_limited', 'writer_short'] as const;
+
+export interface ScriptLength {
+  estimatedMs: number;
+  targetMs: number;
+  /** `evidence_limited`: the verified claims cannot carry more. `writer_short`: claims went unused. */
+  reason: 'evidence_limited' | 'writer_short';
+}
+
+export interface ScriptChecks {
+  /** The lesson rests on the AI's general knowledge: it was built from a topic alone. */
+  generalKnowledge: boolean;
+  /** The sentence-level support check, or `null` when it did not run for this script. */
+  support: SupportCheck | null;
+  /**
+   * Set only when the script is well short of the target, with the server's reason: the verified
+   * claims cannot carry more (nothing was padded), or claims went unused. `null` otherwise.
+   */
+  shortfall: ScriptLength | null;
+}
+
+/**
+ * What the server's own checks did to a script: whether it is a general-knowledge lesson, and the
+ * sentence-level support check (how many sentences were judged, which were removed and why).
+ * `null` when no `generate_script` job result is known for the script (an older script), so "no
+ * check ran" is never shown as "nothing was found".
+ */
+export function readScriptChecks(
+  jobs: readonly Job[] | undefined,
+  scriptId: string,
+): ScriptChecks | null {
+  const job = jobs?.find(
+    (candidate) =>
+      candidate.kind === 'generate_script' &&
+      candidate.status === 'succeeded' &&
+      isRecord(candidate.result) &&
+      candidate.result.script_id === scriptId,
+  );
+  if (!job || !isRecord(job.result)) return null;
+  const generalKnowledge = job.result.general_knowledge === true;
+  const raw = job.result.support_check;
+  let support: SupportCheck | null = null;
+  if (isRecord(raw)) {
+    const removed: RemovedSentence[] = [];
+    if (Array.isArray(raw.removed_sentences)) {
+      for (const entry of raw.removed_sentences) {
+        if (!isRecord(entry) || typeof entry.sentence !== 'string') continue;
+        removed.push({
+          sentence: entry.sentence,
+          reason: typeof entry.reason === 'string' ? entry.reason : '',
+          topic: typeof entry.topic === 'string' ? entry.topic : null,
+          segmentDropped: entry.segment_dropped === true,
+        });
+      }
+    }
+    support = {
+      enabled: raw.enabled !== false,
+      judgedSentences: asCount(raw.judged_sentences) ?? 0,
+      uncheckedSentences: asCount(raw.unchecked_sentences) ?? 0,
+      removed,
+      fallbackTopics: Array.isArray(raw.fallback_sections)
+        ? // The same topic can fall back in the first pass and again in the length correction.
+          [
+            ...new Set(
+              raw.fallback_sections.flatMap((entry) =>
+                isRecord(entry) && typeof entry.topic === 'string' ? [entry.topic] : [],
+              ),
+            ),
+          ]
+        : [],
+    };
+  }
+  const estimatedMs = asCount(job.result.estimated_duration_ms);
+  const targetMs = asCount(job.result.target_duration_ms);
+  const rawReason: unknown = job.result.shortfall_reason;
+  const reason = SHORTFALL_REASONS.find((known) => known === rawReason) ?? null;
+  const shortfall =
+    reason !== null && estimatedMs !== null && targetMs !== null
+      ? { estimatedMs, targetMs, reason }
+      : null;
+  return { generalKnowledge, support, shortfall };
+}
+
+export interface WeakCitation {
+  /** Zero-based position of the passage in the script (`ScriptSegment.segment_index`). */
+  segmentIndex: number;
+  /** Share (0 to 1) of the passage's meaningful words that appear in the claims it cites. */
+  coverage: number;
+}
+
+/**
+ * The passages a `generate_script` job flagged as having weak citations, for the script it wrote.
+ * `null` when no such job is known (an older script, or a job that predates the flag), so "none
+ * flagged" and "not checked" are never confused. The job's `result` is untyped in the API's
+ * contract, so it is read field by field and an odd entry is skipped, never an exception.
+ */
+export function readWeakCitations(
+  jobs: readonly Job[] | undefined,
+  scriptId: string,
+): WeakCitation[] | null {
+  const job = jobs?.find(
+    (candidate) =>
+      candidate.kind === 'generate_script' &&
+      candidate.status === 'succeeded' &&
+      isRecord(candidate.result) &&
+      candidate.result.script_id === scriptId,
+  );
+  if (!job || !isRecord(job.result) || !Array.isArray(job.result.weak_citation_segments)) {
+    return null;
+  }
+  const weak: WeakCitation[] = [];
+  for (const entry of job.result.weak_citation_segments) {
+    if (!isRecord(entry)) continue;
+    const segmentIndex = asCount(entry.segment_index);
+    const coverage = entry.coverage;
+    if (segmentIndex === null || typeof coverage !== 'number' || !Number.isFinite(coverage)) {
+      continue;
+    }
+    weak.push({ segmentIndex, coverage });
+  }
+  return weak;
 }
