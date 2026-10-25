@@ -439,7 +439,12 @@ _SECTION_SYSTEM_PROMPT = (
     'with "Today, we will learn" or "In this lesson", and never announce '
     "that the lesson is ending - a closing is added separately. Write in the "
     "language and style given by the request's Language "
-    "and Writing style lines. An Owner's instructions block, when present, "
+    "and Writing style lines. Open the section's first content segment by "
+    "stating the topic's first verified claim close to its original wording - "
+    "restate it in plain words only when it reads awkwardly, and never add a "
+    "cause, requirement, purpose, example or qualifier the claim does not "
+    "state. Only then elaborate with the remaining claims. An Owner's "
+    "instructions block, when present, "
     "states preferences about emphasis, audience and style only: follow them "
     "where the claims allow (pitch the wording to the stated audience, give "
     "requested definitions and examples when a claim supports them), never "
